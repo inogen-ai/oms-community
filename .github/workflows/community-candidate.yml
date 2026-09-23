@@ -1,0 +1,85 @@
+name: Community candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.20@sha256:52d3dec8d45585b21edeca8517d752b2512e52aa94f80fc36a5788c88c95f8e4
+        env:
+          NEO4J_AUTH: neo4j/community-ci-disposable-123
+          NEO4J_server_memory_heap_initial__size: 256m
+          NEO4J_server_memory_heap_max__size: 512m
+          NEO4J_server_memory_pagecache_size: 256m
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p community-ci-disposable-123 'RETURN 1'"
+          --health-interval 5s --health-timeout 10s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.10.4'
+      - name: Build and inspect immutable candidate
+        run: |
+          uv run --no-project --with pydantic==2.13.4 --with 'PyJWT[crypto]==2.13.0' --with packaging==26.2 \
+            python -m release.community build --out "$RUNNER_TEMP/candidate" --report "$RUNNER_TEMP/release-report.json"
+      - name: Test installed core wheel with a disposable database
+        env:
+          OMS_TEST_NEO4J_URI: bolt://127.0.0.1:7687
+          OMS_TEST_NEO4J_PASSWORD: community-ci-disposable-123
+          OMS_TEST_NEO4J_DISPOSABLE: '1'
+        run: |
+          uv venv "$RUNNER_TEMP/core"
+          uv export --frozen --extra test --no-emit-project --format requirements-txt --output-file "$RUNNER_TEMP/test-requirements.txt"
+          uv pip install --python "$RUNNER_TEMP/core/bin/python" --require-hashes --requirement "$RUNNER_TEMP/test-requirements.txt"
+          uv pip install --python "$RUNNER_TEMP/core/bin/python" --no-deps "$RUNNER_TEMP"/candidate/*.whl
+          printf '[pytest]\nasyncio_mode = auto\n' > "$RUNNER_TEMP/pytest.ini"
+          "$RUNNER_TEMP/core/bin/python" -I -m pytest --import-mode=importlib -c "$RUNNER_TEMP/pytest.ini" tests -q
+      - name: Test static application and shared frontend packages
+        working-directory: frontend/community
+        env:
+          OMS_CORE_PYTHON: ${{ runner.temp }}/core/bin/python
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          tar -xzf "$RUNNER_TEMP"/candidate/oms_community_ui-*.tar.gz
+          mv site out
+          npx playwright install --with-deps chromium
+          npm run e2e
+          npm run e2e:real
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: shared-candidate
+          path: ${{ runner.temp }}/candidate
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: shared-release-evidence
+          path: ${{ runner.temp }}/release-report.json
+          if-no-files-found: error
+          retention-days: 7

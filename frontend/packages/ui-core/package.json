@@ -1,0 +1,65 @@
+{
+  "name": "@inogen/oms-ui-core",
+  "version": "1.2.0",
+  "license": "SUL-1.0",
+  "description": "Edition-neutral OMS interface primitives",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./styles.css": "./src/styles.css",
+    "./theme.css": "./src/theme.css",
+    "./assets/inogen_logo_darkmode.png": "./src/assets/inogen_logo_darkmode.png",
+    "./assets/oms_logo_darktheme.png": "./src/assets/oms_logo_darktheme.png",
+    "./assets/oms_logo_darkthemev2.png": "./src/assets/oms_logo_darkthemev2.png",
+    "./frontmatter": {
+      "types": "./src/frontmatter.d.ts",
+      "default": "./src/frontmatter.js"
+    },
+    "./diff": {
+      "types": "./src/diff.d.ts",
+      "default": "./src/diff.js"
+    },
+    "./graph": {
+      "types": "./src/graph.d.ts",
+      "default": "./src/graph.js"
+    },
+    "./graph-node-types": {
+      "types": "./src/graph-node-types.d.ts",
+      "default": "./src/graph-node-types.js"
+    },
+    "./graph-layouts": {
+      "types": "./src/graph-layouts.d.ts",
+      "default": "./src/graph-layouts.js"
+    },
+    "./history": {
+      "types": "./src/history.d.ts",
+      "default": "./src/history.js"
+    },
+    "./mobile-navigation": {
+      "types": "./src/mobile-navigation.d.ts",
+      "default": "./src/mobile-navigation.js"
+    },
+    "./mobile-navigation.css": "./src/mobile-navigation.css"
+  },
+  "dependencies": {
+    "lucide-react": "^1.17.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "cytoscape": "^3.34.0",
+    "@types/cytoscape": "^3.21.9"
+  },
+  "peerDependencies": {
+    "react": ">=19 <20"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ]
+}

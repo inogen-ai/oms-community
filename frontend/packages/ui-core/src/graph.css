@@ -1,0 +1,19 @@
+.oms-graph { min-width: 0; }
+.oms-graph__toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border-2); border-radius: 7px 7px 0 0; font-size: 12px; }
+.oms-graph__counts { color: var(--text-dim); margin-right: auto; white-space: nowrap; }
+.oms-graph__layout, .oms-graph__labels { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 12px; }
+.oms-graph__layout select { width: auto; max-width: 155px; padding: 6px 8px; }
+.oms-graph__labels input { width: auto; accent-color: var(--accent); }
+.oms-graph__viewport { display: flex; gap: 5px; }
+.oms-graph__viewport .oms-button { min-height: 32px; padding: 5px 10px; font-size: 12px; }
+.oms-graph__stage { position: relative; background: var(--bg); border: 1px solid var(--border-2); border-top: 0; border-radius: 0 0 7px 7px; overflow: hidden; }
+.oms-graph__canvas { width: 100%; height: 500px; min-height: 440px; }
+.oms-graph__empty { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.oms-graph__footer { padding: 14px 0 6px; }
+.oms-graph__legend { display: flex; gap: 14px; flex-wrap: wrap; }
+.oms-graph__legend-item { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 11px; }
+.oms-graph__legend-item i { display: inline-grid; place-items: center; height: 19px; width: 19px; border-radius: 5px; }
+.oms-graph__legend-item img { height: 13px; width: 13px; }
+.oms-graph__hint { margin: 12px 0; color: var(--text-dim); font-size: 11px; line-height: 1.7; }
+.oms-graph__node-picker { max-width: 440px; margin: 0; }
+@media (max-width: 720px) { .oms-graph__counts { width: 100%; } .oms-graph__canvas { height: 440px; } }

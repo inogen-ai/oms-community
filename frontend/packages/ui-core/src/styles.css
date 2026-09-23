@@ -1,0 +1,376 @@
+@import "./history.css";
+@import "./collection.css";
+@import "./graph.css";
+.oms-panel { background: var(--oms-paper); border: 1px solid var(--oms-line); border-radius: 12px; padding: 24px; min-width: 0; }
+.oms-button { cursor: pointer; border: 1px solid transparent; border-radius: 7px; padding: 9px 15px; font: inherit; font-weight: 650; display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: var(--oms-button-height, 42px); }
+.oms-button--primary { background: var(--oms-accent); color: white; }
+.oms-button--primary:hover { background: var(--oms-accent-hover); }
+.oms-button--secondary { background: var(--oms-paper); border-color: var(--oms-line); color: var(--oms-ink); }
+.oms-button--secondary:hover { background: var(--oms-wash); }
+.oms-button--danger { color: var(--oms-error-ink); background: var(--oms-error-paper); border-color: var(--oms-error-line); }
+.oms-button:disabled { opacity: .5; cursor: not-allowed; }
+.oms-notice { padding: 13px 16px; border: 1px solid var(--oms-notice-line); background: var(--oms-notice-paper); border-radius: 8px; margin: 12px 0; overflow-wrap: anywhere; }
+.oms-notice--error { background: var(--oms-error-paper); color: var(--oms-error-ink); border-color: var(--oms-error-line); }
+.oms-empty { padding: 35px 20px; border: 1px dashed var(--oms-line); border-radius: 8px; text-align: center; color: var(--oms-muted); }
+.oms-empty h3 { color: var(--oms-ink); margin-bottom: 6px; }
+.oms-empty p { margin-bottom: 0; }
+.oms-badge { border: 1px solid var(--oms-line); border-radius: 50px; padding: 3px 9px; font-size: 12px; white-space: nowrap; color: var(--oms-muted); background: var(--oms-wash); }
+.oms-manual-heading { display: flex; gap: 12px; justify-content: space-between; align-items: start; }
+.oms-manual-heading h2 { font-size: 19px; margin: 0 0 16px; }
+.oms-manual-provenance { display: flex; gap: 12px; flex-wrap: wrap; color: var(--oms-muted); font-size: 11px; overflow-wrap: anywhere; margin: 10px 0; }
+.oms-manual-source { margin: 22px 0; border-left: 3px solid var(--oms-line); padding: 12px 18px; background: var(--oms-wash); white-space: pre-wrap; }
+.oms-manual-help { color: var(--oms-muted); font-size: 13px; }
+.oms-manual-field { display: grid; gap: 7px; font-size: 13px; margin-bottom: 18px; }
+.oms-manual-field textarea { box-sizing: border-box; width: 100%; padding: 10px 12px; border: 1px solid var(--oms-line); background: var(--oms-paper); color: var(--oms-ink); border-radius: 7px; resize: vertical; font: inherit; line-height: 1.55; }
+.oms-manual-card fieldset { border: 1px solid var(--oms-line); border-radius: 8px; margin: 24px 0; padding: 18px; }
+.oms-manual-card legend { padding: 0 6px; font-size: 13px; font-weight: 600; }
+.oms-manual-targets { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.oms-manual-targets label, .oms-manual-match { display: flex; gap: 9px; align-items: baseline; margin: 0; font-size: 13px; font-weight: 400; }
+.oms-manual-match { margin: 12px 0; }
+.oms-manual-targets input, .oms-manual-match input { width: auto; accent-color: var(--oms-accent); }
+.oms-manual-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.oms-amendment { margin: 24px 0; min-width: 0; }
+.oms-amendment { container-type: inline-size; }
+.oms-amendment__heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.oms-amendment__heading h3 { margin: 0; font-size: 20px; }
+.oms-amendment__workspace { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 22px; align-items: start; }
+.oms-amendment__main { min-width: 0; }
+.oms-amendment__context { position: sticky; top: 20px; padding: 18px; background: var(--oms-wash); border: 1px solid var(--oms-line); border-radius: 10px; overflow-wrap: anywhere; font-size: 14px; line-height: 1.6; }
+.oms-amendment__context h3 { margin: 0 0 12px; }
+.oms-amendment__context blockquote { margin: 0; white-space: pre-wrap; font-weight: 600; }
+.oms-amendment__context button { width: 100%; margin-top: 10px; }
+.oms-amendment__save { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 16px 0; font-size: 12px; }
+.oms-amendment__context summary { cursor: pointer; }
+.oms-skill-picker__results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 10px; margin-bottom: 12px; }
+.oms-skill-picker__results button { display: grid; align-content: start; text-align: left; gap: 6px; padding: 16px; white-space: normal; }
+.oms-skill-picker__results span { color: var(--oms-muted); font-size: 12px; font-weight: 400; }
+.oms-text-editor { min-width: 0; border: 1px solid var(--oms-line); border-radius: 10px; overflow: hidden; background: var(--oms-paper); }
+.oms-text-editor__toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; padding: 14px; border-bottom: 1px solid var(--oms-line); background: var(--oms-wash); }
+.oms-text-editor__toolbar label { flex: 1 1 220px; display: grid; gap: 6px; font-size: 12px; }
+.oms-text-editor__toolbar input { min-width: 0; width: 100%; box-sizing: border-box; }
+.oms-text-editor__toolbar > span { align-self: center; font-size: 12px; }
+.oms-text-editor__toolbar button { font-size: 12px; }
+.oms-text-editor__document { max-height: 72vh; overflow: auto; padding: 22px clamp(12px, 3vw, 34px); scrollbar-gutter: stable; }
+.oms-text-editor__passage { position: relative; border-left: 3px solid transparent; margin: 4px 0; padding-left: 10px; overflow-wrap: anywhere; }
+.oms-text-editor__passage.is-changed { border-left-color: var(--oms-accent); }
+.oms-text-editor__passage.is-match { background: var(--oms-wash); }
+.oms-text-editor__passage textarea { display: block; box-sizing: border-box; width: 100%; min-width: 0; min-height: 0; padding: 8px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--oms-ink); font: 14px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; overflow-y: hidden; }
+.oms-text-editor__passage textarea:hover { border-color: var(--oms-line); }
+.oms-text-editor__passage textarea:focus { border-color: var(--oms-accent); outline: 2px solid var(--oms-accent); outline-offset: 1px; background: var(--oms-paper); }
+.oms-text-editor__rule { display: flex; align-items: start; }
+.oms-text-editor__bullet { padding-top: 9px; }
+.oms-text-editor__change { display: flex; align-items: center; justify-content: end; gap: 10px; color: var(--oms-muted); font-size: 11px; padding-bottom: 4px; }
+.oms-text-editor__change button { font-size: 11px; padding: 3px 8px; }
+@container (max-width: 850px) {
+  .oms-amendment__workspace { display: flex; flex-direction: column-reverse; }
+  .oms-amendment__main, .oms-amendment__context { box-sizing: border-box; width: 100%; }
+  .oms-amendment__context { position: static; }
+}
+.oms-amendment-preview { margin-top: 24px; border-top: 1px solid var(--oms-line); padding-top: 18px; }
+.oms-amendment-preview .oms-line-diff { margin: 12px 0; }
+.oms-manual-placement { margin: 12px 0; }
+.oms-manual-placement > div { padding: 18px 0; }
+.oms-placement-preview { max-height: 350px; overflow: auto; margin: 12px 0; border: 1px solid var(--oms-line); border-radius: 8px; padding: 16px; }
+.oms-placement-added { border-left: 3px solid var(--oms-accent); padding: 8px 14px; background: var(--oms-wash); }
+.oms-manual-suggestions { margin-bottom: 20px; }
+.oms-manual-suggestions h3, .oms-manual-comparison h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
+.oms-manual-suggestions ol { padding-left: 22px; }
+.oms-manual-suggestions .oms-manual-help { display: block; margin-top: 3px; }
+.oms-manual-candidate { border-top: 1px solid var(--oms-line); padding: 12px 0; overflow-wrap: anywhere; }
+.oms-manual-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.oms-manual-comparison > div { min-width: 0; padding: 12px; background: var(--oms-wash); border-radius: 8px; }
+.oms-manual-comparison p { margin: 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+.oms-manual-confirmation { padding: 12px; border: 1px solid var(--oms-line); border-radius: 8px; }
+@media (max-width: 650px) { .oms-manual-comparison { grid-template-columns: minmax(0, 1fr); } }
+
+/* The product marks are shared by every OMS edition. */
+.oms-product { display: inline-flex; align-items: center; gap: 12px; }
+.oms-product--image { flex-direction: column; align-items: flex-start; gap: 5px; }
+.oms-product__logo { display: block; width: 144px; max-width: 100%; height: auto; object-fit: contain; }
+:is(.oms-product__mark, .gx-brand__mark) {
+  width: 30px; height: 30px; border-radius: 9px; position: relative;
+  background: radial-gradient(circle at 32% 28%, var(--accent), var(--primary) 70%);
+  box-shadow: 0 0 22px -4px rgba(0, 222, 232, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+}
+:is(.oms-product__mark, .gx-brand__mark)::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background:
+    radial-gradient(3px 3px at 30% 32%, #04181b 50%, transparent 52%),
+    radial-gradient(3px 3px at 70% 40%, #04181b 50%, transparent 52%),
+    radial-gradient(3px 3px at 52% 72%, #04181b 50%, transparent 52%);
+}
+:is(.oms-product__name, .gx-brand__name) { font-family: var(--font-head); font-size: 15px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; }
+:is(.oms-product__name, .gx-brand__name) b { color: var(--accent); font-weight: 700; }
+:is(.oms-product__sub, .gx-brand__sub) { display: block; font-family: var(--font-body); font-size: 9.5px; font-weight: 500; letter-spacing: 0.32em; text-transform: uppercase; color: var(--text-dim); margin-top: 2px; }
+
+/* The InoGen credit. Styled once here and used by both surfaces: portal.css
+   positions it for the rail and globals.css positions it for the console, but
+   neither restates what it looks like. */
+:is(.oms-brand, .gx-brand) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: var(--text-dim);
+  /* Quiet at rest. This is a credit, not a call to action, and it sits beside
+     controls people are actually trying to hit. */
+  opacity: 0.62;
+  transition: opacity 120ms ease;
+}
+
+:is(.oms-brand, .gx-brand):hover,
+:is(.oms-brand, .gx-brand):focus-visible {
+  opacity: 1;
+}
+
+:is(.oms-brand__logo, .gx-brand__logo) {
+  display: block;
+  width: 96px;
+  height: auto;
+}
+
+:is(.oms-brand__lines, .gx-brand__lines) {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+:is(.oms-brand__line, .gx-brand__line) {
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+:is(.oms-brand__line--url, .gx-brand__line--url) {
+  /* The one saturated pixel in the block, so the address reads as the thing
+     you can go to and the sentence above it reads as a statement. */
+  color: var(--accent);
+}
+
+
+/* The same document and review typography, with legacy class aliases. */
+:is(.oms-prose--document, .gx-prose) { color: var(--text-2); font-size: 13.5px; line-height: 1.65; }
+:is(.oms-prose--document, .gx-prose) h1, :is(.oms-prose--document, .gx-prose) h2, :is(.oms-prose--document, .gx-prose) h3 { color: var(--text); font-family: var(--font-head); margin: 1.4em 0 0.5em; line-height: 1.25; }
+:is(.oms-prose--document, .gx-prose) h1 { font-size: 20px; } :is(.oms-prose--document, .gx-prose) h2 { font-size: 16px; } :is(.oms-prose--document, .gx-prose) h3 { font-size: 14px; }
+:is(.oms-prose--document, .gx-prose) h1:first-child, :is(.oms-prose--document, .gx-prose) h2:first-child { margin-top: 0; }
+:is(.oms-prose--document, .gx-prose) p { margin: 0.7em 0; }
+:is(.oms-prose--document, .gx-prose) ul, :is(.oms-prose--document, .gx-prose) ol { padding-left: 1.3em; margin: 0.6em 0; }
+:is(.oms-prose--document, .gx-prose) li { margin: 0.3em 0; }
+:is(.oms-prose--document, .gx-prose) a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+:is(.oms-prose--document, .gx-prose) code { font-family: var(--font-mono); font-size: 0.86em; background: var(--surface-3); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; color: #9be8ee; }
+:is(.oms-prose--document, .gx-prose) pre { background: #0c0f17; border: 1px solid var(--border-2); border-radius: var(--radius-sm); padding: 13px 15px; overflow: auto; }
+:is(.oms-prose--document, .gx-prose) pre code { background: none; border: 0; padding: 0; color: var(--text-2); }
+:is(.oms-prose--document, .gx-prose) hr { border: 0; border-top: 1px solid var(--border-2); margin: 1.4em 0; }
+:is(.oms-prose--document, .gx-prose) blockquote { border-left: 2px solid var(--accent-line); margin: 0.8em 0; padding: 0.2em 0 0.2em 1em; color: var(--text-dim); }
+:is(.oms-prose--document, .gx-prose) table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 12.5px; }
+:is(.oms-prose--document, .gx-prose) th, :is(.oms-prose--document, .gx-prose) td { border: 1px solid var(--border-2); padding: 6px 10px; text-align: left; }
+:is(.oms-prose--document, .gx-prose) th { background: var(--surface-2); }
+/* The document holds its own wide content in rather than leaning on the pane
+   outside it, which stops being a scroll container the moment the Edit tab's
+   review column opens (see `.gx-workbench__detail:has(...)` above). A table
+   cannot be given a scroller of its own to make up for it: `overflow` does
+   not apply to a table box, and the `width: 100%` above is beaten by the
+   min-content width of one unbroken token - a URL, a hash, a skill id, all
+   ordinary content for these documents. Measured in Chromium at 1600px wide
+   with a 400-character token in a cell: the table ran 1785px past the
+   document column, slid under the review panel and pulled the whole page
+   into a sideways scroll of 1162px. `anywhere` rather than `break-word`
+   because only `anywhere` counts towards the intrinsic width, and the
+   intrinsic width is what a table sizes its columns by. Inherited, so the
+   same break reaches a long token in a paragraph or a list. */
+:is(.oms-prose--document, .gx-prose) { overflow-wrap: anywhere; }
+/* The other box the pane used to hold in, and the one a soft wrap cannot help:
+   an image has no wrap opportunity, and nothing else in this stylesheet gives
+   one a width. Before the review column opened, an oversized image was quietly
+   contained by `.gx-workbench__detail`'s own scrollbar; with that gone it would
+   run past the document column and under the sticky panel, which is the same
+   failure the wrap above fixes for tables. `height: auto` so the constraint
+   scales the image rather than squashing it. Code blocks need no equivalent:
+   `:is(.oms-prose--document, .gx-prose) pre` above already carries `overflow: auto`. */
+:is(.oms-prose--document, .gx-prose) img { max-width: 100%; height: auto; }
+
+/* A skill's own words, rendered as the markdown they are. Sized down rather
+   than restyled: an `###` inside a review card must not outshout the card's own
+   headline. Capped in height so a long section cannot push the decision buttons
+   off screen. */
+:is(.oms-prose--review, .gx-review__prose-md) {
+  font-size: 12px; line-height: 1.55; color: var(--text-2);
+  max-height: 280px; overflow-y: auto; overflow-wrap: break-word;
+}
+:is(.oms-prose--review, .gx-review__prose-md) > :first-child { margin-top: 0; }
+:is(.oms-prose--review, .gx-review__prose-md) > :last-child { margin-bottom: 0; }
+:is(.oms-prose--review, .gx-review__prose-md) p { margin: 0 0 8px; }
+:is(.oms-prose--review, .gx-review__prose-md) h1,
+:is(.oms-prose--review, .gx-review__prose-md) h2,
+:is(.oms-prose--review, .gx-review__prose-md) h3,
+:is(.oms-prose--review, .gx-review__prose-md) h4 {
+  margin: 12px 0 6px; font-family: var(--font-head); font-weight: 600;
+  font-size: 12px; letter-spacing: 0.02em; color: var(--text);
+}
+:is(.oms-prose--review, .gx-review__prose-md) ul,
+:is(.oms-prose--review, .gx-review__prose-md) ol { margin: 0 0 8px; padding-left: 18px; }
+:is(.oms-prose--review, .gx-review__prose-md) li { margin: 2px 0; }
+:is(.oms-prose--review, .gx-review__prose-md) code {
+  font-family: var(--font-mono); font-size: 11px;
+  padding: 1px 4px; border-radius: 3px; background: rgba(255, 255, 255, 0.06);
+}
+:is(.oms-prose--review, .gx-review__prose-md) pre {
+  margin: 0 0 8px; padding: 8px 10px; overflow-x: auto;
+  background: #0c0f17; border: 1px solid var(--border-2); border-radius: var(--radius-sm);
+}
+:is(.oms-prose--review, .gx-review__prose-md) pre code { background: none; padding: 0; }
+:is(.oms-prose--review, .gx-review__prose-md) blockquote {
+  margin: 0 0 8px; padding-left: 10px; border-left: 2px solid var(--border-2);
+  color: var(--text-dim);
+}
+/* Live data: one copywriting section is a GFM table. */
+:is(.oms-prose--review, .gx-review__prose-md) table { border-collapse: collapse; font-size: 11px; margin: 0 0 8px; }
+:is(.oms-prose--review, .gx-review__prose-md) th,
+:is(.oms-prose--review, .gx-review__prose-md) td {
+  border: 1px solid var(--border-2); padding: 4px 7px; text-align: left; vertical-align: top;
+}
+:is(.oms-prose--review, .gx-review__prose-md) th { color: var(--text); font-weight: 600; }
+:is(.oms-prose--review, .gx-review__prose-md) hr { border: 0; border-top: 1px solid var(--border-2); margin: 10px 0; }
+
+
+.oms-prose__inert { overflow-wrap: anywhere; color: var(--text-dim); }
+.oms-prose__href { font-family: var(--font-mono); font-size: 0.9em; }
+
+/* Published SKILL.md metadata, shared with the paid preview and history panes. */
+:is(.oms-frontmatter, .gx-frontmatter) {
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+}
+:is(.oms-frontmatter__row, .gx-frontmatter__row) { display: flex; flex-direction: column; gap: 2px; }
+:is(.oms-frontmatter__key, .gx-frontmatter__key) {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+:is(.oms-frontmatter__value, .gx-frontmatter__value) { margin: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.55; }
+
+/* Task-list controls are prose, not full-width form fields. */
+.oms-prose .contains-task-list { padding-left: 0; list-style: none; }
+.oms-prose .task-list-item { list-style: none; }
+.oms-prose input[type="checkbox"] { display: inline-block; width: auto; min-width: 0; height: auto; margin: 0 .5em 0 0; padding: 0; vertical-align: middle; accent-color: var(--accent); }
+/* Editable documents and history use the same ordering supplied by the publisher. */
+.oms-skill-delete { border: 1px solid var(--risk); border-radius: var(--radius-sm); background: var(--surface); padding: 20px; margin-block: 20px; }
+.oms-skill-delete h3 { margin: 0 0 12px; font-size: 16px; overflow-wrap: anywhere; }
+.oms-skill-delete p { margin: 0 0 12px; font-size: 13px; line-height: 1.6; color: var(--text-2); }
+.oms-skill-delete label { display: grid; gap: 8px; font-size: 13px; }
+.oms-skill-delete input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font: inherit; }
+.oms-skill-delete .oms-skill-delete__warning { color: var(--risk); }
+.oms-skill-delete__actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.oms-line-diff {
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.55;
+  background: #0c0f17; border: 1px solid var(--border-2); border-radius: var(--radius-sm);
+  overflow: auto; margin-bottom: 13px; min-width: 0;
+}
+.oms-line-diff__line { display: flex; gap: 2px; padding: 1px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.oms-line-diff__gutter { flex: 0 0 18px; text-align: center; color: var(--text-faint); user-select: none; }
+.oms-line-diff__text { flex: 1 1 auto; min-width: 0; padding-right: 10px; }
+.oms-line-diff__line--same { color: var(--text-dim); }
+.oms-line-diff__line--add { background: rgba(76, 195, 138, 0.12); color: #b6f0d2; }
+.oms-line-diff__line--add .oms-line-diff__gutter { color: var(--ok); }
+.oms-line-diff__line--del { background: rgba(239, 91, 91, 0.1); color: #f6c2c2; }
+.oms-line-diff__line--del .oms-line-diff__gutter { color: var(--risk); }
+.oms-document-parts { max-width: 1000px; margin-inline: auto; }
+.oms-document-part { padding: 16px 0; border-bottom: 1px solid var(--border); }
+.oms-document-part:last-child { border-bottom: 0; }
+.oms-document-part > label { text-transform: capitalize; }
+.oms-document-part textarea { text-transform: none; overflow-y: hidden; }
+.oms-version-change { border-top: 1px solid var(--border); padding: 22px 0; }
+.oms-version-change header { display: flex; gap: 12px; flex-wrap: wrap; justify-content: space-between; margin-bottom: 18px; }
+.oms-version-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+.oms-version-columns > div { background: var(--bg); padding: 16px; border-radius: 6px; border: 1px solid var(--border); }
+.oms-version-columns h3 { color: var(--text-dim); font-size: 11px; margin: 0 0 12px; }
+.oms-version-columns pre { margin: 0; font: 12px/1.8 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.oms-version-text--saved .oms-version-text__line.is-changed { background: rgba(239, 91, 91, .08); }
+.oms-version-text--current .oms-version-text__line.is-changed { background: rgba(76, 195, 138, .08); }
+.oms-version-text :is(del, ins) { padding: 1px 2px; border-radius: 2px; text-decoration: none; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.oms-version-text del { color: #ffd4d4; background: rgba(239, 91, 91, .28); box-shadow: 0 0 0 1px rgba(239, 91, 91, .65); }
+.oms-version-text ins { color: #c6f8df; background: rgba(76, 195, 138, .28); box-shadow: 0 0 0 1px rgba(76, 195, 138, .65); }
+.oms-version-comparison--detailed { min-width: 0; background: #0c0f17; border: 1px solid var(--border-2); border-radius: var(--radius-sm); overflow: hidden; }
+.oms-version-comparison--detailed .oms-line-diff { border: 0; border-radius: 0; margin: 0; }
+.oms-version-comparison--detailed .oms-version-change { border: 0; padding: 0; }
+.oms-version-comparison--detailed .oms-version-change header { margin: 0; padding: 12px; background: var(--surface-2); border-block: 1px solid var(--border); }
+.oms-version-comparison--detailed .oms-version-change > p { margin: 0; padding: 8px 12px; }
+@media (max-width: 720px) { .oms-version-columns { grid-template-columns: minmax(0, 1fr); } }
+
+/* Correction review: source evidence first, then one clearly selected mode. */
+.oms-correction-context { margin-bottom: 26px; }
+.oms-correction-context__quote { background: var(--oms-wash); border: 1px solid var(--oms-line); border-radius: 10px; padding: 22px 24px; }
+.oms-correction-context__quote h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--oms-muted); margin: 0 0 12px; }
+.oms-correction-context__quote blockquote { font-size: clamp(18px, 1.5vw, 23px); line-height: 1.55; font-weight: 500; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.oms-correction-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 18px 0; }
+.oms-correction-facts dt { font-size: 11px; color: var(--oms-muted); margin-bottom: 5px; }
+.oms-correction-facts dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.oms-correction-evidence summary { cursor: pointer; font-size: 12px; color: var(--oms-muted); }
+.oms-correction-evidence pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 13px; line-height: 1.6; }
+.oms-correction-evidence h3 { font-size: 13px; }
+.oms-review-modes > h3 { font-size: 13px; margin: 0 0 10px; }
+.oms-mode-tabs { display: flex; border-bottom: 1px solid var(--oms-line); gap: 6px; }
+.oms-mode-tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 6px 6px 0 0; padding: 14px 18px; background: transparent; color: var(--oms-muted); font: inherit; font-size: 14px; cursor: pointer; }
+.oms-mode-tabs button[aria-selected="true"] { color: var(--oms-ink); background: var(--oms-wash); border-bottom-color: var(--oms-accent); font-weight: 600; }
+.oms-mode-tabs button:focus-visible, .oms-segmented button:focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 2px; }
+.oms-review-reject { border-top: 1px solid var(--oms-line); padding-top: 18px; margin-top: 24px; }
+.oms-target-skills { padding: 16px; border: 1px solid var(--oms-line); border-radius: 8px; margin: 22px 0; }
+.oms-target-skills__summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.oms-target-skills__summary h3 { font-size: 13px; margin: 0 0 5px; }
+.oms-target-skills__summary p { font-size: 14px; margin: 0; }
+.oms-target-skills__choices { margin-top: 18px; }
+.oms-target-skills__choices .oms-manual-help { display: block; margin-top: 3px; }
+.oms-target-skills__choices .oms-manual-match { padding: 8px 0; }
+.oms-rule-comparisons { margin: 24px 0; }
+.oms-rule-comparisons > h3 { font-size: 16px; margin-bottom: 8px; }
+.oms-manual-candidate { margin: 12px 0; padding: 18px; border: 1px solid var(--oms-line); border-radius: 8px; }
+.oms-manual-candidate blockquote { margin: 16px 0; white-space: pre-wrap; line-height: 1.6; }
+.oms-rule-comparison__heading { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.oms-match-context { margin: 16px 0; padding: 16px; border: 1px solid var(--oms-line); border-radius: 8px; background: var(--oms-wash); }
+.oms-match-context__skill { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+.oms-match-context__location { font-size: 13px; line-height: 1.6; margin: 0 0 14px; }
+.oms-match-context__label { display: block; color: var(--oms-muted); font-size: 11px; margin-bottom: 5px; }
+.oms-match-context .oms-prose { font-size: 14px; line-height: 1.6; }
+.oms-match-context .oms-prose > :first-child { margin-top: 0; }
+.oms-match-context .oms-prose > :last-child { margin-bottom: 0; }
+.oms-match-context__rule { padding: 12px; border: 1px solid var(--oms-accent); background: var(--oms-paper); border-radius: 6px; }
+.oms-match-context__section { margin-top: 12px; }
+.oms-match-context__section summary { cursor: pointer; font-size: 13px; }
+.oms-match-context__full { max-height: 380px; overflow: auto; margin-top: 12px; padding: 12px; border: 1px solid var(--oms-line); border-radius: 6px; }
+.oms-match-context__full > div { margin-block: 8px; }
+.oms-match-context__full .oms-prose :is(h1, h2, h3, h4) { font-size: 15px; }
+.oms-replacement-preview { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--oms-line); }
+.oms-manual-placement { padding: 16px; background: var(--oms-wash); border-radius: 8px; }
+.oms-placement-preview { max-height: 460px; overflow: auto; padding: 14px; margin-block: 12px; border: 1px solid var(--oms-line); border-radius: 8px; }
+.oms-placement-existing { padding: 4px 12px; }
+.oms-insertion-slot { padding: 6px 0; }
+.oms-insertion-slot > button { width: 100%; border-style: dashed; font-size: 12px; }
+.oms-insertion-slot > button[aria-pressed="true"] { border-style: solid; border-color: var(--oms-accent); }
+.oms-placement-added { background: var(--oms-paper); padding: 12px; border: 1px solid var(--oms-accent); border-radius: 6px; margin-bottom: 6px; }
+.oms-amendment__workspace { display: block; }
+.oms-text-editor__viewbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--oms-line); }
+.oms-segmented { display: inline-flex; padding: 3px; border: 1px solid var(--oms-line); border-radius: 7px; background: var(--oms-paper); }
+.oms-segmented button { font: inherit; font-size: 12px; padding: 6px 12px; background: transparent; color: var(--oms-muted); border: 0; border-radius: 4px; cursor: pointer; }
+.oms-segmented button[aria-pressed="true"] { color: var(--oms-ink); background: var(--oms-wash); font-weight: 600; }
+.oms-text-editor__field { flex: 1; min-width: 0; position: relative; }
+.oms-text-editor__highlight { position: absolute; inset: 0; z-index: 1; pointer-events: none; white-space: pre-wrap; overflow-wrap: break-word; color: transparent; padding: 8px; border: 1px solid transparent; box-sizing: border-box; font: 14px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; overflow: hidden; }
+.oms-text-editor mark { color: var(--oms-ink); background: color-mix(in srgb, var(--oms-accent) 32%, transparent); border-radius: 2px; }
+.oms-text-editor__highlight mark { color: transparent; }
+.oms-text-editor__highlight mark.is-active { background: color-mix(in srgb, var(--oms-accent) 48%, transparent); outline: 1px solid var(--oms-accent); }
+.oms-text-editor__document.has-search::before, .oms-text-editor__document.has-search::after { content: ""; display: block; height: 36vh; }
+.oms-text-editor__raw { font: 14px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; margin: 12px 0; }
+@media (max-width: 650px) {
+  .oms-correction-facts { grid-template-columns: 1fr; gap: 10px; }
+  .oms-correction-context__quote { padding: 16px; }
+  .oms-mode-tabs button { flex: 1; padding: 12px 10px; font-size: 12px; }
+  .oms-target-skills__summary { align-items: start; flex-wrap: wrap; }
+}

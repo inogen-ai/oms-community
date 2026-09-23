@@ -1,0 +1,11 @@
+@inogen/oms-ui-core
+Copyright 2026 INOGEN AI UK LTD
+
+This package contains edition-neutral UI components, the shared OMS theme,
+product marks, Markdown rendering and the manual decision card.
+INOGEN AI UK LTD makes its source available under the Sustainable Use License,
+Version 1.0 (SUL-1.0), as described in LICENSE. SUL-1.0 is not an open source
+licence.
+
+The OMS and InoGen names and marks are not licensed by this source-code licence.
+Dependencies retain their own copyright and licence notices.

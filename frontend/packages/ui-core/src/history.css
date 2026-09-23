@@ -1,0 +1,15 @@
+.oms-history__summary { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.oms-history__sentence { font-size: 12.5px; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
+.oms-history__when { font-size: 11px; color: var(--text-dim); }
+.oms-history__counts { font-size: 11px; color: var(--text-faint); }
+.oms-history__timeline { list-style: none; padding: 0; margin: 0; }
+.oms-history__timeline > li + li { border-top: 1px solid var(--border); }
+.oms-history__timeline summary { display: flex; align-items: baseline; gap: 8px; cursor: pointer; padding: 14px 0; }
+.oms-history__timeline summary::before { content: '›'; color: var(--accent); font-weight: 700; }
+.oms-history__timeline details[open] > summary::before { transform: rotate(90deg); }
+.oms-history__timeline summary::-webkit-details-marker { display: none; }
+.oms-history__detail { margin: 0 0 12px 14px; font-size: 12px; overflow-wrap: anywhere; }
+.oms-history__metadata { margin: 0 0 16px 14px; font-size: 11px; }
+.oms-history__metadata > div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 8px; margin-top: 6px; }
+.oms-history__metadata dt, .oms-history__empty { color: var(--text-dim); }
+.oms-history__metadata dd { margin: 0; overflow-wrap: anywhere; }

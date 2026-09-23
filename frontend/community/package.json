@@ -1,0 +1,31 @@
+{
+  "name": "@inogen/oms-community",
+  "version": "1.2.0",
+  "private": true,
+  "scripts": {
+    "dev": "NEXT_PUBLIC_OMS_API_URL=http://127.0.0.1:4317 next dev --hostname 127.0.0.1 --port 4318",
+    "build": "next build --webpack",
+    "start": "node scripts/serve.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test ../packages/client/test/*.test.mjs test/*.test.mjs",
+    "e2e": "playwright test",
+    "e2e:real": "playwright test --config playwright.real.config.ts"
+  },
+  "dependencies": {
+    "@inogen/oms-client": "file:../packages/client",
+    "@inogen/oms-ui-core": "file:../packages/ui-core",
+    "next": "16.3.4",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "@fontsource-variable/inter": "^5.2.8",
+    "@fontsource/open-sans": "^5.2.7",
+    "lucide-react": "^1.17.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0",
+    "@types/node": "22.18.12",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3"
+  }
+}

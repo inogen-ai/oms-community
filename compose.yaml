@@ -1,0 +1,111 @@
+name: oms-community-local
+
+services:
+  publication-permissions:
+    build:
+      context: .
+      target: api
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ['if [ "$${OMS_PUBLISH_SET_ACL}" = 1 ]; then owner=$$(stat -c %u /published); setfacl -m "u:10001:rwx,d:u:10001:rwx,d:u:$${owner}:rwx" /published; fi']
+    environment:
+      OMS_PUBLISH_SET_ACL: ${OMS_PUBLISH_SET_ACL:-0}
+    volumes:
+      - type: bind
+        source: ${OMS_PUBLISH_HOST_ROOT:-./published}
+        target: /published
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - FOWNER
+
+  neo4j:
+    image: neo4j:5.20@sha256:52d3dec8d45585b21edeca8517d752b2512e52aa94f80fc36a5788c88c95f8e4
+    environment:
+      NEO4J_AUTH: neo4j/${OMS_NEO4J_PASSWORD:?Run ./run-local.sh to create a local password}
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    volumes:
+      - graph:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#neo4j/}\" 'RETURN 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      target: api
+    environment:
+      OMS_NEO4J_URI: bolt://neo4j:7687
+      OMS_NEO4J_USER: neo4j
+      OMS_NEO4J_PASSWORD: ${OMS_NEO4J_PASSWORD:?Run ./run-local.sh first}
+      OMS_DATA_DIR: /data
+      OMS_PUBLISH_ROOT: /published
+      OMS_PUBLISH_HOST_ROOT: ${OMS_PUBLISH_HOST_ROOT:-}
+      OMS_PUBLISH_HOST_HOME: ${OMS_PUBLISH_HOST_HOME:-}
+      OMS_LOCAL_LAUNCHER_DIR: ${OMS_LOCAL_LAUNCHER_DIR:-}
+      OMS_COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
+      OMS_PUBLISH_IN_CONTAINER: "1"
+      OMS_TENANT: acme
+      # The address published bundles tell agents to post corrections to.
+      # Compose only forwards variables named here, so this line is what lets
+      # .env.local point a shared deployment at its real address. Set it to an
+      # empty string to publish bundles with no contribution front door.
+      OMS_PUBLIC_URL: ${OMS_PUBLIC_URL-http://localhost:4317}
+      OMS_ACKNOWLEDGE_NETWORK_EXPOSURE: "1"
+      OMS_ALLOWED_ORIGINS: http://localhost:4318,http://127.0.0.1:4318
+    ports:
+      - "127.0.0.1:4317:4317"
+    volumes:
+      - workspace:/data
+      - git-config:/home/oms
+      - type: bind
+        source: ${OMS_PUBLISH_HOST_ROOT:-./published}
+        target: /published
+    depends_on:
+      publication-permissions:
+        condition: service_completed_successfully
+      neo4j:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-I", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4317/api/health', timeout=3).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: .
+      target: ui
+    ports:
+      - "127.0.0.1:4318:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  graph:
+  workspace:
+  git-config:

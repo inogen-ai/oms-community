@@ -1,0 +1,113 @@
+/* OMS Graph Explorer - design system, derived from the Inogen website palette
+   (deep-space dark, teal/cyan accent, barely-visible borders, Inter + Open Sans). */
+
+:root {
+  /* Edition-neutral primitives use this application's existing theme. */
+  --oms-ink: var(--text);
+  --oms-muted: var(--text-dim);
+  --oms-line: var(--border-2);
+  --oms-paper: var(--surface);
+  --oms-accent: var(--action);
+  --oms-accent-hover: var(--action-hover);
+  --oms-wash: var(--surface-2);
+  --oms-button-height: 34px;
+  --oms-notice-line: var(--accent-line);
+  --oms-notice-paper: var(--accent-soft);
+  --oms-error-paper: rgba(239, 91, 91, 0.08);
+  --oms-error-ink: var(--risk);
+  --oms-error-line: rgba(239, 91, 91, 0.3);
+  --bg: #0a0b11;
+  --surface: #111420;
+  --surface-2: #141726;
+  --surface-3: #181b28;
+  --muted: #282c3a;
+
+  --text: #ffffff;
+  --text-2: #c5cbd8;
+  --text-dim: #828b9d;
+  --text-faint: rgba(255, 255, 255, 0.38);
+
+  --primary: #00adb5;
+  --accent: #00dee8;
+  --accent-soft: rgba(0, 222, 232, 0.12);
+  --accent-line: rgba(0, 222, 232, 0.4);
+  --accent-ink: #04181b;
+
+  /* The fill of the one filled button on a screen, and it is a separate token
+     from --accent on purpose.
+
+     --accent is ink: a link, a focus ring, a hairline, a 12px glyph. Ink is
+     read against the page for a moment and wants to be bright. A button is a
+     150px block of that same colour held on screen the whole time, and a fill
+     as bright as ink turns the loudest object on the page into whatever the
+     button happens to be. Ours was --primary, #00adb5: relative luminance
+     0.332, HSV saturation 1.000, near-black text on it, which measured 2.2
+     times brighter and twice as saturated as the button on the design bar's
+     own capture (#5a64bf: luminance 0.151, saturation 0.529, white text).
+
+     So this is the same teal taken down to the reference's own calibration,
+     hue held at 183 and saturation and luminance moved to meet it: HSV
+     saturation 0.533, relative luminance 0.149, which is 3.7:1 against the
+     page and 5.3:1 for the white text on it. The button is still the only
+     saturated fill on a screen; it has simply stopped being the brightest
+     thing on it.
+
+     Both surfaces read this one token. A portal button and a console button
+     are the same object in two places, and the last time they were calibrated
+     separately one of them drifted. */
+  --action: #387578;
+  --action-hover: #3e8285;
+  --action-ink: #ffffff;
+
+  --border: rgba(255, 255, 255, 0.06);
+  --border-2: rgba(255, 255, 255, 0.12);
+  --ring: #00dee8;
+
+  --ok: #4cc38a;
+  --warn: #f7b955;
+  --risk: #ef5b5b;
+
+  --radius: 10px;
+  --radius-sm: 7px;
+  --radius-lg: 14px;
+
+  --font-body: "Inter Variable", "Inter", system-ui, -apple-system, sans-serif;
+  --font-head: "Open Sans", var(--font-body);
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 28px 70px -24px rgba(0, 0, 0, 0.75);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; height: 100%; }
+
+body {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(900px 600px at 78% -10%, rgba(0, 173, 181, 0.1), transparent 60%),
+    radial-gradient(800px 500px at -5% 110%, rgba(0, 222, 232, 0.06), transparent 55%);
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 { font-family: var(--font-head); font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+a { color: var(--accent); text-decoration: none; }
+
+::selection { background: rgba(0, 222, 232, 0.22); color: #fff; }
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); background-clip: padding-box; }
+
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
+:focus:not(:focus-visible) { outline: none; }
+

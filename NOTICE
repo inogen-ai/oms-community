@@ -1,0 +1,14 @@
+OMS Community
+Copyright 2026 INOGEN AI UK LTD
+
+This candidate contains the shared OMS custody, manual learning and portable
+publication implementation. INOGEN AI UK LTD makes its source available under
+the Sustainable Use License, Version 1.0 (SUL-1.0), as described in LICENSE and
+LICENSING.md. SUL-1.0 is not an open source licence.
+
+The OMS and InoGen names and marks are not licensed by the source-code licence.
+See TRADEMARKS.md. Dependencies retain their own copyright and licence notices;
+the release report records their installed versions and available notices.
+
+The optional Docker Compose stack includes Neo4j Community Edition. Neo4j is
+distributed under its own licence, independently of this source repository.

@@ -1,0 +1,230 @@
+import { test, expect } from "@playwright/test";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const API = `http://127.0.0.1:${process.env.OMS_COMMUNITY_API_PORT || 4317}`;
+const root = process.env.OMS_BROWSER_TEST_DATA!;
+
+test("history overview highlights a single comma in a long passage", async ({ page }) => {
+  const name = "Punctuation History Guide";
+  const original = `### API design checks\n${Array.from({ length: 18 }, (_, index) => `- Check ${index + 1}: Keep the existing API guidance.`).join("\n")}\n- **Performance**: Evaluate caching, pagination and efficiency.\n- Retain the supporting examples.\n`;
+  const headers = { Origin: `http://127.0.0.1:${process.env.OMS_COMMUNITY_UI_PORT || 4318}` };
+  const imported = await page.request.post(`${API}/api/import/directory`, { headers, multipart: {
+    files: { name: "punctuation-history-guide/SKILL.md", mimeType: "text/markdown", buffer: Buffer.from(
+      `---\nname: ${name}\ndescription: Review precise changes.\n---\n\n# ${name}\n\n## Core Capabilities\n\n${original}`) },
+  } });
+  expect(imported.ok()).toBeTruthy();
+  const skills = await (await page.request.get(`${API}/api/skills`)).json();
+  const skill = skills.find((item: { name: string }) => item.name === name);
+  const path = `${API}/api/skills/${encodeURIComponent(skill.id)}`;
+  const document = await (await page.request.get(`${path}/document`)).json();
+  const versions = await (await page.request.get(`${path}/versions`)).json();
+  const part = document.parts.find((part: { kind: string; edit_text: string }) => part.kind === "prose" && part.edit_text.includes("pagination and"));
+  const currentText = part.edit_text.replace("pagination and", "pagination, and");
+  expect((await page.request.put(`${path}/document`, { headers, data: { revision: document.revision,
+    parts: [{ anchor: part.anchor, text: currentText }] } })).ok()).toBeTruthy();
+  await page.goto(`/skills/?skill=${encodeURIComponent(skill.id)}`);
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await page.locator(`[data-version-id="${versions[0].id}"]`).click();
+  const saved = page.getByLabel("Saved version text", { exact: true });
+  const current = page.getByLabel("Current document text", { exact: true });
+  await expect(current.locator("ins")).toHaveText(",");
+  await expect(saved.locator("del")).toHaveCount(0);
+  expect(await saved.textContent()).toBe(part.edit_text);
+  expect(await current.textContent()).toBe(currentText);
+  await expect(page.locator(".oms-version-text__line.is-changed")).toHaveCount(2);
+  await page.getByRole("checkbox", { name: "Restore prose", exact: true }).check();
+  const view = page.getByRole("group", { name: "Comparison view", exact: true });
+  await view.getByRole("button", { name: "Detailed", exact: true }).click();
+  await expect(page.locator(".oms-line-diff__line--del")).toContainText("pagination, and");
+  await view.getByRole("button", { name: "Overview", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "Restore prose", exact: true })).toBeChecked();
+  await expect(current.locator("ins")).toHaveText(",");
+  await page.screenshot({ path: "test-results/history-overview-comma.png", fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(current.locator("ins")).toBeVisible();
+});
+
+test("folder import, document editing, selective history, files and workspace mute work together", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  const folder = join(root, "browser-test-guide");
+  mkdirSync(join(folder, "references"), { recursive: true });
+  mkdirSync(join(folder, "scripts"), { recursive: true });
+  writeFileSync(join(folder, "SKILL.md"), "---\nname: Browser Test Guide\ndescription: Safely review release guidance.\ndomain: engineering\n---\n\n# Browser Test Guide\n\n## Process\n\nRead the release checklist carefully.\n\n## Rules\n\n* Verify release notes before shipping.\n");
+  writeFileSync(join(folder, "references", "notes.md"), "# Reference notes\n\nKeep the **release** evidence.\n");
+  writeFileSync(join(folder, "scripts", "check.sh"), "#!/bin/sh\nexit 42\n");
+  await page.goto("/skills");
+  await page.getByRole("button", { name: "Collapse sidebar" }).click();
+  await expect(page.locator(".workspace")).toHaveClass(/workspace--collapsed/);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Expand sidebar" })).toBeVisible();
+  await page.getByRole("button", { name: "Expand sidebar" }).click();
+  await page.getByRole("button", { name: "Upload skills", exact: true }).click();
+  await page.getByRole("button", { name: "Folder", exact: true }).click();
+  await page.getByLabel("Skill folder", { exact: true }).setInputFiles(folder);
+  await page.getByRole("button", { name: "Import package", exact: true }).click();
+  await expect(page.getByText("Skill package imported.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Hide upload", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Upload more skills" })).toBeVisible();
+  await page.getByRole("button", { name: /^Browser Test Guide/ }).click();
+  await expect(page.locator(".skill-overline")).toContainText("engineering");
+  await page.getByRole("tab", { name: /^Files/ }).click();
+  await page.getByRole("button", { name: "references/notes.md", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Reference notes", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "scripts/check.sh", exact: true }).click();
+  await expect(page.locator(".file-source")).toContainText("exit 42");
+  await page.getByRole("tab", { name: "Markdown source", exact: true }).click();
+  await expect(page.locator("pre.document")).toContainText("* Verify release notes before shipping.");
+
+  const skills = await (await page.request.get(`${API}/api/skills`)).json();
+  const skillId = encodeURIComponent(skills.find((skill: { name: string }) => skill.name === "Browser Test Guide").id);
+  const versions = await (await page.request.get(`${API}/api/skills/${skillId}/versions`)).json();
+  const before = versions[0].id;
+  await page.getByRole("tab", { name: "Edit document", exact: true }).click();
+  const prose = page.locator("textarea").filter({ hasText: "Read the release checklist carefully." });
+  const rule = page.locator("textarea").filter({ hasText: "Verify release notes before shipping." });
+  await prose.fill("Use the updated release checklist.");
+  await rule.fill("Verify release notes and test results before shipping.");
+  await page.getByRole("button", { name: "Save document", exact: true }).click();
+  await expect(page.getByText("Document saved.", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  const comparisonResponse = page.waitForResponse(response => response.url().endsWith(`/versions/${before}/compare`));
+  const comparisonRequests: string[] = [];
+  page.on("request", request => { if (request.url().endsWith("/compare")) comparisonRequests.push(request.url()); });
+  await page.locator(`[data-version-id="${before}"]`).click();
+  const comparison = await (await comparisonResponse).json();
+  const view = page.getByRole("group", { name: "Comparison view", exact: true });
+  await expect(view.getByRole("button", { name: "Overview", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("checkbox", { name: "Restore prose", exact: true }).check();
+  await view.getByRole("button", { name: "Detailed", exact: true }).click();
+  await expect(page.locator(".oms-line-diff__line--del").filter({ hasText: "Use the updated release checklist." })).toBeVisible();
+  await expect(page.locator(".oms-line-diff__line--add").filter({ hasText: "Read the release checklist carefully." })).toBeVisible();
+  await expect(page.locator(".oms-version-context").getByText("Browser Test Guide", { exact: true })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Restore prose", exact: true })).toBeChecked();
+  await view.getByRole("button", { name: "Overview", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "Restore prose", exact: true })).toBeChecked();
+  // Native buttons support keyboard activation as well as pointer input.
+  await view.getByRole("button", { name: "Detailed", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Read saved version", exact: true }).click();
+  await expect(page.getByRole("tabpanel").locator(".oms-prose")).toContainText("Read the release checklist carefully.");
+  await expect(view.getByRole("button", { name: "Detailed", exact: true })).toHaveAttribute("aria-pressed", "false");
+  await page.getByRole("button", { name: "Show changes", exact: true }).click();
+  await expect(view.getByRole("button", { name: "Detailed", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("checkbox", { name: "Restore prose", exact: true })).toBeChecked();
+  expect(comparisonRequests).toHaveLength(1);
+  await page.screenshot({ path: "test-results/community-history-detailed.png", fullPage: true });
+  const restoreRequest = page.waitForRequest(request => request.method() === "POST" && request.url().endsWith(`/versions/${before}/restore`));
+  await page.getByRole("button", { name: "Restore 1 selected change", exact: true }).click();
+  expect((await restoreRequest).postDataJSON()).toEqual({ revision: comparison.revision, anchors: [comparison.rows.find((row: { kind: string; state: string }) => row.kind === "prose" && row.state === "changed").anchor] });
+  await expect(page.getByText("Selected changes restored as a new version.", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
+  await expect(page.locator(".skill-document")).toContainText("Read the release checklist carefully.");
+  await expect(page.locator(".skill-document")).toContainText("Verify release notes and test results before shipping.");
+  await page.screenshot({ path: "test-results/community-todo-skill.png", fullPage: true });
+  await page.getByRole("button", { name: "All skills", exact: true }).click();
+  await page.getByRole("button", { name: "Mute Browser Test Guide", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Unmute Browser Test Guide", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Unmute Browser Test Guide", exact: true })).toBeVisible();
+  expect((await (await page.request.get(`${API}/api/skills/${skillId}`)).json()).publish_enabled).toBe(false);
+  await page.getByRole("button", { name: "Unmute Browser Test Guide", exact: true }).click();
+  expect(errors).toEqual([]);
+});
+
+test("skill deletion preserves other skills and drafts, and removes the published skill on the next publish", async ({ page }) => {
+  const create = async (name: string) => {
+    const response = await page.request.post(`${API}/api/skills`, { data: { name, description: "Deletion browser test", domain: "testing" } });
+    expect(response.status()).toBe(201);
+    return response.json();
+  };
+  const target = await create("Disposable deletion target");
+  const keeper = await create("Surviving deletion skill");
+  const correction = await (await page.request.post(`${API}/api/ingest`, { data: { correction: "Check the release notes before sharing an update." } })).json();
+  const decision = await page.request.post(`${API}/api/review/${correction.transaction_id}/decision`, { data: { action: "create", body: "Check the release notes before sharing an update.", skill_ids: [target.id, keeper.id] } });
+  expect(decision.ok()).toBe(true);
+  const published = await page.request.post(`${API}/api/publish`);
+  expect(published.ok()).toBe(true);
+  const output = (await published.json()).output;
+  expect(realpathSync(output)).toBe(realpathSync(join(root, "state/published")));
+  expect(existsSync(join(output, "skills", target.id, "SKILL.md"))).toBe(true);
+  await page.goto(`/skills?skill=${encodeURIComponent(keeper.id)}`);
+  await page.getByRole("button", { name: "Edit details", exact: true }).click();
+  await page.getByRole("textbox", { name: "Description", exact: true }).fill("Keep this other skill's unsaved draft.");
+  await page.getByRole("button", { name: "All skills", exact: true }).click();
+  await page.getByRole("button", { name: /^Disposable deletion target/ }).click();
+  await page.getByRole("button", { name: "Edit details", exact: true }).click();
+  await page.getByRole("textbox", { name: "Description", exact: true }).fill("Discard this deleted skill's draft.");
+  await page.getByRole("button", { name: "Delete skill", exact: true }).click();
+  await page.getByLabel("Type the skill name to confirm deletion").fill(target.name);
+  await page.getByRole("button", { name: "Delete permanently", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Your skills library", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Disposable deletion target/ })).toHaveCount(0);
+  await expect(page.getByText(/Unsaved edits in 1 skill/)).toBeVisible();
+  expect((await page.request.get(`${API}/api/skills/${target.id}`)).status()).toBe(404);
+  const remaining = await (await page.request.get(`${API}/api/skills/${keeper.id}`)).json();
+  expect(remaining.rules).toHaveLength(1);
+  expect(remaining.rules[0].transaction_ids).toContain(correction.transaction_id);
+  await page.getByRole("button", { name: /^Surviving deletion skill/ }).click();
+  await page.getByRole("button", { name: "Edit details", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Description", exact: true })).toHaveValue("Keep this other skill's unsaved draft.");
+  await page.getByRole("button", { name: "Discard detail edits", exact: true }).click();
+  await page.reload();
+  await expect(page.getByRole("button", { name: /^Disposable deletion target/ })).toHaveCount(0);
+  expect((await page.request.post(`${API}/api/publish`)).ok()).toBe(true);
+  expect(existsSync(join(output, "skills", target.id, "SKILL.md"))).toBe(false);
+  expect(existsSync(join(output, "skills", keeper.id, "SKILL.md"))).toBe(true);
+});
+
+test("publication wizard saves a folder and produces a usable local install command", async ({ page }) => {
+  await page.goto("/settings");
+  await page.getByLabel("Subfolder (optional)", { exact: true }).fill("browser-skills");
+  await page.getByRole("button", { name: "Save and continue", exact: true }).click();
+  await expect(page.getByText("Publication destination saved.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Keep the folder available to your agents" })).toBeVisible();
+  await page.getByRole("button", { name: "Continue to publish" }).click();
+  await page.getByRole("button", { name: "Publish bundle", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Install on your computer" })).toBeVisible();
+  await expect(page.locator("pre")).toContainText("browser-skills/install.sh");
+  expect(readFileSync(join(root, "state/published/browser-skills/install.sh"), "utf8")).toContain("oms-refresh");
+  await page.reload();
+  await expect(page.getByLabel("Subfolder (optional)", { exact: true })).toHaveValue("browser-skills");
+  await page.request.patch(`${API}/api/settings`, { data: { publication_folder: "" } });
+});
+
+test("graph expands a selected skill beyond its seed, then clears the canvas", async ({ page }) => {
+  const created = await (await page.request.post(`${API}/api/skills`, { data: { name: "Graph Browser Target", domain: "testing" } })).json();
+  const correction = await (await page.request.post(`${API}/api/ingest`, { data: { correction: "Keep readable graph labels." } })).json();
+  await page.request.post(`${API}/api/review/${correction.transaction_id}/decision`, { data: { action: "create", body: "Keep readable graph labels.", skill_ids: [created.id] } });
+  await page.goto("/graph");
+  await page.getByRole("combobox", { name: "Find a skill", exact: true }).selectOption({ label: "Graph Browser Target" });
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  const canvas = page.getByTestId("graph-canvas");
+  await expect(canvas).toHaveAttribute("data-node-count", "1");
+  await expect(canvas).toHaveAttribute("data-ready", "true");
+  await expect(page.getByRole("button", { name: "Expand connections", exact: true })).toBeVisible();
+  await expect.poll(() => canvas.evaluate(element => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: import("cytoscape").Core } })._cyreg.cy;
+    return cy.nodes().map(node => node.id());
+  })).toEqual([created.id]);
+  await canvas.scrollIntoViewIfNeeded();
+  const nodePosition = await canvas.evaluate(element => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: import("cytoscape").Core } })._cyreg.cy;
+    return cy.nodes().first().renderedPosition();
+  });
+  await canvas.dblclick({ position: nodePosition });
+  await expect(canvas).not.toHaveAttribute("data-node-count", "1");
+  await expect(page.getByRole("button", { name: "All connections loaded" })).toBeVisible();
+  await expect.poll(() => canvas.evaluate(element => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: import("cytoscape").Core } })._cyreg.cy;
+    return cy.nodes().every(node => {
+      const box = node.renderedBoundingBox();
+      return box.x1 >= 0 && box.y1 >= 0 && box.x2 <= cy.width() && box.y2 <= cy.height();
+    });
+  })).toBe(true);
+  await page.screenshot({ path: "test-results/community-todo-graph.png", fullPage: true });
+  await page.getByRole("button", { name: "Clear canvas", exact: true }).click();
+  await expect(canvas).toHaveAttribute("data-node-count", "0");
+});
