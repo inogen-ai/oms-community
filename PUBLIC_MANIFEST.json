@@ -50,7 +50,7 @@
     },
     "SECURITY.md": {
       "mode": 420,
-      "sha256": "c800afa0afd39f1369953613df0357fb35047db426fd0d5f1cac4abd9ceb7342"
+      "sha256": "e7b54186e11cc85c1b58a4daf80262ffdc1b965640f7211d702aff3bec9ef01f"
     },
     "TRADEMARKS.md": {
       "mode": 420,
@@ -218,7 +218,7 @@
     },
     "frontend/community/e2e/community.spec.ts": {
       "mode": 420,
-      "sha256": "5083fb7467cef476ecb9b4cd63287f3f8aac632bd85f3e32de12eea06e2efe06"
+      "sha256": "c8bc82b12ab14f4ad4b9731856940f4ce9f72727329ff9521b4fd76f327ad69c"
     },
     "frontend/community/e2e/route-contract.mjs": {
       "mode": 420,

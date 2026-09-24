@@ -238,7 +238,7 @@ test("correction automation preview explains the full workflow offline and retai
   await page.screenshot({ path: "test-results/community-automation-preview.png" });
   await preview.getByRole("button", { name: "Compare editions", exact: true }).click();
   const comparison = page.getByRole("dialog", { name: "Compare editions", exact: true });
-  await expect(comparison).toContainText("Distil corrections into reusable rules");
+  await expect(comparison).toContainText("Reconcile corrections and conflicting rules automatically");
   await comparison.getByRole("button", { name: "Automatic correction processing", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
