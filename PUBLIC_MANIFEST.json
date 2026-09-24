@@ -46,7 +46,7 @@
     },
     "README.md": {
       "mode": 420,
-      "sha256": "5acfc869432cf3c4aaf1e72fda031eb6a63439ae9d9c3cd323ac8486dc09b0d7"
+      "sha256": "ca6eb991b9a184dfb9472416b53063552b2581053c8e7ddedc6afae85c0763fe"
     },
     "SECURITY.md": {
       "mode": 420,
@@ -63,6 +63,34 @@
     "docs/architecture.md": {
       "mode": 420,
       "sha256": "d47bb2e386515181632e7fe2e45d27c33c29540f199493d5c393eb62c016b961"
+    },
+    "docs/images/readme/find-your-guidance.gif": {
+      "mode": 420,
+      "sha256": "963eba7107a9e1f03876d487dab283af3d6c393dc99ad40e866e9e2516538ff5"
+    },
+    "docs/images/readme/find-your-guidance.mp4": {
+      "mode": 420,
+      "sha256": "6063bed2826599c5fe61b30e6fecf853cf84d1a4bc9c3e50461f2cc93122a378"
+    },
+    "docs/images/readme/review-a-correction.png": {
+      "mode": 420,
+      "sha256": "9bbdfa97c1027393ac59c27b5df21bb15e0393d0b3e0e6c7eef69ed6cfbea206"
+    },
+    "docs/images/readme/review-and-publish.gif": {
+      "mode": 420,
+      "sha256": "ca2016d4626aabc971861d5e94ee059614d9ce177981a59deab728587bfeebed"
+    },
+    "docs/images/readme/review-and-publish.mp4": {
+      "mode": 420,
+      "sha256": "7d3f47afd4cdd2f598657d66fdbdd3eea6716380df0a1cb5d97b32bb1882eb98"
+    },
+    "docs/images/readme/skill-guidance.png": {
+      "mode": 420,
+      "sha256": "c67ee0cd86c9a32d9710d89ad7be5fa0a72005cf9dded33907dd3c69afb68253"
+    },
+    "docs/images/readme/workspace-overview.png": {
+      "mode": 420,
+      "sha256": "ef636ea46e403f57133d1bb7be67864f7311433a69d854cfb8c1ebbd61993cd3"
     },
     "docs/reference-tests.md": {
       "mode": 420,

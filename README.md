@@ -1,9 +1,57 @@
 # OMS Community
 
-Import, inspect, amend and publish portable agent skills on your own machine.
+OMS Community is a local workspace for the skills and rules your AI agents use.
+Import guidance, inspect it, capture + review corrections and publish portable skill files that reach your agents across harnesses
+on your own machine.
+
 Corrections enter a manual inbox. You choose the skill, edit the durable wording
 and decide whether to amend existing guidance, create a rule, reinforce an
 existing rule, or reject it.
+
+![OMS Community workspace with 24 skills and one correction awaiting your decision](docs/images/readme/workspace-overview.png)
+
+## See it in action
+
+### Find the guidance your agents use
+
+Filter a populated library by domain, open a skill and read its instructions.
+This example narrows 24 skills to four in customer support.
+
+![Filtering the skill library to Customer support, then opening its delivery, returns and reply guidance](docs/images/readme/find-your-guidance.gif)
+
+[Watch the video version](docs/images/readme/find-your-guidance.mp4)
+
+### Review a correction, then publish
+
+A delivery policy changes from three to five working days. Edit the existing
+text, check the before-and-after comparison, apply the change and publish.
+The final view shows the updated `SKILL.md` on disk.
+
+![Manually changing delivery from three to five working days, reviewing and applying the diff, then publishing the updated local SKILL.md](docs/images/readme/review-and-publish.gif)
+
+[Watch the video version](docs/images/readme/review-and-publish.mp4)
+
+Community keeps these decisions manual. It does not generate revisions or apply
+corrections automatically. Once you have connected your agents using the installer
+below, they can use the published guidance; existing sessions may need reloading.
+
+<details>
+<summary>Inspect the skill and change preview as still images</summary>
+
+A skill contains readable guidance, with its source, supporting files and history
+available alongside it.
+
+![Customer support skill with delivery, returns, refund and reply-style instructions](docs/images/readme/skill-guidance.png)
+
+The change preview shows the original wording, your replacement and the affected
+skill before you apply anything.
+
+![Manual change preview highlighting the delivery time changing from three to five working days](docs/images/readme/review-a-correction.png)
+
+</details>
+
+*Captured from OMS Community 1.2.0 using a fictional Acorn workspace. Recordings
+are shortened and annotated for clarity.*
 
 ## Start locally
 
