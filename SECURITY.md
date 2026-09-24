@@ -18,5 +18,6 @@ different edition. Use an explicit export into a new Community workspace when
 moving data back; do not edit schema metadata to bypass that refusal.
 
 Report a vulnerability privately to the repository maintainers through the
-repository's security advisory channel once it is enabled. Do not post secrets,
+repository's private vulnerability reporting form (Security tab, "Report a
+vulnerability"). Do not post secrets,
 customer data or a working exploit against a live deployment in a public issue.
