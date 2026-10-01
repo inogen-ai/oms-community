@@ -122,7 +122,7 @@
     },
     "frontend/community/README.md": {
       "mode": 420,
-      "sha256": "4e1185b821faeeb4708c838d4e448d924f53b5b1c21e1ffa5d224aee549cce40"
+      "sha256": "2ea471354dd2982cfa0c74a13a698eb8d21fccbe87ed5966ee3b0618e79e8e5e"
     },
     "frontend/community/app/globals.css": {
       "mode": 420,
@@ -274,15 +274,15 @@
     },
     "frontend/community/next.config.ts": {
       "mode": 420,
-      "sha256": "ed216ccb6ca4319c5f20e74f0efc4b6cb93ae5612eca759de808851fbb023f51"
+      "sha256": "e306bbffc44b34606d3bcad2c7c2180e456344f554880288619e113bda321d59"
     },
     "frontend/community/package-lock.json": {
       "mode": 420,
-      "sha256": "15a5169e19eff71957e3aafdff57bc4d584dff8948718fe6e8b92706517383cc"
+      "sha256": "f6e3e0adb220144be006dc0b8441d2d50f9b12e6b003b72fa7ddd557da2dc12c"
     },
     "frontend/community/package.json": {
       "mode": 420,
-      "sha256": "4f186ae4e8242c49dd58fed862d8d1657098ed3b3a72bc739ca91900329a8d9c"
+      "sha256": "0b4c7676e754dceba5d56f06c9d8b55181c096abfc73120569bf30fc0192fccc"
     },
     "frontend/community/playwright.config.ts": {
       "mode": 420,
@@ -306,7 +306,7 @@
     },
     "frontend/community/test/source-boundary.test.mjs": {
       "mode": 420,
-      "sha256": "a2b476d4a8c23793811a218a0d5d8f88fc39608fd4abc035b270c91573209603"
+      "sha256": "2173c56171552910db0c41cbe6f16bede2fffc26d00dabf9a050dea0112935c6"
     },
     "frontend/community/tsconfig.json": {
       "mode": 420,
@@ -326,7 +326,7 @@
     },
     "frontend/packages/client/package.json": {
       "mode": 420,
-      "sha256": "7266e6580aa8e52c815324d3392cf095146583907b753e90ff05f87aeadbbc05"
+      "sha256": "9b23191c073a34446e2178a342d13b8260874e74bf9374ab4628935280fe0bde"
     },
     "frontend/packages/client/src/index.d.ts": {
       "mode": 420,
@@ -354,7 +354,7 @@
     },
     "frontend/packages/ui-core/package.json": {
       "mode": 420,
-      "sha256": "b0929be1c75183f847ac046a437fc0a7cbb381acdced90d6f43148ea0ef51e3f"
+      "sha256": "d409ed9763a3ad8f1b1980689c4e93ce6822c5937c7e7c7e540a2a7d3aa11aa0"
     },
     "frontend/packages/ui-core/src/assets/inogen_logo_darkmode.png": {
       "mode": 420,
@@ -522,7 +522,7 @@
     },
     "pyproject.toml": {
       "mode": 420,
-      "sha256": "1ae48b56593777006e13a61703b63ff50fc9051acae4bc13eca06cd949914889"
+      "sha256": "cfbd1bf16d3f2bec3f95852ba44ca99d1f319a25655331f6d314675112c7a6f5"
     },
     "release/__init__.py": {
       "mode": 420,
@@ -934,7 +934,7 @@
     },
     "src/oms/schema/metadata.py": {
       "mode": 420,
-      "sha256": "452a41c5d03b9ef04d2fa1873f7534558c11d91f11dd978cfad92e075ed52578"
+      "sha256": "8d69113f96b3b9e9b998b722d4d6f0ff4aa89eb9862d61ece485ae28c4fd2f2c"
     },
     "src/oms/security/__init__.py": {
       "mode": 420,
@@ -1118,7 +1118,7 @@
     },
     "uv.lock": {
       "mode": 420,
-      "sha256": "8d23fef182470effebc92dd3109505f20a5a01a1967197a5272a86851ca6b6a3"
+      "sha256": "3501084b9b1875577cea4fe4d4455c1a7ac24ea03d5cf9f8ce4c65f2d14f8ad3"
     }
   },
   "schema_version": 1
