@@ -1005,6 +1005,145 @@ def validate_script_literals(**values: str | None) -> None:
 
 
 
+# Claude Code's own approval for the two contribution tools, in confirm mode.
+# The confirm instructions let an agent use its client's prompt as the
+# person's one share action only where its instructions say the client asks
+# before each call. This is that sentence. Installers write it into Claude
+# Code's import block, and nowhere else, only once Claude Code has an `ask`
+# rule for both tools, which makes it ask in every permission mode, auto
+# mode and "always allow" included. Without the rule the sentence is left
+# out and the agent waits for a reply to share: one step slower, never
+# unasked.
+CLAUDE_ASK_RULES: tuple[str, ...] = ("mcp__oms__log_correction", "mcp__oms__log_signal")
+CLAUDE_APPROVAL_NOTE = ("On this machine, Claude Code asks the person before each "
+                        "`log_correction` and `log_signal` call.")
+
+# Adds the `ask` rules to the person's own Claude Code settings (argv: the
+# settings file, the record of rules this installer added, and "confirm" or
+# "automatic"), or, in automatic mode, takes out only the recorded ones: a
+# rule the person wrote is theirs. Exit 0 when done, 3 when the file is not
+# settings it can change, 4 when it cannot be read or written. Either failure
+# leaves the file as it was. Written through a temporary file beside the
+# target, which is the link's target where settings.json is a link, so a
+# dotfile manager's link survives.
+_CLAUDE_ASK_PY = '''\
+import json, os, pathlib, sys
+
+RULES = %(rules)r
+settings_path = pathlib.Path(sys.argv[1])
+record_path = pathlib.Path(sys.argv[2])
+mode = sys.argv[3]
+try:
+    recorded = [r for r in record_path.read_text(encoding="utf-8").split() if r in RULES]
+except FileNotFoundError:
+    recorded = []
+except OSError:
+    raise SystemExit(4)
+try:
+    raw = settings_path.read_text(encoding="utf-8")
+except FileNotFoundError:
+    raw = ""
+except OSError:
+    raise SystemExit(4)
+try:
+    data = json.loads(raw) if raw.strip() else {}
+except ValueError:
+    raise SystemExit(3)
+if not isinstance(data, dict):
+    raise SystemExit(3)
+permissions = data.get("permissions", {})
+if not isinstance(permissions, dict):
+    raise SystemExit(3)
+ask = permissions.get("ask", [])
+if not isinstance(ask, list):
+    raise SystemExit(3)
+if mode == "confirm":
+    added = [r for r in RULES if r not in ask]
+    keep = [r for r in RULES if r in recorded or r in added]
+    new_ask = ask + added
+else:
+    keep = []
+    new_ask = [r for r in ask if r not in recorded]
+if new_ask != ask:
+    if new_ask:
+        permissions["ask"] = new_ask
+    else:
+        permissions.pop("ask", None)
+    data["permissions"] = permissions
+    target = settings_path.resolve()
+    tmp = target.with_name(target.name + ".oms.tmp")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data, indent=2) + "\\n", encoding="utf-8")
+        os.replace(tmp, target)
+    except OSError:
+        raise SystemExit(4)
+try:
+    if keep:
+        record_path.write_text("\\n".join(keep) + "\\n", encoding="utf-8")
+    elif record_path.exists():
+        record_path.unlink()
+except OSError:
+    raise SystemExit(4)
+if mode != "confirm" and len(new_ask) < len(ask):
+    print("  Claude Code: removed the approval rule confirm mode added to %%s" %% settings_path)
+''' % {"rules": list(CLAUDE_ASK_RULES)}
+
+
+def _claude_ask_step(confirm_file: str) -> str:
+    """Section 1a of install.sh: Claude Code's `ask` rules in confirm mode, and
+    their removal when automatic is chosen again. Built as a plain string, as
+    `_mcp_helpers` is, because it carries a Python program.
+
+    Runs after detection, so it knows whether Claude Code is here, and before
+    any instructions are written, because `write_instructions` reads
+    OMS_CLAUDE_ASKS to decide whether Claude Code is told that it asks. Never
+    fatal: a machine where the rule cannot be written still installs, and its
+    Claude Code agents ask in the conversation instead."""
+    return '''
+# 1a. Claude Code's own approval, in confirm mode (see CLAUDE_APPROVAL_NOTE
+#     in the renderer). OMS_CLAUDE_ASKS is set only once Claude Code has the
+#     `ask` rules, and section 2 tells Claude Code it asks only then.
+OMS_CLAUDE_ASKS=""
+OMS_ASK_RECORD="$OMS_DIR/claude-ask-rules"
+oms_ask_mode=""
+if [ "$OMS_CONTRIBUTION_MODE_RESOLVED" = confirm ]; then
+  # Only where the confirm instructions are installed: a bundle that takes
+  # no contributions installs its one file in both modes, and asks nothing.
+  if [ -n "$HAVE_CLAUDE" ] && [ "$OMS_ROOT_FILE" = "''' + confirm_file + '''" ]; then
+    oms_ask_mode=confirm
+  fi
+elif [ -f "$OMS_ASK_RECORD" ]; then
+  oms_ask_mode=automatic
+fi
+if [ -n "$oms_ask_mode" ]; then
+  oms_ask_done=""
+  if command -v python3 >/dev/null 2>&1; then
+    cat > "$OMS_DIR/.claude-ask.py" <<'OMS_ASK_PY'
+''' + _CLAUDE_ASK_PY + '''OMS_ASK_PY
+    if python3 "$OMS_DIR/.claude-ask.py" "$CLAUDE_DIR/settings.json" "$OMS_ASK_RECORD" "$oms_ask_mode"; then
+      oms_ask_done=1
+    fi
+    rm -f "$OMS_DIR/.claude-ask.py"
+  fi
+  if [ "$oms_ask_mode" = confirm ]; then
+    if [ -n "$oms_ask_done" ]; then
+      OMS_CLAUDE_ASKS=1
+      echo "  Claude Code: asks the person before each OMS contribution (a permission rule in $CLAUDE_DIR/settings.json)."
+    else
+      echo "  Claude Code: could not add the approval rule to $CLAUDE_DIR/settings.json"
+      echo "    (it needs python3 and a settings file that is a JSON object), so"
+      echo "    Claude Code agents will ask in the conversation before sharing."
+    fi
+  elif [ -z "$oms_ask_done" ]; then
+    echo "  Claude Code: could not take the approval rule confirm mode added out of"
+    echo "    $CLAUDE_DIR/settings.json. Remove mcp__oms__log_correction and"
+    echo "    mcp__oms__log_signal from permissions.ask there if you no longer want it."
+  fi
+fi
+'''
+
+
 def _mcp_helpers(mcp_url: str, bundle_token: str | None,
                  credential_setup: str | None = None, notice: str = "") -> str:
     """The two global-MCP writers, plus the per-harness calls.
@@ -1150,6 +1289,8 @@ def render_install_script(mcp_url: str | None,
     detection = _detection_blocks()
     install_blocks = _install_blocks()
     before_links = fragments.before_links
+    claude_ask_step = _claude_ask_step(confirm_file)
+    claude_note = CLAUDE_APPROVAL_NOTE
     # Resolved at run time, by section 0, to the root file of the mode this
     # installation chose, so every harness below reads the same variant.
     root_md = fragments.root_source or "$SRC/$OMS_ROOT_FILE"
@@ -1482,7 +1623,7 @@ touch "$OMS_DIR/status.md"
 # OMS_CONTRIBUTION_MODE: the machine keeps the variant it was installed with
 # until somebody chooses again. One word on one line, so `cat` answers which.
 printf '%s\\n' "$OMS_CONTRIBUTION_MODE_RESOLVED" > "$OMS_MODE_FILE"
-{before_links}
+{claude_ask_step}{before_links}
 # 1. Skills into the user scope. Symlinks, so the daily pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
 #    First sweep OMS-owned garbage: a symlink pointing into this tree that no
@@ -1584,6 +1725,9 @@ write_instructions() {{
     if [ "$wi_style" = import ]; then
       printf '%s\\n' "@{root_md}"
       printf '%s\\n' "@$OMS_DIR/status.md"
+      if [ -n "$OMS_CLAUDE_ASKS" ]; then
+        printf '%s\\n' '{claude_note}'
+      fi
     else
       cat "{root_md}"
       printf '\\n%s\\n' "If the user asks whether their organisational skills are current, read $OMS_DIR/status.md. Empty means healthy."

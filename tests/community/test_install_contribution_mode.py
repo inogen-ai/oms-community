@@ -16,6 +16,7 @@ temporary HOME does not isolate. The PowerShell installer is checked by what
 it renders, because `pwsh` is not assumed.
 """
 from collections.abc import Sequence
+import json
 import os
 from pathlib import Path
 import shutil
@@ -59,6 +60,16 @@ MODE_FILE = ".oms/contribution-mode"
 # The mode the tools were last given, written at the end of a run.
 INSTALLED_FILE = ".oms/contribution-mode-installed"
 CONTRIBUTION_TOOLS = ("log_correction", "log_signal")
+# Claude Code's permission rules for the same two tools, which confirm mode
+# adds as `ask` rules so Claude Code asks before every call.
+ASK_RULES = ["mcp__oms__log_correction", "mcp__oms__log_signal"]
+ASK_RECORD = ".oms/claude-ask-rules"
+# Quoted exactly: the line confirm mode adds to Claude Code's import block,
+# and only there, once Claude Code asks. The confirm instructions key on it.
+APPROVAL_NOTE = ("On this machine, Claude Code asks the person before each "
+                 "`log_correction` and `log_signal` call.")
+# What a run says when it could not make Claude Code ask.
+NO_RULE = "Claude Code agents will ask in the conversation before sharing."
 
 
 def automatic_text(name: str) -> str:
@@ -666,6 +677,136 @@ def test_a_machine_installed_before_the_record_of_what_it_was_given(tmp_path: Pa
 
     assert once in spaced(unchanged.stdout)
     assert read(home, INSTALLED_FILE) == "confirm\n"
+
+
+def claude_settings(home: Path) -> dict:
+    return json.loads(read(home, ".claude/settings.json"))
+
+
+def test_confirm_mode_makes_claude_code_ask_and_tells_claude_code_only(tmp_path: Path) -> None:
+    """The rule goes into the person's own Claude Code settings beside what is
+    there, once however often the installer runs, and the line that lets the
+    agent use Claude Code's prompt as the share action reaches Claude Code's
+    import block and no copied or staged file."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, *HARNESS_DIRS)
+    (home / ".claude" / "settings.json").write_text(
+        '{"theme": "dark", "permissions": {"allow": ["Read"]}}\n', encoding="utf-8")
+
+    first = install(bundle, home, bin_dir, "confirm")
+    assert first.returncode == 0, first.stderr
+    assert install(bundle, home, bin_dir, "confirm").returncode == 0
+
+    settings = claude_settings(home)
+    assert settings["theme"] == "dark"
+    assert settings["permissions"]["allow"] == ["Read"]
+    assert settings["permissions"]["ask"] == ASK_RULES
+    assert read(home, ASK_RECORD) == "\n".join(ASK_RULES) + "\n"
+    claude_md = read(home, ".claude/CLAUDE.md")
+    assert APPROVAL_NOTE in claude_md
+    assert claude_md.count(APPROVAL_NOTE) == 1
+    for relative in COPIED:
+        assert APPROVAL_NOTE not in read(home, relative), relative
+    assert APPROVAL_NOTE not in read(home, STAGED)
+    assert "Claude Code: asks the person before each OMS contribution" in first.stdout
+
+
+def test_automatic_mode_never_touches_claude_code_settings(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    assert install(bundle, home, bin_dir).returncode == 0
+    assert not (home / ".claude" / "settings.json").exists()
+    assert not (home / ASK_RECORD).exists()
+    assert APPROVAL_NOTE not in read(home, ".claude/CLAUDE.md")
+
+    own = '{"permissions": {"ask": ["Bash"]}}\n'
+    (home / ".claude" / "settings.json").write_text(own, encoding="utf-8")
+    assert install(bundle, home, bin_dir).returncode == 0
+    assert read(home, ".claude/settings.json") == own
+
+
+def test_automatic_mode_removes_only_the_rules_confirm_mode_added(tmp_path: Path) -> None:
+    """A rule the person wrote is theirs: confirm mode records only the rules
+    it added, and choosing automatic again takes out only those, and the line
+    that told Claude Code it asks."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    (home / ".claude" / "settings.json").write_text(
+        '{"permissions": {"ask": ["mcp__oms__log_signal"]}}\n', encoding="utf-8")
+
+    assert install(bundle, home, bin_dir, "confirm").returncode == 0
+    assert claude_settings(home)["permissions"]["ask"] == ["mcp__oms__log_signal",
+                                                           "mcp__oms__log_correction"]
+    assert read(home, ASK_RECORD) == "mcp__oms__log_correction\n"
+
+    switched = install(bundle, home, bin_dir, "automatic")
+    assert switched.returncode == 0, switched.stderr
+    assert claude_settings(home)["permissions"]["ask"] == ["mcp__oms__log_signal"]
+    assert not (home / ASK_RECORD).exists()
+    assert APPROVAL_NOTE not in read(home, ".claude/CLAUDE.md")
+    assert "Claude Code: removed the approval rule confirm mode added" in switched.stdout
+
+
+def test_an_ask_list_that_only_oms_filled_goes_when_automatic_is_chosen(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    assert install(bundle, home, bin_dir, "confirm").returncode == 0
+    assert claude_settings(home)["permissions"]["ask"] == ASK_RULES
+    assert install(bundle, home, bin_dir, "automatic").returncode == 0
+    assert claude_settings(home) == {"permissions": {}}
+
+
+@pytest.mark.parametrize("contents", [
+    "[1, 2]\n",
+    '{"permissions": {"ask": "mcp__oms__log_correction"}}\n',
+    '{"permissions": ["ask"]}\n',
+    "{ not json\n",
+], ids=["array", "ask-not-a-list", "permissions-not-an-object", "not-json"])
+def test_a_settings_file_it_cannot_change_is_left_alone_and_claude_gets_no_line(
+        tmp_path: Path, contents: str) -> None:
+    """Fail safe: without the rule, Claude Code is not told that it asks, so its
+    agent waits for a reply to share rather than relying on a prompt that may
+    never come."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    (home / ".claude" / "settings.json").write_text(contents, encoding="utf-8")
+
+    run = install(bundle, home, bin_dir, "confirm")
+
+    assert run.returncode == 0, run.stderr
+    assert read(home, ".claude/settings.json") == contents
+    assert APPROVAL_NOTE not in read(home, ".claude/CLAUDE.md")
+    assert f"@{bundle}/CLAUDE.confirm.md\n" in read(home, ".claude/CLAUDE.md")
+    assert not (home / ASK_RECORD).exists()
+    assert NO_RULE in spaced(run.stdout)
+
+
+def test_a_python3_that_fails_leaves_claude_without_the_line(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    (bin_dir / "python3").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    (bin_dir / "python3").chmod(0o755)
+
+    run = install(bundle, home, bin_dir, "confirm")
+
+    assert run.returncode == 0, run.stderr
+    assert APPROVAL_NOTE not in read(home, ".claude/CLAUDE.md")
+    assert NO_RULE in spaced(run.stdout)
+
+
+def test_a_machine_without_claude_code_gets_no_rule(tmp_path: Path) -> None:
+    """No Claude Code directory, CLI or CLAUDE_CONFIG_DIR: nothing is created
+    for it, a settings file least of all."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".codex")
+    (bin_dir / "claude").unlink()
+    env = environment(home, bin_dir, "confirm")
+    del env["CLAUDE_CONFIG_DIR"]
+    run = subprocess.run(["bash", str(bundle / "install.sh")], env=env,
+                         capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    assert not (home / ".claude").exists()
+    assert not (home / ASK_RECORD).exists()
 
 
 def test_codex_with_its_own_oms_table_is_told_confirm_mode_set_no_approval(
