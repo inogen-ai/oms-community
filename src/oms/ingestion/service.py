@@ -13,6 +13,7 @@ from oms.ingestion.schema import CorrectionPayload, ExecutionContext
 from oms.ports.repositories import IngestionRepository
 from oms.domain.held import pack
 from oms.ports.injection_screen import CLEAN, InjectionScreen
+from oms.ports.contribution_policy import AdmitEveryContribution, ContributionPolicy
 from oms.ports.custody import PayloadCustody, RetentionDisabled
 from oms.ports.review_queue import ReviewQueue
 from oms.ports.settings_store import SettingsStore
@@ -100,9 +101,59 @@ class TenantMismatchError(Exception):
     including a transaction-id collision against another tenant (Sections 8.3, 9)."""
 
 
+#: The reason and the sentence every transport gives for a transaction id
+#: that already names another contribution in the caller's workspace.
+TRANSACTION_ID_REUSED = "transaction_id_reused"
+TRANSACTION_ID_REUSED_MESSAGE = (
+    "transaction_id already names another contribution; nothing was recorded; "
+    "send this one again with a new transaction_id")
+
+
+class TransactionIdReused(Exception):
+    """The id is stored in this workspace for another caller or another kind
+    of signal, so this request is not a retry of it.
+
+    A replay used to answer with the stored receipt whatever was sent, so a
+    second person whose agent picked the same id (`suggestion-1`, say) was
+    told "accepted" while nothing of theirs was stored. Final for this id:
+    sending the same request again meets the same transaction. Nothing was
+    written, so the contribution itself can go again under a new id."""
+    code = TRANSACTION_ID_REUSED
+    message = TRANSACTION_ID_REUSED_MESSAGE
+    retryable = False
+
+    def __init__(self, transaction_id: str) -> None:
+        super().__init__(transaction_id)
+        self.transaction_id = transaction_id
+
+
+def _a_retry_of(existing: Transaction, payload: CorrectionPayload, principal: Principal) -> bool:
+    """Whether this request can be a retry of the stored transaction.
+
+    Same kind of signal, and the same caller. A person is the caller when
+    both sides name one, because one person can hold several credentials (a
+    token on each machine) and a retry may come through either. Otherwise the
+    principal is the caller. A transaction stored without a principal gives
+    nothing to compare, so it is treated as a retry: refusing on missing
+    evidence would turn a genuine retry into a duplicate contribution.
+
+    The content is not compared: the stored summary is sanitised and
+    shortened, so it cannot tell an edited wording from the original. Two
+    unbound callers share one principal and cannot be told apart either."""
+    if existing.signal_type is not payload.signal_type:
+        return False
+    if existing.person_id is not None and principal.person_id is not None:
+        return existing.person_id == principal.person_id
+    return existing.principal_id is None or existing.principal_id == principal.id
+
+
 class IngestionService:
     def in_transaction(self, store: IngestionRepository):
-        """Use a repository unit of work; the coordinator owns disposition."""
+        """Use a repository unit of work; the coordinator owns disposition.
+
+        A copy, so every other collaborator comes along, the admission policy
+        included: a contribution the policy refuses is refused the same way
+        inside the coordinator's unit of work."""
         from copy import copy
         service = copy(self)
         service._store = store
@@ -114,7 +165,8 @@ class IngestionService:
                  injection_screen: InjectionScreen | None = None,
                  injection_threshold: float = 0.5,
                  settings_store: SettingsStore | None = None,
-                 custody: PayloadCustody | None = None) -> None:
+                 custody: PayloadCustody | None = None,
+                 policy: ContributionPolicy | None = None) -> None:
         self._store = store
         self._sanitiser = sanitiser
         self._payloads = payload_store
@@ -129,6 +181,12 @@ class IngestionService:
         self._injection_threshold = injection_threshold
         self._settings_store = settings_store
         self._custody = custody or RetentionDisabled()
+        # Admits everything unless a composition injects a policy, so a
+        # deployment without one behaves exactly as before the port existed.
+        # Only None means "no policy": `policy or default` would swap a
+        # policy that tests false for the admit-everything default, failing
+        # open.
+        self._policy = policy if policy is not None else AdmitEveryContribution()
 
     def ingest(self, payload: CorrectionPayload, principal: Principal) -> Transaction:
         # [A]/[C] Authorise before any work: scope, then tenant binding (Section 8.3).
@@ -139,11 +197,29 @@ class IngestionService:
 
         # Idempotency: a replayed transaction id returns the original ack without
         # re-sanitising or re-enqueuing, scoped to the principal's tenant (Section 9).
+        # Only for a retry: an id another caller used, or used for another
+        # kind of signal, is refused rather than answered with a receipt
+        # for a contribution this caller never made.
         existing = self._store.get_transaction(payload.transaction_id)
         if existing is not None:
             if existing.tenant_id != principal.tenant_id:
                 raise TenantMismatchError(payload.transaction_id)
+            if not _a_retry_of(existing, payload, principal):
+                raise TransactionIdReused(payload.transaction_id)
             return existing
+
+        # The admission policy decides NEW work only, so it is asked here and
+        # nowhere else. After the replay check: a retry of a transaction that
+        # was admitted before the policy changed still gets its original
+        # receipt and never a fresh id. After both authorisation checks: a
+        # caller who may not write here learns nothing about the policy.
+        # Before sanitisation: a refusal writes nothing at all (no quarantine
+        # file or record, payload, transaction, custody entry or review item).
+        # Whatever it raises propagates unchanged. ContributionRefused is
+        # final and ContributionPolicyUnavailable is worth a later retry; each
+        # transport says which. Any other exception fails the call too, so a
+        # policy that breaks can never pass for an admission.
+        self._policy.admit(payload, principal)
 
         try:
             result = self._sanitiser.sanitise(payload.execution_context)
@@ -239,6 +315,13 @@ class IngestionService:
             signal_confidence=payload.signal_confidence,
             # Preserve the normalised repository key after the request ends.
             repo=payload.repo,
+            # From `sanitised`, never from the payload: this row is read far
+            # more widely than the payload file, so it must never hold text
+            # the sanitiser has not seen.
+            session_summary=sanitised.session_summary,
+            project_name=sanitised.project_name,
+            reuse_case=sanitised.reuse_case,
+            learning_evidence=sanitised.learning_evidence,
         )
         self._store.upsert_transaction(txn)
         # Written after the transaction, not before: an entry whose transaction

@@ -15,6 +15,13 @@ class SectionMutabilityError(Exception):
     """Raised when an op targets a section whose mutability doesn't permit it."""
 
 
+#: The transaction fields `clear_transaction_context` removes: the snippet of
+#: the contribution and the session context, all of them the contributor's
+#: agent's own words. Named once so both adapters clear the same set.
+TRANSACTION_CONTEXT_FIELDS = (
+    "summary", "session_summary", "project_name", "reuse_case", "learning_evidence")
+
+
 @dataclass(frozen=True)
 class RuleContext:
     """What a rule is about and who started it, for a caller rendering a list.
@@ -307,6 +314,24 @@ class GraphStore(Protocol):
         The cap is part of the contract rather than a caller's concern, because
         an unbounded read of every transaction a tenant has ever written is not
         a query any surface wants.
+        """
+        ...
+
+    def clear_transaction_context(self, transaction_ids: list[str], tenant_id: str) -> int:
+        """Remove the contributor's own words from these transactions' rows.
+
+        Five fields: the four session context fields (`session_summary`,
+        `project_name`, `reuse_case`, `learning_evidence`) and `summary`. They
+        are text the contributor's agent wrote, copied from the sanitised
+        payload at ingest so a review can show it without opening the payload
+        file, so deleting that file does not erase them. An erasure clears
+        them here too. Every other field stays, because the row is also the
+        record that a contribution arrived and what became of it.
+
+        Only this tenant's transactions among `transaction_ids` change; an id
+        that names no transaction, or another tenant's, is skipped. Returns how
+        many carried at least one of the five fields, so a second run answers
+        0. No ids cost no write.
         """
         ...
 

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from oms.domain.redaction import Redaction
-from oms.ingestion.schema import ExecutionContext
+from oms.ingestion.schema import ExecutionContext, clip_context_fields
 
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _PHONE = re.compile(r"(?<!\w)(\+?\d[\d\s()-]{7,}\d)(?!\w)")
@@ -27,7 +27,11 @@ class Sanitised:
     `redactions` covers the proposed `learning` or `user_correction` only:
     the reviewer judges this guidance, which is what becomes a rule,
     and `user_input` / `agent_raw_output` are never rendered on a card, so
-    retaining their originals would widen the exposure for no decision.
+    retaining their originals would widen the exposure for no decision. The
+    session context (`session_summary`, `project_name`, `reuse_case`,
+    `learning_evidence`) may be shown beside the guidance, but it never
+    becomes the rule either, so its originals are not retained for the same
+    reason.
 
     Empty is the ordinary case - nothing matched - and must not be confused
     with "not computed".
@@ -108,7 +112,7 @@ class RegexSanitiser:
         counters: dict[str, int] = {}
         # `seen` was a local the call threw away; it is the redaction map, and
         # all that changed is that it now leaves the method. Shared across all
-        # three fields, so one value keeps one placeholder - and the fields are
+        # eight fields, so one value keeps one placeholder - and the fields are
         # scrubbed in their declared order so the numbering is exactly what it
         # has always been.
         seen: dict[str, str] = {}
@@ -120,10 +124,28 @@ class RegexSanitiser:
         learning, learning_redactions = (
             self._scrub(ctx.learning, counters, seen)
             if ctx.learning is not None else (None, ()))
+        # Session context comes after the fields above, so their numbering is
+        # unchanged by it, and through the same `seen`, so an address quoted
+        # in both the learning and the evidence keeps one placeholder. Its
+        # redaction maps are discarded, as the task's and output's are.
+        # Named one by one, like every field here: a field this method does
+        # not name is dropped from the result, never passed through unscrubbed.
+        session_summary = self._scrub_context(ctx.session_summary, counters, seen)
+        project_name = self._scrub_context(ctx.project_name, counters, seen)
+        reuse_case = self._scrub_context(ctx.reuse_case, counters, seen)
+        learning_evidence = self._scrub_context(ctx.learning_evidence, counters, seen)
         # Retain only the proposed guidance's map, not historical context.
         # A learning needs the same custody and review path as a correction.
+        # Built unvalidated and then clipped, because a placeholder can take
+        # context past its limit (`clip_context_fields` says why).
         return Sanitised(
-            context=ExecutionContext(user_input=user_input,
-                                     agent_raw_output=agent_raw_output,
-                                     user_correction=correction, learning=learning),
+            context=clip_context_fields(ExecutionContext.model_construct(
+                user_input=user_input, agent_raw_output=agent_raw_output,
+                user_correction=correction, learning=learning,
+                session_summary=session_summary, project_name=project_name,
+                reuse_case=reuse_case, learning_evidence=learning_evidence)),
             redactions=learning_redactions if ctx.learning is not None else redactions)
+
+    def _scrub_context(self, text: str | None, counters: dict[str, int],
+                       seen: dict[str, str]) -> str | None:
+        return None if text is None else self._scrub(text, counters, seen)[0]

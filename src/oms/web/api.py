@@ -11,7 +11,13 @@ from starlette.staticfiles import StaticFiles
 
 from oms.community.routes import build_routes
 from oms.community.workflow import DecisionConflict, ManualDecisionError
-from oms.ingestion.service import SanitisationError, TenantMismatchError, UnauthorisedError
+from oms.ingestion.service import (
+    SanitisationError, TenantMismatchError, TransactionIdReused, UnauthorisedError,
+)
+from oms.ports.contribution_policy import (
+    POLICY_UNAVAILABLE, POLICY_UNAVAILABLE_MESSAGE,
+    ContributionPolicyUnavailable, ContributionRefused,
+)
 from oms.skills.service import InvalidSkillEdit, SkillExists, SkillNotFound
 from oms.skills.upload import UploadRefused
 from oms.web.capabilities import capabilities_for
@@ -118,6 +124,32 @@ def create_app(services, settings=None, *, route_bundles=None, advertised_capabi
                       SkillNotFound, InvalidSkillEdit, UploadRefused, SanitisationError,
                       TenantMismatchError, UnauthorisedError):
         app.add_exception_handler(exception, invalid)
+
+    async def policy_outcome(request: Request, exc: Exception) -> JSONResponse:
+        # Kept apart from `invalid`: nothing is wrong with the request, and
+        # the caller needs more than a sentence. `reason` is a code to branch
+        # on and `retryable` says whether sending the same request again can
+        # succeed: 403 is final, 503 asks for a later retry. Neither is the
+        # 202 receipt, so a client that reads only the status still sees a
+        # failure. An unreadable policy gets the fixed sentence, because its
+        # exception may describe the store.
+        if isinstance(exc, ContributionRefused):
+            return JSONResponse({"detail": exc.message, "reason": exc.code,
+                                 "retryable": False}, 403)
+        return JSONResponse({"detail": POLICY_UNAVAILABLE_MESSAGE, "reason": POLICY_UNAVAILABLE,
+                             "retryable": True}, 503)
+    for exception in (ContributionRefused, ContributionPolicyUnavailable):
+        app.add_exception_handler(exception, policy_outcome)
+
+    async def reused_transaction_id(request: Request, exc: Exception) -> JSONResponse:
+        # 409, never the 202 receipt: the id names another contribution, so
+        # answering with that one's receipt would report this request as
+        # accepted when nothing of it was stored. In the policy outcomes'
+        # shape, so one client check covers both; `retryable` is False
+        # because the same request meets the same transaction again.
+        return JSONResponse({"detail": TransactionIdReused.message,
+                             "reason": TransactionIdReused.code, "retryable": False}, 409)
+    app.add_exception_handler(TransactionIdReused, reused_transaction_id)
     if settings.ui_dir is not None:
         app.mount("/", StaticFiles(directory=settings.ui_dir, html=True), name="community_ui")
     return app
