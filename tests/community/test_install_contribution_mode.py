@@ -916,6 +916,90 @@ def test_the_powershell_installer_reports_what_it_could_not_update() -> None:
     assert confirm < automatic
 
 
+def test_the_powershell_installer_makes_claude_code_ask_in_confirm_mode() -> None:
+    body = render_install_ps1(MCP_URL)
+    assert "function Update-ClaudeAskRules($Mode)" in body
+    assert "$OmsAskRules = @('mcp__oms__log_correction', 'mcp__oms__log_signal')" in body
+    assert '$OmsAskRecord = "$OMS_DIR/claude-ask-rules"' in body
+    assert "ConvertTo-Json -InputObject $settings -Depth 100" in body
+    # Only where the confirm copy is installed, and only for Claude Code.
+    assert ("if ($HAVE_CLAUDE -and $OmsRootFile -ceq 'CLAUDE.confirm.md') "
+            "{ $OmsAskMode = 'confirm' }") in body
+    # In single quotes: in double quotes PowerShell reads a backtick as an
+    # escape and the line would reach Claude Code without its code marks.
+    assert f"'{APPROVAL_NOTE}'" in body
+    assert "if ($OmsClaudeAsks)" in body
+    assert NO_RULE in body
+    assert "Claude Code: removed the approval rule confirm mode added to $path" in body
+    # Settled before any instructions are written.
+    assert body.index("$OmsClaudeAsks = $false") < body.index("@$SRC/$OmsRootFile")
+    assert body.index("Update-ClaudeAskRules $OmsAskMode") < body.index("# 1. Skills into the user scope")
+    assert "@@" not in body
+
+
+def _ps_ask_harness(tmp_path: Path) -> Path:
+    """The rendered Update-ClaudeAskRules with the helpers it calls, and a
+    driver that runs it on the settings file named by its arguments."""
+    body = render_install_ps1(MCP_URL)
+    helpers = body[body.index("$Utf8NoBom = "):body.index("function Write-Err")]
+    step = body[body.index("$OmsAskRules = "):body.index("$OmsClaudeAsks = $false")]
+    script = tmp_path / "ask.ps1"
+    script.write_text(
+        "param($ClaudeDir, $OmsDir, $Mode)\n"
+        "$ErrorActionPreference = 'Stop'\n"
+        "$CLAUDE_DIR = $ClaudeDir\n$OMS_DIR = $OmsDir\n"
+        + helpers + step +
+        "if (Update-ClaudeAskRules $Mode) { 'done' } else { 'refused' }\n",
+        encoding="utf-8")
+    return script
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh is not installed")
+@pytest.mark.parametrize("before, mode, recorded, after, record, answer", [
+    (None, "confirm", "", {"permissions": {"ask": ASK_RULES}}, ASK_RULES, "done"),
+    ('{"theme": "dark", "permissions": {"allow": ["Read"], "ask": ["mcp__oms__log_signal"]}}',
+     "confirm", "",
+     {"theme": "dark", "permissions": {"allow": ["Read"],
+                                       "ask": ["mcp__oms__log_signal", "mcp__oms__log_correction"]}},
+     ["mcp__oms__log_correction"], "done"),
+    ('{"permissions": {"ask": ["mcp__oms__log_signal", "mcp__oms__log_correction"]}}',
+     "automatic", "mcp__oms__log_correction\n",
+     {"permissions": {"ask": ["mcp__oms__log_signal"]}}, None, "done"),
+    ('{"permissions": {"ask": ["mcp__oms__log_correction", "mcp__oms__log_signal"]}}',
+     "automatic", "mcp__oms__log_correction\nmcp__oms__log_signal\n",
+     {"permissions": {}}, None, "done"),
+    ("[1, 2]", "confirm", "", None, None, "refused"),
+    ('{"permissions": {"ask": "x"}}', "confirm", "", None, None, "refused"),
+    ("{ not json", "confirm", "", None, None, "refused"),
+], ids=["new-file", "beside-the-persons-rules", "removes-only-recorded", "empties-ask",
+        "array", "ask-not-a-list", "not-json"])
+def test_the_powershell_rule_step_does_what_the_shell_one_does(
+        tmp_path: Path, before: str | None, mode: str, recorded: str,
+        after: dict | None, record: list[str] | None, answer: str) -> None:
+    claude_dir, oms_dir = tmp_path / "claude", tmp_path / "oms"
+    claude_dir.mkdir()
+    oms_dir.mkdir()
+    settings = claude_dir / "settings.json"
+    if before is not None:
+        settings.write_text(before, encoding="utf-8")
+    if recorded:
+        (oms_dir / "claude-ask-rules").write_text(recorded, encoding="utf-8")
+    run = subprocess.run(["pwsh", "-NoProfile", "-File", str(_ps_ask_harness(tmp_path)),
+                          str(claude_dir), str(oms_dir), mode],
+                         capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines()[-1] == answer
+    if after is None:
+        assert settings.read_text(encoding="utf-8") == before
+    else:
+        assert json.loads(settings.read_text(encoding="utf-8")) == after
+    record_file = oms_dir / "claude-ask-rules"
+    if record is None:
+        assert not record_file.exists() or answer == "refused"
+    else:
+        assert record_file.read_text(encoding="utf-8") == "\n".join(record) + "\n"
+
+
 @pytest.mark.parametrize("root_files, variant, other", [
     (None, "CLAUDE.confirm.md", "AGENTS.confirm.md"),
     (["AGENTS.md"], "AGENTS.confirm.md", "CLAUDE.confirm.md"),

@@ -2293,6 +2293,96 @@ if (-not (Test-Path -LiteralPath "$OMS_DIR/status.md")) {
 # The mode, recorded for the refresh, which re-runs this installer without
 # OMS_CONTRIBUTION_MODE, so the machine keeps it until somebody chooses again.
 Write-TextFile $OmsModeFile "$OmsContributionMode`n"
+# 1a. Claude Code's own approval, in confirm mode (install.sh gives the
+#     reasons). $OmsClaudeAsks is set only once Claude Code has the `ask`
+#     rules, and Write-Instructions tells Claude Code it asks only then.
+#     Never fatal: without the rules its agents ask in the conversation.
+$OmsAskRules = @('mcp__oms__log_correction', 'mcp__oms__log_signal')
+$OmsAskRecord = "$OMS_DIR/claude-ask-rules"
+# $true once the person's Claude Code settings say what $Mode wants: the
+# rules added in confirm mode (and the ones added recorded), or the recorded
+# ones taken out in automatic mode, never a rule the person wrote. $false,
+# with the file as it was, for settings that are not a JSON object or whose
+# permissions or ask list are not what Claude Code writes.
+function Update-ClaudeAskRules($Mode) {
+    $path = Join-Path $CLAUDE_DIR 'settings.json'
+    try {
+        $recorded = @()
+        if (Test-Path -LiteralPath $OmsAskRecord) {
+            $recorded = @(((Read-TextFile $OmsAskRecord) -split '\s+') | Where-Object { $OmsAskRules -ccontains $_ })
+        }
+        $raw = Read-TextFile $path
+        if ($raw.Trim()) { $settings = ConvertFrom-Json -InputObject $raw } else { $settings = [pscustomobject]@{} }
+        if ($settings -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+        $permsProp = $settings.PSObject.Properties['permissions']
+        if ($permsProp) {
+            $perms = $permsProp.Value
+            if ($perms -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+        } else {
+            $perms = [pscustomobject]@{}
+        }
+        $askProp = $perms.PSObject.Properties['ask']
+        $ask = @()
+        if ($askProp) {
+            if ($askProp.Value -isnot [array]) { return $false }
+            $ask = @($askProp.Value)
+        }
+        if ($Mode -ceq 'confirm') {
+            $added = @($OmsAskRules | Where-Object { $ask -cnotcontains $_ })
+            $keep = @($OmsAskRules | Where-Object { ($recorded -ccontains $_) -or ($added -ccontains $_) })
+            $newAsk = @($ask + $added)
+        } else {
+            $keep = @()
+            $newAsk = @($ask | Where-Object { $recorded -cnotcontains $_ })
+        }
+        if ($newAsk.Count -ne $ask.Count) {
+            if ($newAsk.Count -gt 0) {
+                if ($askProp) { $perms.ask = $newAsk }
+                else { $perms | Add-Member -NotePropertyName 'ask' -NotePropertyValue $newAsk }
+            } else {
+                $perms.PSObject.Properties.Remove('ask')
+            }
+            if (-not $permsProp) { $settings | Add-Member -NotePropertyName 'permissions' -NotePropertyValue $perms }
+            # Through a file beside the target, so an install interrupted here
+            # cannot leave Claude Code a half-written settings file.
+            $tmp = "$path.oms.tmp"
+            Write-TextFile $tmp ((ConvertTo-Json -InputObject $settings -Depth 100) + "`n")
+            Move-Item -LiteralPath $tmp -Destination $path -Force
+        }
+        if ($keep.Count -gt 0) { Write-TextFile $OmsAskRecord (($keep -join "`n") + "`n") }
+        elseif (Test-Path -LiteralPath $OmsAskRecord) { Remove-Item -LiteralPath $OmsAskRecord -Force }
+        if ($Mode -cne 'confirm' -and $newAsk.Count -lt $ask.Count) {
+            Write-Host "  Claude Code: removed the approval rule confirm mode added to $path"
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+$OmsClaudeAsks = $false
+$OmsAskMode = $null
+if ($OmsContributionMode -ceq 'confirm') {
+    if ($HAVE_CLAUDE -and $OmsRootFile -ceq '@@CONFIRM_FILE@@') { $OmsAskMode = 'confirm' }
+} elseif (Test-Path -LiteralPath $OmsAskRecord) {
+    $OmsAskMode = 'automatic'
+}
+if ($OmsAskMode) {
+    $OmsAskDone = Update-ClaudeAskRules $OmsAskMode
+    if ($OmsAskMode -ceq 'confirm') {
+        if ($OmsAskDone) {
+            $OmsClaudeAsks = $true
+            Write-Host "  Claude Code: asks the person before each OMS contribution (a permission rule in $CLAUDE_DIR/settings.json)."
+        } else {
+            Write-Host "  Claude Code: could not add the approval rule to $CLAUDE_DIR/settings.json"
+            Write-Host "    (it needs a settings file that is a JSON object), so"
+            Write-Host "    Claude Code agents will ask in the conversation before sharing."
+        }
+    } elseif (-not $OmsAskDone) {
+        Write-Host "  Claude Code: could not take the approval rule confirm mode added out of"
+        Write-Host "    $CLAUDE_DIR/settings.json. Remove mcp__oms__log_correction and"
+        Write-Host "    mcp__oms__log_signal from permissions.ask there if you no longer want it."
+    }
+}
 @@BEFORE_LINKS@@
 # 1. Skills into the user scope, as links, so the daily pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
@@ -2389,7 +2479,8 @@ function Write-Instructions($File, $Style, $Label, $Cap) {
     }
     $kept = Remove-OmsBlock (Read-TextFile $File)
     $block = if ($Style -eq 'import') {
-        "@@ROOT_IMPORT@@`n@$OMS_DIR/status.md"
+        # The line in single quotes: in double quotes a backtick is an escape.
+        "@@ROOT_IMPORT@@`n@$OMS_DIR/status.md" + $(if ($OmsClaudeAsks) { "`n" + '@@CLAUDE_NOTE@@' } else { '' })
     } else {
         $content.TrimEnd() + "`n`nIf the user asks whether their organisational skills are current, read $OMS_DIR/status.md. Empty means healthy."
     }
@@ -2772,6 +2863,7 @@ def render_install_ps1(mcp_url: str | None,
             # instruction file, and resolving this one first would leave the
             # token sitting in the shipped script for PowerShell to read as a
             # command. `test_no_placeholder_survives_rendering` is the guard.
+            .replace("@@CLAUDE_NOTE@@", CLAUDE_APPROVAL_NOTE)
             .replace("@@CONFIRM_FILE@@", confirm_variant_name(import_file))
             .replace("@@IMPORT_FILE@@", import_file))
     if mcp_url:
