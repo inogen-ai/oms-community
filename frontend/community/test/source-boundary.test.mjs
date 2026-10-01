@@ -20,9 +20,10 @@ test("Community source imports only its own app, framework and public packages",
 });
 
 test("public packages pack only declared source and documentation", () => {
+  const release = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).version;
   for (const name of ["client", "ui-core"]) {
     const manifest = JSON.parse(readFileSync(resolve(root, "../packages", name, "package.json"), "utf8"));
-    assert.equal(manifest.version, "1.2.0");
+    assert.equal(manifest.version, release);
     assert.deepEqual(manifest.files, ["src", "README.md", "LICENSE", "NOTICE"]);
     assert.equal(manifest.license, "SUL-1.0");
     assert.equal(manifest.private, undefined);

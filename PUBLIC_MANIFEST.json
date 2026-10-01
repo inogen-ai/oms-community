@@ -306,7 +306,7 @@
     },
     "frontend/community/test/source-boundary.test.mjs": {
       "mode": 420,
-      "sha256": "a2b476d4a8c23793811a218a0d5d8f88fc39608fd4abc035b270c91573209603"
+      "sha256": "2173c56171552910db0c41cbe6f16bede2fffc26d00dabf9a050dea0112935c6"
     },
     "frontend/community/tsconfig.json": {
       "mode": 420,
