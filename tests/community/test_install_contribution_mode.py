@@ -1033,5 +1033,11 @@ def test_the_readme_describes_both_modes() -> None:
     # The one sentence that described automatic mode as the only behaviour.
     assert ("you state one and the agent files it with `log_correction`, asking you "
             "first where the installer ran in confirm mode") in text
+    # The installer edits the person's own Claude Code settings in confirm
+    # mode, so the README says so, and what it is for.
+    assert ("In confirm mode the installer also adds a permission rule to your Claude Code "
+            "settings, so Claude Code asks before each contribution and your answer there "
+            "is the choice. Choosing automatic again takes it out.") in text
     # A bundle with no MCP address takes no contributions, so it offers no mode.
     assert "OMS_CONTRIBUTION_MODE" not in render_readme(None)
+    assert "permission rule" not in render_readme(None)

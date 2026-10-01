@@ -2973,7 +2973,10 @@ def render_readme(mcp_url: str | None, distribution_repo: str | None = None, *,
             "install.sh` (on Windows, run `$env:OMS_CONTRIBUTION_MODE = "
             "'confirm'` first). The machine keeps that choice until you run "
             "the installer again with `OMS_CONTRIBUTION_MODE=automatic` (on "
-            "Windows, `$env:OMS_CONTRIBUTION_MODE = 'automatic'`).", "",
+            "Windows, `$env:OMS_CONTRIBUTION_MODE = 'automatic'`). In confirm "
+            "mode the installer also adds a permission rule to your Claude Code "
+            "settings, so Claude Code asks before each contribution and your "
+            "answer there is the choice. Choosing automatic again takes it out.", "",
         ] if mcp_url else []),
         "For a local folder instead of a Git clone, `install.sh` checks for "
         "completed publications every minute using a macOS launch agent or "
