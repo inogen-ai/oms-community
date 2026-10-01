@@ -35,8 +35,7 @@ from oms.publish.render import (
 
 MCP_URL = "https://oms.example/mcp"
 # The confirm-mode question, which only the confirm instructions ask.
-OFFER = ("Should this apply just to this task, or would you like to suggest it "
-         "for the team's <skill> guidance?")
+OFFER = "Use this for the team's <skill> guidance too?"
 # Quoted exactly: what the installer says when it refuses a mode.
 MODE_ERROR = "OMS_CONTRIBUTION_MODE must be automatic or confirm"
 NO_VARIANT = ("This bundle has no confirm-mode instructions. "

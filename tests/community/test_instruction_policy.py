@@ -29,22 +29,27 @@ from oms.publish.publisher import Publisher
 
 ENDPOINT = "http://localhost:8000/api/ingest"
 # Quoted exactly: the confirm-mode offer and its two choices.
-OFFER = ("Should this apply just to this task, or would you like to suggest it "
-         "for the team's <skill> guidance?")
-CHOICES = ("**Just this time**", "**Review suggestion**")
+OFFER = "Use this for the team's <skill> guidance too?"
+CHOICES = ("**Share with the team**", "**Just this time**")
 # Every sentence of the confirm flow that decides what reaches OMS and when.
+# One offer and one action: the client's own prompt where the agent's
+# instructions say the client asks before each call, a reply to share
+# everywhere else.
 CONSENT = (
-    "When a person gives you a qualifying correction, apply it to the current task, then ask:",
-    "Just this time sends nothing to OMS; do not offer it again unless they reopen it.",
-    "Review suggestion shows the editable wording, the intended skill, the audience and "
-    "any context to be shared; submit only after the person approves that preview.",
-    "Silence or cancelling sends nothing.",
-    "If they ask to share it, go straight to the preview.",
+    "Apply a qualifying correction a person gives you to the current task, "
+    "then offer it in one message:",
+    "with the wording, its skill and any context it shares",
+    "If your instructions say your client asks the person before each `log_correction` "
+    "call, call it right after the offer: their answer there is the choice.",
+    "Otherwise call it, or any other door, only once they say to share.",
+    "Declining, blocking or silence sends nothing; do not send it another way or offer it "
+    "again unless they reopen it.",
+    "New wording is a new offer.",
+    "If they ask to share, skip the question.",
     # A new UUID, said outright: told only to "give" an id, agents invent
     # natural ones that collide with another person's.
-    "Give each approved suggestion a new UUID as its `transaction_id` and reuse it on a "
-    "retry; edited wording needs a new preview and a new id.",
-    "Approving the tool once is not approval of later suggestions.",
+    "Give each shared wording a new UUID `transaction_id`, reused on a retry.",
+    "One tool approval does not cover later suggestions.",
 )
 LEARNING_APPROVAL = ("Show the person each proposed learning with its context; submit "
                      "only those they approve.")
@@ -157,6 +162,9 @@ def test_confirm_mode_replaces_immediate_logging(session_learnings):
         assert sentence in confirm
     assert "in the same turn" not in confirm
     assert "approve it once" not in confirm
+    # The two-step flow it replaced is gone.
+    for retired in ("Review suggestion", "preview"):
+        assert retired not in confirm
     # A proposed learning is shown before it is shared, and only when
     # learnings are asked for at all.
     assert (LEARNING_APPROVAL in confirm) is session_learnings

@@ -668,7 +668,17 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
     invent the same. Confirm is now 3648 on and 2365 off. The HTTP example
     still carries no `transaction_id`: the 32 bytes it needs would put
     confirm with learnings on over the budget, and the sentence already
-    reaches all three doors."""
+    reaches all three doors.
+
+    Confirm then became one step: one offer, and one action by the person,
+    in place of a question, a preview and an approval. The client's own
+    prompt is that action only where the agent's instructions say the client
+    asks before each call; an installer adds that sentence for Claude Code,
+    outside this block, only once it has made Claude Code ask. Everywhere
+    else the action is a reply to share. The new flow first measured 3743
+    bytes; "editable", "the intended", "from them" and the second telling of
+    the approval rule paid for it. Measured on 1 October 2026: confirm 3651
+    on and 2368 off."""
     _check_contribution_mode(mode)
     confirm = mode == "confirm"
     lines = [
@@ -681,22 +691,25 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
                      "acknowledge them as remembered."), "",
     ]
     if confirm:
-        # In place of logging in the same turn. The question and the two
-        # bold choices are exact copy; the rest says what each answer sends,
-        # which is nothing until the person approves a preview.
+        # In place of logging in the same turn: one offer, and one action by
+        # the person. The question and the two bold choices are exact copy.
+        # Where the agent's own instructions say its client asks before each
+        # call (an installer writes that only when it made the client ask),
+        # the client's prompt is that action; everywhere else it is a reply.
         lines += [
-            "When a person gives you a qualifying correction, apply it to the "
-            "current task, then ask: \"Should this apply just to this task, or "
-            "would you like to suggest it for the team's <skill> guidance?\" "
-            "Offer **Just this time** and **Review suggestion**. Just this time "
-            "sends nothing to OMS; do not offer it again unless they reopen it. "
-            "Review suggestion shows the editable wording, the intended skill, "
-            "the audience and any context to be shared; submit only after the "
-            "person approves that preview. Silence or cancelling sends nothing. If "
-            "they ask to share it, go straight to the preview. Give each "
-            "approved suggestion a new UUID as its `transaction_id` and reuse "
-            "it on a retry; edited wording needs a new preview and a new id. "
-            "Approving the tool once is not approval of later suggestions.", "",
+            "Apply a qualifying correction a person gives you to the current "
+            "task, then offer it in one message: \"Use this for the team's "
+            "<skill> guidance too?\" with the wording, its skill and any context it "
+            "shares, and **Share with the team** or **Just this time**. If "
+            "your instructions say your client asks the person before each "
+            "`log_correction` call, call it right after the offer: their answer "
+            "there is the choice. Otherwise call it, or any other door, only once "
+            "they say to share. Declining, blocking or silence sends nothing; do "
+            "not send it another way or offer it again unless they reopen it. New "
+            "wording is a new offer. If they ask to share, skip the "
+            "question. Give each shared wording a new UUID `transaction_id`, "
+            "reused on a retry. One tool approval does not cover later "
+            "suggestions.", "",
         ]
     lines += [
         "Do not submit task or research requests, answer outlines, completion "
