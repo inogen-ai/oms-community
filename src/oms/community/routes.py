@@ -292,7 +292,10 @@ def build_routes(services):
     def ingest(body: LocalContributionRequest):
         txn = s.coordinator.ingest(correction_payload(body, s.principal_resolver.resolve(), SourceRuntime.HTTP),
                                    s.principal_resolver.resolve())
-        return {"transaction_id": txn.id, "state": txn.workflow_state}
+        # `status` is the receipt every other door gives (the MCP tools
+        # answer the same), and the bundled helper's command line reads it
+        # to tell an accepted contribution from a failed one.
+        return {"transaction_id": txn.id, "status": "accepted", "state": txn.workflow_state}
 
     @manual.get("/review")
     def review():

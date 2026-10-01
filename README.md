@@ -366,7 +366,8 @@ Docker. Supply repository access through your local Git configuration; Community
 does not enrol a person or obtain a managed publishing credential.
 
 See [architecture](docs/architecture.md), [deterministic reference tests](docs/reference-tests.md),
-[release validation](docs/releasing.md), [security](SECURITY.md) and
+[release validation](docs/releasing.md), [security](SECURITY.md),
+[contribution policy and context](docs/contribution-policy-and-context.md) and
 [licensing](LICENSING.md) before distributing this candidate.
 
 ## Licence

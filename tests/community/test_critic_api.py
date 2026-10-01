@@ -93,8 +93,10 @@ def test_http_import_contribute_review_history_and_publish_preserve_custody(api)
 
     accepted = _contribute(api.client, "api-approved", skill_hint=skill_id, source_ref="session:api-critic")
     assert accepted.status_code in (200, 202), accepted.text
-    assert accepted.json()["transaction_id"] == "api-approved"
-    assert accepted.json()["state"] == "awaiting_manual_review"
+    # The whole receipt. `status` is what the bundled helper's command line
+    # reads to tell an accepted contribution from a failed one.
+    assert accepted.json() == {"transaction_id": "api-approved", "status": "accepted",
+                               "state": "awaiting_manual_review"}
     inbox = api.client.get("/api/review").json()
     item, = [row for row in inbox if row["txn_id"] == "api-approved"]
     assert item["source_ref"] == "session:api-critic"

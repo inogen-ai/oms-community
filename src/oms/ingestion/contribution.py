@@ -7,13 +7,28 @@ this module, so the contract cannot drift between them.
 """
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from oms.domain.models import Principal
 from oms.domain.repo import repo_key
 from oms.domain.types import SignalType, SourceRuntime
-from oms.ingestion.schema import CorrectionPayload, ExecutionContext
+from oms.ingestion.schema import (
+    LEARNING_EVIDENCE_MAX, PROJECT_NAME_MAX, REUSE_CASE_MAX, SESSION_SUMMARY_MAX,
+    CorrectionPayload, ExecutionContext, stripped_or_none,
+)
+
+
+def _as_on_the_envelope(name: str, limit: int) -> Any:
+    """A session-context field declared with the envelope's own description.
+
+    Read from `ExecutionContext` rather than restated, so the thin door and
+    `log_signal` cannot drift apart on what an agent is told in the MCP input
+    schema.
+    """
+    return Field(default=None, max_length=limit,
+                 description=ExecutionContext.model_fields[name].description)
 
 
 class ContributionRequest(BaseModel):
@@ -27,7 +42,12 @@ class ContributionRequest(BaseModel):
     assigned_role: str | None = None
     user_input: str | None = None
     agent_raw_output: str | None = None
-    transaction_id: str | None = None   # optional; OMS generates a uuid4 if absent
+    # Optional; OMS generates a uuid4 if absent. Described because the MCP
+    # input schema is all an agent calling the tool reads about it: told only
+    # to "give" an id, agents invent natural ones (`suggestion-1`) that
+    # collide with another person's.
+    transaction_id: str | None = Field(default=None, description=(
+        "A new UUID per contribution; resend the same id only to retry the identical request."))
     source_agent_id: str | None = None
     # Where this came from, when that is a place rather than a person: the
     # transcript a backfill recovered it from, the file an import read. The
@@ -57,6 +77,18 @@ class ContributionRequest(BaseModel):
     #
     # Preserve the caller's repository context without assigning rule scope.
     repo: str | None = None
+    # The envelope's session context, top-level here as every thin field is.
+    # Same limits and the same blank handling as `ExecutionContext`, so a value
+    # refused by one door is refused by the other.
+    session_summary: str | None = _as_on_the_envelope("session_summary", SESSION_SUMMARY_MAX)
+    project_name: str | None = _as_on_the_envelope("project_name", PROJECT_NAME_MAX)
+    reuse_case: str | None = _as_on_the_envelope("reuse_case", REUSE_CASE_MAX)
+    learning_evidence: str | None = _as_on_the_envelope("learning_evidence", LEARNING_EVIDENCE_MAX)
+
+    @field_validator("session_summary", "project_name", "reuse_case", "learning_evidence", mode="before")
+    @classmethod
+    def _stripped_or_absent(cls, value: object) -> object:
+        return stripped_or_none(value)
 
     @model_validator(mode="after")
     def _candidate(self):
@@ -112,5 +144,9 @@ def correction_payload(body: ContributionRequest, principal: Principal,
             agent_raw_output=body.agent_raw_output or "",
             user_correction=body.correction,
             learning=body.learning,
+            session_summary=body.session_summary,
+            project_name=body.project_name,
+            reuse_case=body.reuse_case,
+            learning_evidence=body.learning_evidence,
         ),
     )

@@ -9,7 +9,7 @@ from oms.domain.models import (
 )
 from oms.domain.types import (CompileStatus, ConstraintSource, ConstraintStatus, EdgeType,
                               BlockStatus, Mutability, SignalType, RuleStatus)
-from oms.ports.graph_store import RuleContext, SectionMutabilityError
+from oms.ports.graph_store import TRANSACTION_CONTEXT_FIELDS, RuleContext, SectionMutabilityError
 
 
 class InMemoryGraphStore:
@@ -283,6 +283,18 @@ class InMemoryGraphStore:
                 if t.tenant_id == tenant_id
                 and (since is None or t.timestamp >= since)]
         return sorted(rows, key=lambda t: t.timestamp, reverse=True)[:limit]
+
+    def clear_transaction_context(self, transaction_ids: list[str], tenant_id: str) -> int:
+        cleared = 0
+        for transaction_id in set(transaction_ids):
+            txn = self.transactions.get(transaction_id)
+            if txn is None or txn.tenant_id != tenant_id:
+                continue
+            if any(getattr(txn, name) is not None for name in TRANSACTION_CONTEXT_FIELDS):
+                cleared += 1
+            self.transactions[transaction_id] = replace(
+                txn, **{name: None for name in TRANSACTION_CONTEXT_FIELDS})
+        return cleared
 
     def rules_for_tenant(self, tenant_id: str, limit: int = 500) -> list[Rule]:
         rows = [r for r in self.rules.values() if r.tenant_id == tenant_id]

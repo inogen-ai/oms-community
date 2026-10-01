@@ -46,7 +46,7 @@
     },
     "README.md": {
       "mode": 420,
-      "sha256": "ca6eb991b9a184dfb9472416b53063552b2581053c8e7ddedc6afae85c0763fe"
+      "sha256": "c1f4e57f7de0b6b5f73f0a46fa1eae33da7cfe40524447874a44075bd12b5da3"
     },
     "SECURITY.md": {
       "mode": 420,
@@ -63,6 +63,10 @@
     "docs/architecture.md": {
       "mode": 420,
       "sha256": "d47bb2e386515181632e7fe2e45d27c33c29540f199493d5c393eb62c016b961"
+    },
+    "docs/contribution-policy-and-context.md": {
+      "mode": 420,
+      "sha256": "058fe02ec2f2d980a887c699ee254097481d45e6aae12e2b969d905b6ae187a8"
     },
     "docs/images/readme/find-your-guidance.gif": {
       "mode": 420,
@@ -574,7 +578,7 @@
     },
     "src/oms/adapters/graph_view.py": {
       "mode": 420,
-      "sha256": "4158eaf0b25362482642b1d737434b74366977ede52e388e22c733fa59d9c8fd"
+      "sha256": "7a2ab210e3b5419ef4fbd8fc7a14b2f06783f9c88314e27c051baefc6e5d0760"
     },
     "src/oms/adapters/memory/__init__.py": {
       "mode": 420,
@@ -594,7 +598,7 @@
     },
     "src/oms/adapters/memory/store.py": {
       "mode": 420,
-      "sha256": "64f064dec58592f582cb47d5bc45b8b05fbf4d9cc70b9e25647f1251ae1f13ce"
+      "sha256": "a88460fae0620a6c8ddcbbe8b4d2a02daf2b4b1359e728a874b8069307850d74"
     },
     "src/oms/adapters/neo4j/__init__.py": {
       "mode": 420,
@@ -626,7 +630,7 @@
     },
     "src/oms/adapters/neo4j/store.py": {
       "mode": 420,
-      "sha256": "78f9c5e094dd4606592ef844a16e9702d66274f394e5a6908500272a95efdf6e"
+      "sha256": "d2fc67a692988bf04bcef749475359f8a9e0c258878206a4fcd560f4c32e39aa"
     },
     "src/oms/adapters/neo4j/vocabulary.py": {
       "mode": 420,
@@ -642,7 +646,7 @@
     },
     "src/oms/cli.py": {
       "mode": 420,
-      "sha256": "5d0dfe4c8ba1a161d8ffd809b3569571d69ca1ed83bcbac3cffadbdb3d2e675b"
+      "sha256": "16ca91c44ed7acc176dd7d8e38994b32de8c2092ed6a28da153d56d428ebf1ba"
     },
     "src/oms/client/__init__.py": {
       "mode": 420,
@@ -694,7 +698,7 @@
     },
     "src/oms/community/routes.py": {
       "mode": 420,
-      "sha256": "3aaa35e89b428ad668c7efb2d665f4770958af50cfaafbbff5ef0fc16b56956e"
+      "sha256": "823f703d708632c9f65f9e7d8e0c42cb1312a950e40194d0311b1eb4ded5b8b7"
     },
     "src/oms/community/workflow.py": {
       "mode": 420,
@@ -718,7 +722,7 @@
     },
     "src/oms/domain/models.py": {
       "mode": 420,
-      "sha256": "1db2e819a9003a16792d92f753222415087cd5e5fa01101edc720865c0d1ee2a"
+      "sha256": "39a3d29df50f6f03b95061d7ba7f332c486d355b26e85db6d41482ef5a1d2dfc"
     },
     "src/oms/domain/redaction.py": {
       "mode": 420,
@@ -766,7 +770,7 @@
     },
     "src/oms/ingestion/contribution.py": {
       "mode": 420,
-      "sha256": "1fa4153e729f5c1290836227fe6adf6edba3cfc8e0bbb54e87a31bd5f40ca863"
+      "sha256": "55877fa401f29066457382ff059ef58b3a0841395d053efd51336099223cc6ac"
     },
     "src/oms/ingestion/coordinator.py": {
       "mode": 420,
@@ -778,15 +782,15 @@
     },
     "src/oms/ingestion/sanitiser.py": {
       "mode": 420,
-      "sha256": "f4e7830e6a26440eb8c98c08f342d91182319420b2152b0910057a4825419179"
+      "sha256": "d89544d0296c7b89e58c4b89b912bd24d2a67f827f998042112baa051b18de3e"
     },
     "src/oms/ingestion/schema.py": {
       "mode": 420,
-      "sha256": "a2321536c1d236982e59e3f3979d101fde25f8039111139df9f9c254b06bf07d"
+      "sha256": "3d205bed15a901c87e5635727ea3237e00a73a6263ea94977f724f630e977ddb"
     },
     "src/oms/ingestion/service.py": {
       "mode": 420,
-      "sha256": "264c80d86a6b4cec324f4da121bf3a95ff9228a115ddc26c871e683ded2ec2df"
+      "sha256": "daf0f3caad6ff79a88d4eb7b6fe8bfc4fd9a2fabe1d9e4f6a5708e9c4cb01968"
     },
     "src/oms/mcp_server/__init__.py": {
       "mode": 420,
@@ -798,11 +802,11 @@
     },
     "src/oms/mcp_server/handlers.py": {
       "mode": 420,
-      "sha256": "048150673025f3c38c4d65d99db62ba994dd2486b9d9031aede576309aa33961"
+      "sha256": "fc4ffe51d659083f3aa6da9588eef7bc9035d98239560fbccb0ec0eeebcf05dd"
     },
     "src/oms/mcp_server/server.py": {
       "mode": 420,
-      "sha256": "2ee30efc7f07c578c53d21faef3ed8e66f063b69b0f4c967978a42fdc6f8192d"
+      "sha256": "49e81b10829786b987f8f0344b99b068ad80fd12a01b01df5068fde500903e36"
     },
     "src/oms/ports/__init__.py": {
       "mode": 420,
@@ -828,13 +832,17 @@
       "mode": 420,
       "sha256": "a10b7a2c3ab7d211fe69c5d64ff400a86cb7f100f1b59f93cc53b18d46e11bf4"
     },
+    "src/oms/ports/contribution_policy.py": {
+      "mode": 420,
+      "sha256": "cb90b1be36fbeeda4a678550f8ac7ccd4be779ad145e7616b16c2620cb8717b4"
+    },
     "src/oms/ports/custody.py": {
       "mode": 420,
       "sha256": "56f83a30060d0184ea38e74f920447690ed5271f2e5a4f7e964a02979407a21c"
     },
     "src/oms/ports/graph_store.py": {
       "mode": 420,
-      "sha256": "a5dc74884fe63e237d6b685bcb525ec51d454a69817f011d378a09b60673e49f"
+      "sha256": "0532dcc2ba28a08ee71de97aa54fcb3f6e3dee40345e6e50b55f044fced13604"
     },
     "src/oms/ports/import_extension.py": {
       "mode": 420,
@@ -850,7 +858,7 @@
     },
     "src/oms/ports/publishing.py": {
       "mode": 420,
-      "sha256": "ce5cbc2a53ac32226222c47ca0198eddca3cd01409b3be546e2836ce54932fd2"
+      "sha256": "3c3caf21c702f6d7e37154c114fa704f2f05401fa3ff1ad38bc6dac25918e764"
     },
     "src/oms/ports/repositories.py": {
       "mode": 420,
@@ -902,11 +910,11 @@
     },
     "src/oms/publish/publisher.py": {
       "mode": 420,
-      "sha256": "b46b593780a0cc5ac00e8f6eee58778896ed6c6fa3201c0f9d29383a10131315"
+      "sha256": "13a3bc0435b043855f54c0384895df0bdc5c7339ade1c79cc28e12923ea9e9d2"
     },
     "src/oms/publish/render.py": {
       "mode": 420,
-      "sha256": "dda383ecfbdc7d531e31526ff5aa62d406b5fca865b3175430554301e9a89c2b"
+      "sha256": "6addab8263228418021fa41dd99383a65f8d42d2e9291f3b4657425ed57073fd"
     },
     "src/oms/publish/urls.py": {
       "mode": 420,
@@ -986,7 +994,7 @@
     },
     "src/oms/web/api.py": {
       "mode": 420,
-      "sha256": "c89c3fca4d7d11a83bcbb9d5512740332d53c432478de671724c64b1102e57cc"
+      "sha256": "2a5a5cd8502132292fd2aefc9b2c50c411dc3069360ea95b712c038c643ce082"
     },
     "src/oms/web/capabilities.py": {
       "mode": 420,
@@ -1008,13 +1016,25 @@
       "mode": 420,
       "sha256": "0fb61183dbb8f51f481924454d65c5885b95ce31fa180496805f86bbe92da846"
     },
+    "tests/community/test_contribute_helper.py": {
+      "mode": 420,
+      "sha256": "aae6453ad65060135b67fa936cdb47fe7ed7eb2cfc6857d28a36b4f855d9d63e"
+    },
+    "tests/community/test_contribution_context.py": {
+      "mode": 420,
+      "sha256": "47460f389fd99936c199b08e179ff38c234a88154ea848429101549f7e04e395"
+    },
     "tests/community/test_contribution_endpoint.py": {
       "mode": 420,
       "sha256": "b2442c81ebad0156d60b6fd776815837a677d613f34ad35259235473f8b4afcf"
     },
+    "tests/community/test_contribution_policy.py": {
+      "mode": 420,
+      "sha256": "cb8350aa5b484449754d5b8d83ecb087371dd26f56b3e6832fd16b0238a45e9c"
+    },
     "tests/community/test_critic_api.py": {
       "mode": 420,
-      "sha256": "7912303a29b3764fbd026f7816f9b62ffa74bdc5c6d6eb7aa2ebe61e8818dbbd"
+      "sha256": "eeb6a55cdcb816c898fb24ce4d64804c8b25f24a224a4d296e1f92ab3bc7ff08"
     },
     "tests/community/test_critic_catalogue.py": {
       "mode": 420,
@@ -1036,6 +1056,14 @@
       "mode": 420,
       "sha256": "f675baac50d47bbadaad998064700af56dc9f03c880cfc20bdd19329f0cacdae"
     },
+    "tests/community/test_install_contribution_mode.py": {
+      "mode": 420,
+      "sha256": "b24e5641513db4764a445e9f29d877e4f098ee690bdff8b058391c737845721e"
+    },
+    "tests/community/test_instruction_policy.py": {
+      "mode": 420,
+      "sha256": "64219e51a9b4439b11c315929c64272916df1d1b9e318d4d7f2242f3908ff583"
+    },
     "tests/community/test_manual_amendment.py": {
       "mode": 420,
       "sha256": "10edb43cd8665b0dfab674cec53976fae5f6e430cbded0b97d4e5ee286b70ba4"
@@ -1043,6 +1071,10 @@
     "tests/community/test_matching.py": {
       "mode": 420,
       "sha256": "046f61ac12a29694fce4db9611ac266a4bdc15034fa0bb498b6d352076213cb2"
+    },
+    "tests/community/test_mcp_arguments.py": {
+      "mode": 420,
+      "sha256": "dea08d9ce56ee92a0c486933319b8dc8eec2c01b93e64a80a2af5ed9be391f35"
     },
     "tests/community/test_publication_destinations.py": {
       "mode": 420,
@@ -1063,6 +1095,10 @@
     "tests/community/test_todo_critic.py": {
       "mode": 420,
       "sha256": "1a8d39133b1134643db56201955438bcf73b78db7325adf305fc5f5c19d984d2"
+    },
+    "tests/community/test_transaction_ids.py": {
+      "mode": 420,
+      "sha256": "9c73e18c981ac78e503047b4874e4fd0f1d7d15ede0ffe8e5ca74a927e652c33"
     },
     "tests/launcher/test_local.py": {
       "mode": 420,

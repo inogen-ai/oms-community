@@ -1,8 +1,11 @@
 import hashlib
 import json
 import re
+import textwrap
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import PurePosixPath
+from typing import Literal
 
 from oms.client import credentials as _credentials_module
 from oms.domain import repo as _repo_module
@@ -10,6 +13,7 @@ from oms.domain.models import (
     Constraint, ContentBlock, Example, Rule, RulePlacement, Section, Skill,
 )
 from oms.domain.types import ExampleKind, Plane, Polarity, RuleStatus, SectionKind
+from oms.ingestion.schema import ExecutionContext
 from oms.publish.harnesses import HARNESSES, Harness
 from oms.publish.parts import DocPart, join_parts
 from oms.publish.urls import public_repo_url
@@ -30,11 +34,45 @@ REFERENCES_FILE = "references/edge-cases.md"
 # `root_instruction_files = ["AGENTS.md"]` had stopped publish emitting.
 DEFAULT_ROOT_INSTRUCTION_FILES: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md")
 
+# Who decides that a correction is shared. "automatic": the agent logs a
+# qualifying correction itself, in the same turn. "confirm": the agent asks
+# the person and submits only a preview they approve. An installation picks
+# one, so publish writes both and neither is a tenant-wide switch.
+ContributionMode = Literal["automatic", "confirm"]
+CONTRIBUTION_MODES: tuple[ContributionMode, ...] = ("automatic", "confirm")
+
+
+def confirm_variant_name(name: str) -> str:
+    """The name a root instruction file's confirm-mode copy is published
+    under, beside it: `.confirm` goes before the final suffix as `pathlib`
+    splits the name, so `AGENTS.md` becomes `AGENTS.confirm.md`, `CLAUDE.md`
+    becomes `CLAUDE.confirm.md` and `rules.v2.md` becomes
+    `rules.v2.confirm.md`. A name with no suffix, a dotfile such as
+    `.cursorrules` included, gains `.confirm` at the end: `X` becomes
+    `X.confirm`.
+
+    A sibling with its own name, never a same-named file in a subdirectory.
+    Harnesses find instruction files by exact name, some in subdirectories
+    too (Claude Code loads the CLAUDE.md of a directory whose files it
+    reads), and a published tree is often committed into a repository an
+    agent works in, so a `confirm/CLAUDE.md` could load both modes at once.
+    No harness loads `CLAUDE.confirm.md` or `AGENTS.confirm.md` by itself;
+    an installation in confirm mode names the file it wants.
+
+    The one statement of the rule: publish writes these names and an
+    installer choosing confirm mode reads them, so both ask this function."""
+    path = PurePosixPath(name)
+    return f"{path.stem}.confirm{path.suffix}"
+
+
 # First line of every root instruction file and of the Tier 2 manifest, from
 # `_constraint_block` below. Exported because it is the only thing in a
 # published tree that identifies a root instruction file by content rather
 # than by a name the operator is free to choose, and
-# `scripts/regenerate_committed_installers.py` has to recognise one.
+# `scripts/regenerate_committed_installers.py` has to recognise one. The
+# confirm-mode copies open with it too, so a reader that wants the root
+# files an installation imports by default leaves out every name that is
+# `confirm_variant_name` of another.
 ROOT_INSTRUCTION_MARKER = "# Organisational Constraints"
 
 _REFERENCES_POINTER = (
@@ -504,11 +542,35 @@ def render_skill_with_examples(skill: Skill, rules: list[Rule],
     return RenderedSkill(skill_md=body, references_md=references_md)
 
 
-def _contribution_block(endpoint: str) -> list[str]:
+def _check_contribution_mode(mode: str) -> None:
+    """Refuse a mode that does not exist. A misspelt "confirmed" must not
+    publish automatic instructions to an installation that asked for its
+    person to be consulted first."""
+    if mode not in CONTRIBUTION_MODES:
+        raise ValueError(f"unknown contribution mode {mode!r}: "
+                         f"expected {' or '.join(CONTRIBUTION_MODES)}")
+
+
+def _contribution_block(endpoint: str, *, session_learnings: bool = True,
+                        mode: ContributionMode = "automatic") -> list[str]:
     """The standing, always-loaded instruction telling an agent how to post a
     learning back to OMS (spec §6.1). Rendered only when an ingest endpoint is
     configured. It rides the daily pull, so contribution needs no per-agent
     setup.
+
+    Four variants. `mode` decides who shares a correction: "automatic" has
+    the agent log it in the same turn, "confirm" has it ask the person and
+    submit only a preview they approve. `session_learnings=False` drops the
+    `## Session learnings` section, the only text that asks an agent to
+    reflect or to send `self_reflection`, and changes nothing above it, so
+    the correction guidance depends on the mode alone. A stale copy can still
+    send a learning; refusing it is the admission policy's job, not this
+    text's.
+
+    That guidance is scoped to what "a person gives you". Unscoped, "useful
+    evidenced lessons" invited the agent's own lessons in as ordinary
+    corrections, which a policy refusing `self_reflection` never sees, so
+    turning learnings off would only have relabelled them.
 
     Written as a forcing function, not a suggestion: a live agent applied a
     correction, replied "Noted for future code too" and never contributed -
@@ -566,13 +628,77 @@ def _contribution_block(endpoint: str) -> list[str]:
     telling of each reason is gone. Trim the same way next time, and read the
     test's number rather than the byte figure any comment here records - the
     skills list moves under this block and only the test measures the file
-    that ships."""
-    return [
+    that ships.
+
+    The four variants arrived with a budget of their own: at most 3660 bytes
+    each for the loopback endpoint `http://localhost:8000/api/ingest`, because
+    the largest committed root file left the block 3676. Confirm mode carries
+    about 700 bytes of flow whose question and choices are exact copy, and
+    the five future-use tests are longer than the question they replaced, so
+    the room came the same way as before, from motive told twice and from
+    form. "It validates the structure for you", "The typed signature means
+    you fill arguments", "Team rules must go through the OMS pipeline
+    instead", the session ref's reason and "OMS fills in the id, timestamp
+    and tenant" went (the last contradicts confirm mode, where the agent
+    supplies the id); the HTTP body became one JSON line. The routing
+    sentence stays: it is the de-scoping the forcing-function paragraph
+    describes. The five tests absorb the different-machine test, the
+    config-path rule and "if you cannot name a useful future action, file
+    nothing". The trigger is still the completion report, but answering it
+    out loud is not asked for: "no need to say so". First measured at 2903
+    bytes with learnings on and 1759 off, confirm 3627 and 2385.
+
+    Review then found that the fields sentence sent two doors wrong: it named
+    `learning` alone, which the helper does not take (its first argument,
+    `correction`, is mapped), and it no longer said that the thin body sends
+    `learning` INSTEAD of `correction`, which the schema refuses to receive
+    together. Saying where the rule goes for each door cost 63 bytes; the
+    preview's audience and "qualifying" cost 18 more. Plain words paid for
+    them, with no instruction lost: "in Python" for "if your harness runs
+    Python", "like" for "for example", "<OMS token>", "the ingest endpoint",
+    "<your current skill, if known>" (the same field, as its schema words
+    it), and one sentence each for the bundle lookup and the learning
+    approval. Measured on 29 September 2026: automatic 2899 bytes with
+    learnings on and 1705 off, confirm 3632 on and 2349 off. Confirm with
+    learnings on is the largest, so measure all four
+    (`test_every_variant_fits_the_budget`) before adding to any.
+
+    Confirm then spent 16 bytes on "a new UUID as its": told only to "give"
+    an id, an agent invents a natural one, and another person's agent can
+    invent the same. Confirm is now 3648 on and 2365 off. The HTTP example
+    still carries no `transaction_id`: the 32 bytes it needs would put
+    confirm with learnings on over the budget, and the sentence already
+    reaches all three doors."""
+    _check_contribution_mode(mode)
+    confirm = mode == "confirm"
+    lines = [
         "", "# Contributing learnings", "",
-        "Record durable organisational or repository guidance: standing preferences, "
-        "corrections to existing rules, and useful evidenced lessons. Ask what "
-        "useful future decision retaining it would change. Log qualifying "
-        "corrections in the same turn, BEFORE you acknowledge them as remembered.", "",
+        "Record durable organisational or repository guidance a person gives "
+        "you: standing preferences, corrections to existing rules, and useful "
+        "evidenced lessons. Ask what useful future decision retaining it would "
+        "change." + ("" if confirm else
+                     " Log qualifying corrections in the same turn, BEFORE you "
+                     "acknowledge them as remembered."), "",
+    ]
+    if confirm:
+        # In place of logging in the same turn. The question and the two
+        # bold choices are exact copy; the rest says what each answer sends,
+        # which is nothing until the person approves a preview.
+        lines += [
+            "When a person gives you a qualifying correction, apply it to the "
+            "current task, then ask: \"Should this apply just to this task, or "
+            "would you like to suggest it for the team's <skill> guidance?\" "
+            "Offer **Just this time** and **Review suggestion**. Just this time "
+            "sends nothing to OMS; do not offer it again unless they reopen it. "
+            "Review suggestion shows the editable wording, the intended skill, "
+            "the audience and any context to be shared; submit only after the "
+            "person approves that preview. Silence or cancelling sends nothing. If "
+            "they ask to share it, go straight to the preview. Give each "
+            "approved suggestion a new UUID as its `transaction_id` and reuse "
+            "it on a retry; edited wording needs a new preview and a new id. "
+            "Approving the tool once is not approval of later suggestions.", "",
+        ]
+    lines += [
         "Do not submit task or research requests, answer outlines, completion "
         "reports, generic good practice, or coaching for one answer. A user "
         "redirecting the current task has not necessarily stated a standing policy. "
@@ -580,69 +706,68 @@ def _contribution_block(endpoint: str) -> list[str]:
         "and genuine corroboration; a rule need not be novel or broadly applicable. "
         "Zero contributions is normal. OMS handles routing and deduplication.", "",
         "IMPORTANT: Do NOT save organisational or team-wide rules to your personal "
-        "memory system (MEMORY.md), which is for session-specific preferences "
-        "only. Team rules must go through the OMS pipeline instead. Do not "
-        "edit these files: OMS "
-        "publishes them and overwrites them on each pull.", "",
+        "memory (MEMORY.md), which is for session-specific preferences only. Do "
+        "not edit these files; OMS overwrites them on each pull.", "",
         "How to log, in order of preference:", "",
-        "1. Call the OMS `log_correction` tool (wired via this repository's "
-        ".mcp.json; approve it once when prompted). It validates the "
-        "structure for you.",
-        "2. Otherwise, if your harness loads Python tools, call "
-        "`contribute_learning(correction, skill_hint, signal_type, source_ref)` "
-        "from the bundled `oms_contribute.py`. The typed signature means you "
-        "fill arguments, not build a request.",
-        "3. Otherwise POST a short JSON body to the OMS ingest endpoint. OMS fills "
-        "in the id, timestamp and tenant, so you need "
-        "only supply the correction.", "",
+        # Confirm mode says what one approval of the tool does not cover, so
+        # only automatic mode tells the agent to give it.
+        "1. Call the OMS MCP tool `log_correction`"
+        + ("." if confirm else " (approve it once when prompted)."),
+        "2. Otherwise, in Python, call "
+        "`contribute_learning(correction, skill_hint, ...)` from the bundled "
+        "`oms_contribute.py`.",
+        "3. Otherwise POST JSON to the ingest endpoint:", "",
         "```http",
+        # Its own line: a reader recovers the endpoint of a committed root
+        # file with the pattern `^POST (\S+)$`.
         f"POST {endpoint}",
-        "Authorization: Bearer <your OMS token>   (omit behind a trusted gateway)",
+        "Authorization: Bearer <OMS token> (omit behind a trusted gateway)",
         "Content-Type: application/json",
         "",
-        "{",
-        '  "correction": "<the correction or rule, in one or two sentences>",',
-        '  "skill_hint": "<the skill you were working in, if known>"',
-        "}",
+        '{"correction": "<the rule, in one or two sentences>", '
+        '"skill_hint": "<your current skill, if known>"}',
         "```",
         "",
         "When you start work in a git repository, call `query_skill` once with "
-        "its normalised remote (for example `github.com/acme/payments`). If a "
-        "bundle exists, it holds rules that apply to that repository only. If "
-        "none exists, carry on.",
-        "", "## Session learnings", "",
-        # The trailing comma matters. Without it Python folds this string and
-        # the "" that follows into one element, the blank line is lost, and
-        # this paragraph and the next render as a single run-on paragraph in
-        # every published file.
-        "Corrections above are things a PERSON told you. This is the other "
-        "half: what you worked out for yourself.", "",
-        "Before reporting work finished, ask: is there anything "
-        "that would have been useful to know BEFORE you started, that would "
-        "have made the work easier, more accurate or more efficient, and "
-        "that would also help next time? Submit only a concrete lesson supported "
-        "by what happened. There is no quota and no need to report \"no learnings\".", "",
-        "Keep it only if it would help a DIFFERENT agent, on a DIFFERENT "
-        "task, on a DIFFERENT MACHINE.", "",
-        "Every learning must be a RULE - a condition and an action, in one "
-        "imperative sentence:", "",
-        "* keep: \"In this repo, manage Python deps with uv, not pip\"",
-        "* drop: \"This repo uses uv\" (no action)",
-        "* drop: \"always check your assumptions\" (no condition)", "",
-        "**If you cannot name a useful future action, file nothing.** "
-        "Say nothing about where a thing LIVES either: a "
-        "config path is a fact about one installation, not a rule anybody "
-        "can follow.", "",
-        "At most three per piece of work - the three you would most want "
-        "told. File each as its own call, the same three ways as above, with "
-        "`signal_type: \"self_reflection\"` and "
-        "`source_ref: \"session:<your session id>\"`. HTTP/thin MCP use `learning` "
-        "instead of `correction`; full `log_signal` uses `execution_context.learning`. "
-        "The helper maps this automatically. Tasks and `agent_raw_output` are "
-        "context only. The session ref is what "
-        "puts one session's learnings in front of a reviewer as a single "
-        "card instead of three separate ones.",
+        "its normalised remote (like `github.com/acme/payments`). Any bundle "
+        "it returns holds rules for that repository only; if there is none, "
+        "carry on.",
     ]
+    if session_learnings:
+        lines += [
+            "", "## Session learnings", "",
+            # Mind the trailing commas. Two adjacent strings with none between
+            # them fold into one element, so a list item merges with the next
+            # or the blank line between paragraphs is lost, in every published
+            # file.
+            "Before reporting work finished, check whether it taught a lesson "
+            "worth keeping. Keep one only if the work shows all five:", "",
+            "1. a task or condition likely to recur in this project, repository or team;",
+            "2. a changed action for a future agent, and the error, waste or risk it avoids;",
+            "3. an observation supporting it and its scope;",
+            "4. it stays true after this task (not a temporary failure, a fixed "
+            "defect or one machine's state);",
+            "5. it adds to the skills you read rather than restating generic practice.", "",
+            "Write it as a RULE: a condition and an action in one imperative "
+            "sentence, like \"In this repo, manage Python deps with uv, "
+            "not pip\", not \"This repo uses uv\". Normally there is nothing to "
+            "submit, and no need to say so; never file a weak lesson to fill a "
+            "quota. At most three per piece of work, ranked; never split one "
+            "lesson into several."
+            + (" Show the person each proposed learning with its context; "
+               "submit only those they approve." if confirm else ""), "",
+            # Where the rule goes differs by door. The thin body (MCP
+            # `log_correction` and HTTP) refuses a self_reflection with a
+            # correction beside it; the helper has no `learning` keyword and
+            # maps its first argument; `log_signal` nests the rule.
+            "File each separately with the rule in `learning`, not `correction` "
+            "(the helper takes it as `correction`; `log_signal` as "
+            "`execution_context.learning`), plus `signal_type: \"self_reflection\"`, "
+            "`source_ref: \"session:<your session id>\"`, `session_summary`, "
+            "`reuse_case` and `learning_evidence` (and `project_name` outside a "
+            "repository).",
+        ]
+    return lines
 
 
 def _render_cursor_rule(root_md: str) -> str:
@@ -740,6 +865,8 @@ def _detection_blocks() -> str:
             f'"{h.skills_dir or ""}" "{h.instructions or ""}" "{h.hint or ""}"; then\n'
             f'    {_have(h)}=1\n'
             f'    READY="$READY, {h.label}"\n'
+            f'  else\n'
+            f'    not_updated "{h.label}"\n'
             f'  fi\n'
             f'fi'
         )
@@ -923,7 +1050,32 @@ write_codex_mcp() {{
   if grep -q '^\\[mcp_servers\\.oms\\]' "$wc_tmp"; then
     rm -f "$wc_tmp"
     echo "  $wc_label: $wc_file already has its own [mcp_servers.oms]; left alone."
+    # Said, because confirm mode's approval below is not written either, and
+    # what Codex does without it is Codex's default, which is not documented.
+    if [ "$OMS_CONTRIBUTION_MODE_RESOLVED" = confirm ]; then
+      echo "    Confirm mode set no per-tool approval there, so Codex may not ask before a contribution unless you configure it."
+    fi
     return 0
+  fi
+  # Confirm mode also sets Codex's own approval for the two tools that send a
+  # contribution: approval_mode "prompt" has Codex ask the person before each
+  # call, and their answer is the final confirmation of the preview they were
+  # shown. Codex documents the key and its values without defining what each
+  # does, so this is configured, not proven. Automatic mode writes none, and
+  # the block is rewritten whole on every run, so choosing automatic again
+  # takes them out. A table the user wrote for one of these tools stays
+  # theirs, for the reason above: a second copy would stop Codex reading the
+  # file at all.
+  wc_ask=""
+  if [ "$OMS_CONTRIBUTION_MODE_RESOLVED" = confirm ]; then
+    for wc_tool in log_correction log_signal; do
+      if grep -q "^\\[mcp_servers\\.oms\\.tools\\.$wc_tool\\]" "$wc_tmp"; then
+        echo "  $wc_label: $wc_file already has its own [mcp_servers.oms.tools.$wc_tool];"
+        echo "    that table, not confirm mode, decides whether Codex asks before $wc_tool."
+      else
+        wc_ask="$wc_ask $wc_tool"
+      fi
+    done
   fi
   {{
     cat "$wc_tmp"
@@ -933,6 +1085,9 @@ write_codex_mcp() {{
     if [ -n "$OMS_MCP_TOKEN" ]; then
       printf '%s\\n' "http_headers = {{ Authorization = \\"Bearer $OMS_MCP_TOKEN\\" }}"
     fi
+    for wc_tool in $wc_ask; do
+      printf '%s\\n' "[mcp_servers.oms.tools.$wc_tool]" 'approval_mode = "prompt"'
+    done
     printf '%s\\n' "$END_MARK"
   }} > "$wc_file"
   rm -f "$wc_tmp"
@@ -975,10 +1130,16 @@ def render_install_script(mcp_url: str | None,
     validate_script_literals(mcp_url=mcp_url, bundle_token=bundle_token)
     fragments = fragments or ShellInstallFragments()
     import_file = root_import_file(root_files)
+    # Computed here and baked in: the script cannot ask Python which name
+    # publish gave the confirm copy, and asking the same function publish
+    # asked is what keeps the two names one.
+    confirm_file = confirm_variant_name(import_file)
     detection = _detection_blocks()
     install_blocks = _install_blocks()
     before_links = fragments.before_links
-    root_md = fragments.root_source or f"$SRC/{import_file}"
+    # Resolved at run time, by section 0, to the root file of the mode this
+    # installation chose, so every harness below reads the same variant.
+    root_md = fragments.root_source or "$SRC/$OMS_ROOT_FILE"
     link_initialiser = fragments.link_initialiser
     skip_skill = fragments.skip_skill
     link_report = fragments.link_report
@@ -1116,6 +1277,83 @@ writable_dir() {{
   abort "$SRC/{import_file} is missing, so this bundle has no instructions to import."
 [ ! -f "$SRC/.oms-publishing" ] ||
   abort "a publication is still in progress; retry when publishing has completed."
+# The contribution mode: whether this installation's agents share a correction
+# a person gives them by themselves ("automatic") or ask that person first and
+# share only a preview they approve ("confirm"). The bundle carries root files
+# for both, so the choice is the installation's: OMS_CONTRIBUTION_MODE when it
+# is set and not empty, else the choice this machine recorded on its last run,
+# which is how the refresh (run without the variable) keeps it, else automatic.
+# Settled here, before anything is written, so a refused value changes nothing.
+OMS_MODE_FILE="$OMS_DIR/contribution-mode"
+# The choice the last run recorded. With no record the machine was automatic,
+# because an installation nobody configured is automatic, and so was
+# everything installed before the mode was recorded.
+oms_mode_recorded=""
+oms_mode_chosen=automatic
+if [ -e "$OMS_MODE_FILE" ] || [ -L "$OMS_MODE_FILE" ]; then
+  oms_mode_recorded=1
+  oms_mode_chosen="$(cat "$OMS_MODE_FILE" 2>/dev/null | tr -d '[:space:]')"
+fi
+# What the tools were last given, read whatever this run chooses: a change of
+# mode is news to anyone who copied the previous mode's rules by hand, and to
+# a tool whose rules this run cannot rewrite. A second record, written at the
+# end of a run, where the choice above is written before any tool: a run that
+# stops part way leaves the tools' last mode here, so the next run still sees
+# the change. A machine installed before this record existed was given the
+# mode it chose.
+OMS_INSTALLED_MODE_FILE="$OMS_DIR/contribution-mode-installed"
+oms_mode_before="$oms_mode_chosen"
+if [ -e "$OMS_INSTALLED_MODE_FILE" ] || [ -L "$OMS_INSTALLED_MODE_FILE" ]; then
+  oms_mode_before="$(cat "$OMS_INSTALLED_MODE_FILE" 2>/dev/null | tr -d '[:space:]')"
+fi
+oms_mode_from=""
+if [ -n "${{OMS_CONTRIBUTION_MODE:-}}" ]; then
+  OMS_CONTRIBUTION_MODE_RESOLVED="$OMS_CONTRIBUTION_MODE"
+elif [ -n "$oms_mode_recorded" ]; then
+  # A record that is empty or unreadable is not a choice of automatic. It is
+  # refused below like any other value, rather than quietly switching a
+  # machine that chose confirm to sharing without asking.
+  OMS_CONTRIBUTION_MODE_RESOLVED="$oms_mode_chosen"
+  oms_mode_from="$OMS_MODE_FILE"
+else
+  OMS_CONTRIBUTION_MODE_RESOLVED=automatic
+fi
+# OMS_ROOT_FILE names the root file, inside the bundle, that every harness is
+# given: the one the import above checked, or its confirm copy.
+case "$OMS_CONTRIBUTION_MODE_RESOLVED" in
+  automatic) OMS_ROOT_FILE="{import_file}" ;;
+  confirm) OMS_ROOT_FILE="{confirm_file}" ;;
+  *)
+    echo "OMS_CONTRIBUTION_MODE must be automatic or confirm" >&2
+    [ -z "$oms_mode_from" ] ||
+      echo "  The value was read from $oms_mode_from, where this machine records its choice." >&2
+    # Both ways out, confirm first. A record that cannot be read may well
+    # have said confirm, and going back to automatic is a choice to make on
+    # purpose, never the repair for a damaged record.
+    echo "  Nothing has been installed. Re-run with the mode you mean:" >&2
+    echo "    OMS_CONTRIBUTION_MODE=confirm sh '$SRC/install.sh'" >&2
+    echo "    OMS_CONTRIBUTION_MODE=automatic sh '$SRC/install.sh'" >&2
+    exit 1
+    ;;
+esac
+# Never the automatic file instead: that would share corrections without
+# asking the person who chose to be asked. Only choosing automatic again,
+# explicitly, installs it. A bundle that takes no contributions is not that
+# case: with no contribution block its root file says the same in both modes,
+# so publish writes no confirm copy, and publishing again could not make one.
+# Its one file is installed and the machine keeps confirm, so the refresh
+# after a publication that does take contributions installs the confirm copy.
+if [ "$OMS_CONTRIBUTION_MODE_RESOLVED" = confirm ] && [ ! -f "$SRC/$OMS_ROOT_FILE" ]; then
+  if grep -qxF '# Contributing learnings' "$SRC/{import_file}"; then
+    echo "This bundle has no confirm-mode instructions. Ask your OMS administrator to publish again." >&2
+    echo "  Nothing has been installed. To install without the agent asking before it" >&2
+    echo "  shares a correction, re-run with OMS_CONTRIBUTION_MODE=automatic." >&2
+    exit 1
+  fi
+  OMS_ROOT_FILE="{import_file}"
+  echo "This bundle takes no contributions, so both modes install the same instructions."
+  echo "  Confirm mode is kept for when it does."
+fi
 # OMS's own directory is not a harness's, so its failure is fatal rather than a
 # skip: the refresh script and the staleness notice go here, and without them
 # no harness on this machine would ever update or be able to say that it had not.
@@ -1127,6 +1365,10 @@ writable_dir "$OMS_DIR" ||
 # owned by somebody else breaks every later refresh.
 writable_target "$OMS_DIR/status.md" ||
   abort "$OMS_DIR/status.md is not a writable file, and the staleness notices go there."
+writable_target "$OMS_MODE_FILE" ||
+  abort "$OMS_MODE_FILE is not a writable file, and this machine's contribution mode is recorded there."
+writable_target "$OMS_INSTALLED_MODE_FILE" ||
+  abort "$OMS_INSTALLED_MODE_FILE is not a writable file, and the mode this machine's tools were given is recorded there."
 
 # 0b. Which agent tools are on this machine, and can each one be written to.
 #     Detection is the tool's own config directory, or its CLI on PATH where
@@ -1150,6 +1392,23 @@ skip() {{
 }}
 DETECTED=""
 READY=""
+# The tools this run could not bring up to date: skipped here, or left without
+# instructions in section 2. Each keeps whatever OMS instructions an earlier run
+# gave it, or none, which after a change of mode is the other mode's, so the
+# summary names them and never counts them as configured. Taking one out of
+# READY matches whole ", "-separated entries; the labels come from the harness
+# table and hold no pattern characters.
+NOT_UPDATED=""
+not_updated() {{
+  NOT_UPDATED="$NOT_UPDATED, $1"
+  case "$READY, " in
+    *", $1, "*)
+      nu_list="$READY, "
+      READY="${{nu_list%%, $1, *}}, ${{nu_list#*, $1, }}"
+      READY="${{READY%, }}"
+      ;;
+  esac
+}}
 harness_ready() {{
   hr_label="$1"; hr_root="$2"; hr_skills="$3"; hr_instr="$4"; hr_hint="${{5:-}}"
   # mkdir's own stderr is kept, not suppressed: it separates a permission
@@ -1206,6 +1465,10 @@ fi
 # already raised survives a hand-run of this installer - only a successful
 # pull is evidence that the bundle is current.
 touch "$OMS_DIR/status.md"
+# The mode, recorded for the refresh, which re-runs this installer without
+# OMS_CONTRIBUTION_MODE: the machine keeps the variant it was installed with
+# until somebody chooses again. One word on one line, so `cat` answers which.
+printf '%s\\n' "$OMS_CONTRIBUTION_MODE_RESOLVED" > "$OMS_MODE_FILE"
 {before_links}
 # 1. Skills into the user scope. Symlinks, so the daily pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
@@ -1266,6 +1529,29 @@ write_instructions() {{
       echo "    $wi_size characters and $wi_file caps at $wi_cap. The skills above"
       echo "    are installed; the organisational constraints are not. Ask whoever"
       echo "    administers OMS to shorten them."
+      # After a change of mode, what the last run left between the markers
+      # is the other mode's, and kept it would go on loading while this run
+      # reports the new one: a confirm machine sharing without asking, or the
+      # reverse. So it goes, and the tool is not counted as configured. The
+      # record read before this run says which mode that last run installed.
+      # In an unchanged mode nothing here changes: an installation that
+      # stays automatic, or was never configured, behaves exactly as it did
+      # before modes existed, and its block is only an older publication's.
+      if [ "$oms_mode_before" != "$OMS_CONTRIBUTION_MODE_RESOLVED" ]; then
+        if [ -f "$wi_file" ] && grep -qxF "$BEGIN_MARK" "$wi_file"; then
+          wi_tmp="$wi_file.oms-tmp"
+          awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
+            $0 == b {{ skipping = 1 }}
+            skipping && $0 == e {{ skipping = 0; next }}
+            !skipping {{ print }}
+          ' "$wi_file" > "$wi_tmp"
+          cat "$wi_tmp" > "$wi_file"
+          rm -f "$wi_tmp"
+          echo "  $wi_label: removed the OMS instructions an earlier run left in $wi_file." >&2
+          echo "    $wi_label has no OMS instructions until they fit, rather than another mode's." >&2
+        fi
+        not_updated "$wi_label"
+      fi
       return 0
     fi
   fi
@@ -1303,11 +1589,24 @@ write_instructions() {{
 # so the copy a user pastes from is never a version behind the bundle.
 stage_manual_rules() {{
   sm_label="$1"; sm_file="$2"
+  # Staged here before means it may have been pasted. After a change of mode
+  # that paste is the other mode's rules, and the tool goes on loading them
+  # until the person replaces them, so this run says so instead of "once".
+  sm_staged=""
+  if [ -f "$sm_file" ]; then sm_staged=1; fi
   cp "{root_md}" "$sm_file"
-  echo "  $sm_label: skills are linked, but $sm_label has no global instructions"
-  echo "    file. Paste this into $sm_label Settings > Rules, once, and it applies"
-  echo "    to every project:"
-  echo "      $sm_file"
+  if [ -n "$sm_staged" ] && [ "$oms_mode_before" != "$OMS_CONTRIBUTION_MODE_RESOLVED" ]; then
+    echo "  $sm_label: skills are linked, but $sm_label has no global instructions"
+    echo "    file, and these rules changed with the contribution mode. Paste this"
+    echo "    into $sm_label Settings > Rules again, replacing the rules you pasted"
+    echo "    before:"
+    echo "      $sm_file"
+  else
+    echo "  $sm_label: skills are linked, but $sm_label has no global instructions"
+    echo "    file. Paste this into $sm_label Settings > Rules, once, and it applies"
+    echo "    to every project:"
+    echo "      $sm_file"
+  fi
 }}
 {install_blocks}{mcp_step}
 # 3b. Remove the old session hook, if this machine has one.
@@ -1549,7 +1848,28 @@ fi
 # fixed line this replaces - "the skills, instructions and contribution tool
 # are live" - was one claim on a Claude-only machine and five on this one, of
 # which any number could have been skipped a few lines above.
-echo "Done. Configured: ${{READY#, }}. Open any project and the skills are live."
+#
+# The mode goes to the terminal, not into status.md: that file is the
+# staleness channel every harness is pointed at, where empty means healthy,
+# and the refresh empties it on every success. A tool that was not brought up
+# to date is named on stderr, like the reasons it points back to, and is never
+# in the "Configured" list, which can then be empty: Windsurf alone, with a
+# root file over its cap, has its skills but no instructions.
+#
+# Every tool step is behind us, so the tools now hold this run's mode, or are
+# named below as not updated: recorded as what they were given (section 0
+# says why this is a second record).
+printf '%s\\n' "$OMS_CONTRIBUTION_MODE_RESOLVED" > "$OMS_INSTALLED_MODE_FILE"
+echo "Contribution mode: $OMS_CONTRIBUTION_MODE_RESOLVED"
+if [ -n "$NOT_UPDATED" ]; then
+  echo "Not updated: ${{NOT_UPDATED#, }}. The reasons are above." >&2
+  echo "  Until each is fixed, that tool keeps an earlier run's OMS instructions, or none." >&2
+fi
+if [ -n "$READY" ]; then
+  echo "Done. Configured: ${{READY#, }}. Open any project and the skills are live."
+else
+  echo "Done, with no agent tool fully configured. The reasons are above."
+fi
 '''
 
 
@@ -1677,6 +1997,59 @@ function Test-WritableFile($Path) {
 if (-not (Test-Path -LiteralPath "$SRC/@@IMPORT_FILE@@")) {
     Abort "$SRC/@@IMPORT_FILE@@ is missing, so this bundle has no instructions to import."
 }
+# The contribution mode, settled before anything is written (install.sh gives
+# the reasons): OMS_CONTRIBUTION_MODE when it is set and not empty, else the
+# choice this machine recorded on its last run, else automatic. Compared
+# case-sensitively, as sh does, so one value means the same on every machine.
+$OmsModeFile = "$OMS_DIR/contribution-mode"
+# The choice the last run recorded. With no record the machine was automatic.
+$OmsModeRecorded = Test-Path -LiteralPath $OmsModeFile
+$OmsModeChosen = if ($OmsModeRecorded) { (Read-TextFile $OmsModeFile) -replace '\s', '' } else { 'automatic' }
+# What the tools were last given, read whatever this run chooses: recorded at
+# the end of a run, where the choice is recorded before any tool, so a run
+# that stops part way leaves a change for the next run to see (install.sh
+# gives the reasons). A machine installed before this record existed was
+# given the mode it chose.
+$OmsInstalledModeFile = "$OMS_DIR/contribution-mode-installed"
+$OmsModeBefore = if (Test-Path -LiteralPath $OmsInstalledModeFile) { (Read-TextFile $OmsInstalledModeFile) -replace '\s', '' } else { $OmsModeChosen }
+$OmsModeFrom = ''
+if ($env:OMS_CONTRIBUTION_MODE) {
+    $OmsContributionMode = $env:OMS_CONTRIBUTION_MODE
+} elseif ($OmsModeRecorded) {
+    # An empty or unreadable record is refused below, never read as automatic.
+    $OmsContributionMode = $OmsModeChosen
+    $OmsModeFrom = $OmsModeFile
+} else {
+    $OmsContributionMode = 'automatic'
+}
+if ($OmsContributionMode -cne 'automatic' -and $OmsContributionMode -cne 'confirm') {
+    Write-Err "OMS_CONTRIBUTION_MODE must be automatic or confirm"
+    if ($OmsModeFrom) {
+        Write-Err "  The value was read from $OmsModeFrom, where this machine records its choice."
+    }
+    # Both ways out, confirm first: automatic is a choice, never the repair
+    # for a record that cannot be read.
+    Write-Err "  Nothing has been installed. Re-run with the mode you mean:"
+    Write-Err "    `$env:OMS_CONTRIBUTION_MODE = 'confirm'; powershell -ExecutionPolicy Bypass -File '$SRC\install.ps1'"
+    Write-Err "    `$env:OMS_CONTRIBUTION_MODE = 'automatic'; powershell -ExecutionPolicy Bypass -File '$SRC\install.ps1'"
+    exit 1
+}
+# The root file, inside the bundle, that every harness is given. Never the
+# automatic one in confirm mode: only choosing automatic again installs it.
+# Except on a bundle that takes no contributions, whose one file has no
+# contribution block and says the same in both modes (install.sh says why).
+$OmsRootFile = if ($OmsContributionMode -ceq 'confirm') { '@@CONFIRM_FILE@@' } else { '@@IMPORT_FILE@@' }
+if ($OmsContributionMode -ceq 'confirm' -and -not (Test-Path -LiteralPath "$SRC/$OmsRootFile")) {
+    if (((Read-TextFile "$SRC/@@IMPORT_FILE@@") -split "`r?`n") -ccontains '# Contributing learnings') {
+        Write-Err "This bundle has no confirm-mode instructions. Ask your OMS administrator to publish again."
+        Write-Err "  Nothing has been installed. To install without the agent asking before it"
+        Write-Err "  shares a correction, re-run with OMS_CONTRIBUTION_MODE=automatic."
+        exit 1
+    }
+    $OmsRootFile = '@@IMPORT_FILE@@'
+    Write-Host "This bundle takes no contributions, so both modes install the same instructions."
+    Write-Host "  Confirm mode is kept for when it does."
+}
 # OMS's own directory is not a harness's, so its failure is fatal rather than a
 # skip: the refresh script and the staleness notice go here, and without them
 # no harness on this machine would ever update or be able to say that it had not.
@@ -1688,6 +2061,12 @@ if (-not (Test-WritableDir $OMS_DIR)) {
 if (-not (Test-WritableFile "$OMS_DIR/status.md")) {
     Abort "$OMS_DIR/status.md is not a writable file, and the staleness notices go there."
 }
+if (-not (Test-WritableFile $OmsModeFile)) {
+    Abort "$OmsModeFile is not a writable file, and this machine's contribution mode is recorded there."
+}
+if (-not (Test-WritableFile $OmsInstalledModeFile)) {
+    Abort "$OmsInstalledModeFile is not a writable file, and the mode this machine's tools were given is recorded there."
+}
 
 # 0b. Which agent tools are on this machine, and can each one be written to.
 #     Nothing is ever created for a tool that is absent: a ~/.gemini conjured
@@ -1695,6 +2074,13 @@ if (-not (Test-WritableFile "$OMS_DIR/status.md")) {
 #     read it back as proof the tool is there.
 $DETECTED = @()
 $READY = @()
+# The tools this run could not bring up to date (install.sh gives the
+# reasons): named in the summary and never counted as configured.
+$NOT_UPDATED = @()
+function Add-NotUpdated($Label) {
+    $script:NOT_UPDATED += $Label
+    $script:READY = @($script:READY | Where-Object { $_ -cne $Label })
+}
 function Skip-Harness($Label, $Reason, $Hint) {
     Write-Err "  skipped ${Label}: $Reason"
     if ($Hint) { Write-Err "    $Hint" }
@@ -1747,6 +2133,9 @@ if ($READY.Count -eq 0) {
 if (-not (Test-Path -LiteralPath "$OMS_DIR/status.md")) {
     Write-TextFile "$OMS_DIR/status.md" ""
 }
+# The mode, recorded for the refresh, which re-runs this installer without
+# OMS_CONTRIBUTION_MODE, so the machine keeps it until somebody chooses again.
+Write-TextFile $OmsModeFile "$OmsContributionMode`n"
 @@BEFORE_LINKS@@
 # 1. Skills into the user scope, as links, so the daily pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
@@ -1824,6 +2213,21 @@ function Write-Instructions($File, $Style, $Label, $Cap) {
         Write-Host "    $($content.Length) characters and $File caps at $Cap. The skills above"
         Write-Host "    are installed; the organisational constraints are not. Ask whoever"
         Write-Host "    administers OMS to shorten them."
+        # After a change of mode only, what the last run left between the
+        # markers is the other mode's, so it goes and the tool is not counted
+        # as configured (install.sh gives the reasons). In an unchanged mode
+        # this path is as it always was.
+        if ($OmsModeBefore -cne $OmsContributionMode) {
+            $existing = Read-TextFile $File
+            if (($existing -split '\r?\n') -ccontains $BEGIN_MARK) {
+                $body = (Remove-OmsBlock $existing).TrimEnd()
+                if ($body) { $body += "`n" }
+                Write-TextFile $File $body
+                Write-Err "  ${Label}: removed the OMS instructions an earlier run left in $File."
+                Write-Err "    $Label has no OMS instructions until they fit, rather than another mode's."
+            }
+            Add-NotUpdated $Label
+        }
         return
     }
     $kept = Remove-OmsBlock (Read-TextFile $File)
@@ -1843,11 +2247,22 @@ function Write-Instructions($File, $Style, $Label, $Cap) {
 # honestly do is stage the exact text and name the destination. Overwritten
 # every run, so the copy a user pastes from is never a version behind.
 function Set-ManualRules($Label, $File) {
+    # Staged here before means it may have been pasted, and after a change of
+    # mode that paste is the other mode's rules (install.sh gives the reasons).
+    $staged = Test-Path -LiteralPath $File
     Write-TextFile $File (Read-TextFile "@@ROOT_MD@@")
-    Write-Host "  ${Label}: skills are linked, but $Label has no global instructions"
-    Write-Host "    file. Paste this into $Label Settings > Rules, once, and it applies"
-    Write-Host "    to every project:"
-    Write-Host "      $File"
+    if ($staged -and $OmsModeBefore -cne $OmsContributionMode) {
+        Write-Host "  ${Label}: skills are linked, but $Label has no global instructions"
+        Write-Host "    file, and these rules changed with the contribution mode. Paste this"
+        Write-Host "    into $Label Settings > Rules again, replacing the rules you pasted"
+        Write-Host "    before:"
+        Write-Host "      $File"
+    } else {
+        Write-Host "  ${Label}: skills are linked, but $Label has no global instructions"
+        Write-Host "    file. Paste this into $Label Settings > Rules, once, and it applies"
+        Write-Host "    to every project:"
+        Write-Host "      $File"
+    }
 }
 
 @@INSTALL@@
@@ -1920,7 +2335,20 @@ if (-not (Test-Path -LiteralPath "$SRC/.git")) {
 }
 
 # Built from what was actually configured, not asserted about the machine.
-Write-Host ("Done. Configured: " + ($READY -join ', ') + ". Open any project and the skills are live.")
+# The mode goes to the terminal, not into status.md, where empty means healthy,
+# and a tool that was not brought up to date is named, never counted.
+# Every tool step is behind us, so this is what the tools were given.
+Write-TextFile $OmsInstalledModeFile "$OmsContributionMode`n"
+Write-Host "Contribution mode: $OmsContributionMode"
+if ($NOT_UPDATED.Count -gt 0) {
+    Write-Err ("Not updated: " + ($NOT_UPDATED -join ', ') + ". The reasons are above.")
+    Write-Err "  Until each is fixed, that tool keeps an earlier run's OMS instructions, or none."
+}
+if ($READY.Count -gt 0) {
+    Write-Host ("Done. Configured: " + ($READY -join ', ') + ". Open any project and the skills are live.")
+} else {
+    Write-Host "Done, with no agent tool fully configured. The reasons are above."
+}
 '''
 
 
@@ -1945,6 +2373,8 @@ def _ps_detection_blocks() -> str:
             f'"{h.skills_dir or ""}" "{h.instructions or ""}" "{h.hint or ""}") {{\n'
             f'        ${_have(h)} = $true\n'
             f'        $READY += "{h.label}"\n'
+            f'    }} else {{\n'
+            f'        Add-NotUpdated "{h.label}"\n'
             f'    }}\n'
             f'}}'
         )
@@ -2043,13 +2473,32 @@ function Write-CodexMcp($File, $Label) {
     # breaks Codex outright, overwriting takes a decision that is theirs.
     if ($kept -match '(?m)^\\[mcp_servers\\.oms\\]') {
         Write-Host "  ${Label}: $File already has its own [mcp_servers.oms]; left alone."
+        if ($OmsContributionMode -ceq 'confirm') {
+            Write-Host "    Confirm mode set no per-tool approval there, so Codex may not ask before a contribution unless you configure it."
+        }
         return
+    }
+    # Confirm mode also sets Codex's own approval, "prompt", for the two tools
+    # that send a contribution; install.sh gives the reasons. A table the
+    # user wrote for one of them stays theirs. Matched case-sensitively, as
+    # TOML reads keys and as the sh grep does: a table differing only in case
+    # is another key, and taking it for the user's would leave approval unset.
+    $ask = ''
+    if ($OmsContributionMode -ceq 'confirm') {
+        foreach ($tool in 'log_correction', 'log_signal') {
+            if ($kept -cmatch "(?m)^\\[mcp_servers\\.oms\\.tools\\.$tool\\]") {
+                Write-Host "  ${Label}: $File already has its own [mcp_servers.oms.tools.$tool];"
+                Write-Host "    that table, not confirm mode, decides whether Codex asks before $tool."
+            } else {
+                $ask += "[mcp_servers.oms.tools.$tool]`napproval_mode = `"prompt`"`n"
+            }
+        }
     }
     $body = $kept.TrimEnd()
     if ($body) { $body += "`n" }
     Write-TextFile $File ($body + $BEGIN_MARK + "`n" +
         "[mcp_servers.oms]`nurl = `"@@MCP_URL@@`"`n" + $(if ($OMS_MCP_TOKEN) {
-            "http_headers = { Authorization = `"Bearer $OMS_MCP_TOKEN`" }`n" }) + $END_MARK + "`n")
+            "http_headers = { Authorization = `"Bearer $OMS_MCP_TOKEN`" }`n" }) + $ask + $END_MARK + "`n")
     Write-Host "  ${Label}: MCP server 'oms' registered in $File"
 }
 ''']
@@ -2142,6 +2591,7 @@ def render_install_ps1(mcp_url: str | None,
     """Render the shared Windows installer with explicit trusted extension slots."""
     validate_script_literals(mcp_url=mcp_url, bundle_token=bundle_token)
     fragments = fragments or PowerShellInstallFragments()
+    import_file = root_import_file(root_files)
     looked_for = " ".join(h.detect for h in HARNESSES)
     mcp = (_ps_mcp_helpers(mcp_url, bundle_token,
                            fragments.credential_setup, fragments.credential_notice)
@@ -2155,8 +2605,9 @@ def render_install_ps1(mcp_url: str | None,
             .replace("@@SKIP_SKILL@@", fragments.skip_skill)
             .replace("@@LINK_REPORT@@", fragments.link_report)
             .replace("@@REFRESH_OK@@", fragments.refresh_success)
-            .replace("@@ROOT_MD@@", fragments.root_source or "$SRC/@@IMPORT_FILE@@")
-            .replace("@@ROOT_IMPORT@@", fragments.root_import or "@$SRC/@@IMPORT_FILE@@")
+            # The root file of the mode section 0 settled, as in install.sh.
+            .replace("@@ROOT_MD@@", fragments.root_source or "$SRC/$OmsRootFile")
+            .replace("@@ROOT_IMPORT@@", fragments.root_import or "@$SRC/$OmsRootFile")
             .replace("@@LOOKED_FOR@@", looked_for)
             .replace("@@BUNDLE_TOKEN@@", bundle_token or "")
             # Last, and that ordering is load-bearing: several of the
@@ -2164,7 +2615,8 @@ def render_install_ps1(mcp_url: str | None,
             # instruction file, and resolving this one first would leave the
             # token sitting in the shipped script for PowerShell to read as a
             # command. `test_no_placeholder_survives_rendering` is the guard.
-            .replace("@@IMPORT_FILE@@", root_import_file(root_files)))
+            .replace("@@CONFIRM_FILE@@", confirm_variant_name(import_file))
+            .replace("@@IMPORT_FILE@@", import_file))
     if mcp_url:
         body = body.replace("@@MCP_URL@@", mcp_url)
     return body
@@ -2263,6 +2715,17 @@ def render_readme(mcp_url: str | None, distribution_repo: str | None = None, *,
         "contribution tool for every project, and schedules a daily pull. Safe "
         "to re-run; it never touches content you own, and it creates nothing "
         "for a tool you do not have.", "",
+        # Only where the bundle takes contributions: a read-only one has no
+        # confirm-mode instructions, and asking for them fails the install.
+        *([
+            "By default, an agent sends a correction you give it to OMS "
+            "without asking. To have it ask first and send only what you "
+            "approve, run the installer as `OMS_CONTRIBUTION_MODE=confirm sh "
+            "install.sh` (on Windows, run `$env:OMS_CONTRIBUTION_MODE = "
+            "'confirm'` first). The machine keeps that choice until you run "
+            "the installer again with `OMS_CONTRIBUTION_MODE=automatic` (on "
+            "Windows, `$env:OMS_CONTRIBUTION_MODE = 'automatic'`).", "",
+        ] if mcp_url else []),
         "For a local folder instead of a Git clone, `install.sh` checks for "
         "completed publications every minute using a macOS launch agent or "
         "cron on Linux. Added and removed skills and copied instructions are "
@@ -2310,7 +2773,8 @@ def render_readme(mcp_url: str | None, distribution_repo: str | None = None, *,
             "your keystrokes.",
             "",
             "**Corrections reach OMS one way only** - you state one and the "
-            "agent files it with `log_correction`. Two earlier hooks tried to "
+            "agent files it with `log_correction`, asking you first where the "
+            "installer ran in confirm mode. Two earlier hooks tried to "
             "be cleverer than that and both were removed: one scanned your "
             "prompts for rule-shaped sentences, and almost everything it "
             "caught was somebody testing the pipeline rather than a rule they "
@@ -2371,6 +2835,36 @@ def _inlined_repo_key() -> list[str]:
     return lines[:-1]
 
 
+def _arguments_as_on_the_envelope(*names: str) -> list[str]:
+    """The helper's docstring entries for its session-context keywords.
+
+    Wrapped from `ExecutionContext`'s own field descriptions rather than
+    retyped. The MCP input schema and the thin door already read them there,
+    so every door tells an agent the same thing, limits included, and a
+    changed limit reaches the helper at the next publish. Hyphens are never
+    broken, so a reader of the docstring sees "Human-readable" whole.
+
+    Copied unescaped into a plain triple-quoted docstring of generated
+    source, so each description is checked first. A backslash there would be
+    read as an escape, and a triple quote would end the docstring and leave
+    the rest of the text to run as code on the contributor's machine. A
+    missing one would print "None". Raised, not asserted: `python -O` strips
+    an assert, and this check guards what the helper ships."""
+    lines: list[str] = []
+    for name in names:
+        description = ExecutionContext.model_fields[name].description
+        if (not isinstance(description, str) or not description.strip()
+                or "\\" in description or '"""' in description):
+            raise ValueError(
+                f"ExecutionContext.{name} needs a description that is non-empty text "
+                f"with no backslash and no triple quote, because the helper's "
+                f"docstring carries it as written")
+        lines += textwrap.wrap(f"{name}: {description}",
+                               width=76, initial_indent=" " * 8, subsequent_indent=" " * 12,
+                               break_on_hyphens=False, break_long_words=False)
+    return lines
+
+
 def render_contribute_tool(endpoint: str, bundle_token: str | None = None, *,
                            fragments: ContributionFragments | None = None) -> str:
     """Generate a standalone contribution client with optional trusted helpers."""
@@ -2379,14 +2873,18 @@ def render_contribute_tool(endpoint: str, bundle_token: str | None = None, *,
     lines = [
         '"""Contribute a learning to OMS (generated by OMS at publish time).',
         "",
-        "Call contribute_learning(...) when the user corrects you, or you find a",
-        "durable preference or rule worth keeping. OMS fills the id, timestamp,",
-        "tenant, and routing; you supply the correction. Standard library only,",
-        "so it runs in any Python environment without installation.",
+        # Which contributions to send, and whether to ask the person first,
+        # is for the instructions an installation loads. This file is the
+        # same in every mode, so it only says what it sends.
+        "Send a correction or learning that your OMS instructions say to share.",
+        "OMS fills in the timestamp, tenant and routing, and a transaction id",
+        "when you do not pass one. Standard library only, so it runs in any",
+        "Python environment without installation.",
         *fragments.description,
         '"""',
         "from __future__ import annotations",
         "",
+        "import io",
         "import json",
         "import os",
         "import re",
@@ -2438,14 +2936,62 @@ def render_contribute_tool(endpoint: str, bundle_token: str | None = None, *,
         '        return json.loads(response.read().decode("utf-8"))',
         "",
         "",
+        # Kept out of `_post`. Helpers injected through the fragments send
+        # requests of their own through it and read the error bodies
+        # themselves, so it keeps raising every error with its body unread.
+        "def _refusal_or_raise(error: urllib.error.HTTPError) -> dict:",
+        '    """Answer with the refusal an error response carries; raise anything else.',
+        "",
+        "    A refusal is a policy's final no: the server read the request and will",
+        "    not admit it, so sending it again changes nothing. Its JSON body names",
+        '    a `reason` and says `"retryable": false`, either in an error envelope,',
+        '    {"error": {"message": ..., "reason": ..., "retryable": false}}, or at',
+        '    the top level, {"detail": ..., "reason": ..., "retryable": false}.',
+        "    Anything else is a fault and stays one, including a body that asks to",
+        "    be retried later.",
+        "",
+        "    The check has to read the body, which can be read only once, so an",
+        "    error that is not a refusal is raised again around the same bytes and",
+        "    from the same place: a caller still reads the status, headers and body",
+        '    the server sent, such as which field was over its limit."""',
+        "    try:",
+        "        raw = error.read()",
+        "    except Exception:",
+        "        raise error from None",
+        "    try:",
+        '        body = json.loads(raw.decode("utf-8"))',
+        "    except ValueError:",
+        "        body = None",
+        '    envelope = body.get("error") if isinstance(body, dict) else None',
+        "    if isinstance(envelope, dict):",
+        '        refusal, text = envelope, "message"',
+        "    else:",
+        '        refusal, text = body, "detail"',
+        '    reason = refusal.get("reason") if isinstance(refusal, dict) else None',
+        '    if isinstance(reason, str) and reason and refusal.get("retryable") is False:',
+        "        message = refusal.get(text)",
+        '        return {"status": "refused", "reason": reason,',
+        '                "message": message if isinstance(message, str) else reason,',
+        '                "retryable": False}',
+        "    again = urllib.error.HTTPError(error.geturl(), error.code, error.msg,",
+        "                                   error.hdrs, io.BytesIO(raw))",
+        "    raise again.with_traceback(error.__traceback__) from None",
+        "",
+        "",
         "def contribute_learning(correction: str, skill_hint: str | None = None,",
         '                        signal_type: str | None = None,',
         '                        source_ref: str | None = None,',
-        '                        repo: str | None = None) -> dict:',
-        '    """Record a learning so the shared organisational skills improve.',
+        '                        repo: str | None = None, *,',
+        '                        session_summary: str | None = None,',
+        '                        project_name: str | None = None,',
+        '                        reuse_case: str | None = None,',
+        '                        learning_evidence: str | None = None,',
+        '                        transaction_id: str | None = None) -> dict:',
+        '    """Send a correction or learning that your OMS instructions say to share.',
         "",
         "    Args:",
         "        correction: the correction or rule, in one or two sentences.",
+        '            With signal_type "self_reflection" it is sent as the learning.',
         "        skill_hint: the skill you were working in, if known.",
         '        signal_type: "self_reflection" for a learning you worked out',
         "            yourself, rather than one a person told you. That is what",
@@ -2459,9 +3005,31 @@ def render_contribute_tool(endpoint: str, bundle_token: str | None = None, *,
         "            checkout this call is made from, so the repo travels on",
         "            every contribution from this door whether or not anybody",
         "            thought about it.",
+        *_arguments_as_on_the_envelope("session_summary", "project_name", "reuse_case",
+                                       "learning_evidence"),
+        "        transaction_id: an id of your choosing for this contribution:",
+        '            letters, digits, ".", "_", ":" or "-", starting with a letter',
+        "            or digit, up to 256 characters. Use a new UUID for each",
+        "            contribution. Send the same id again only when you retry",
+        "            after an answer that never arrived, so OMS returns the first",
+        "            receipt instead of recording it twice. OMS returns that",
+        "            receipt for a repeated id without comparing what was sent,",
+        "            so any change to what is sent (the wording, skill_hint, the",
+        "            context or the signal) needs a new id. An id that another",
+        "            person used, or that was used with another signal_type, is",
+        '            refused with the reason "transaction_id_reused"; send the',
+        "            contribution again with a new id. Left unset, OMS assigns",
+        "            one.",
+        "",
+        "    Apart from repo, a keyword left as None is not sent at all.",
         "",
         "    Returns the OMS acknowledgement, for example",
-        '    {"transaction_id": "...", "status": "accepted"}.',
+        '    {"transaction_id": "...", "status": "accepted"}. A policy refusal is',
+        '    returned too, not raised: {"status": "refused", "reason": ...,',
+        '    "message": ..., "retryable": False}. It is final, so do not send it',
+        "    again or as a different signal; only a transaction_id_reused",
+        "    refusal asks for the same contribution under a new id. Any other",
+        "    failure raises.",
         '    """',
         '    body = {"learning" if signal_type == "self_reflection" else "correction": correction}',
         "    if skill_hint is not None:",
@@ -2473,7 +3041,19 @@ def render_contribute_tool(endpoint: str, bundle_token: str | None = None, *,
         "    resolved_repo = repo if repo is not None else _repo()",
         "    if resolved_repo is not None:",
         '        body["repo"] = resolved_repo',
-        "    return _post(OMS_INGEST_ENDPOINT, body)",
+        '    for name, value in (("session_summary", session_summary),',
+        '                        ("project_name", project_name),',
+        '                        ("reuse_case", reuse_case),',
+        '                        ("learning_evidence", learning_evidence),',
+        '                        ("transaction_id", transaction_id)):',
+        "        if value is not None:",
+        "            body[name] = value",
+        "    # A refusal is an answer, and returning it is what lets a caller",
+        "    # tell it from a fault: both used to arrive as the same exception.",
+        "    try:",
+        "        return _post(OMS_INGEST_ENDPOINT, body)",
+        "    except urllib.error.HTTPError as error:",
+        "        return _refusal_or_raise(error)",
         "",
         "",
         *fragments.helpers,
@@ -2485,7 +3065,10 @@ def render_contribute_tool(endpoint: str, bundle_token: str | None = None, *,
         "    def _usage() -> None:",
         "        sys.stderr.write(",
         "            \"usage: oms_contribute.py '<correction>' ['<skill_hint>']\"",
-        '            " [--signal-type <type>] [--source-ref <ref>]\\n"',
+        '            " [--signal-type <type>] [--source-ref <ref>]"',
+        '            " [--session-summary <text>] [--project-name <name>]"',
+        '            " [--reuse-case <text>] [--evidence <text>]"',
+        '            " [--transaction-id <id>]\\n"',
         *fragments.usage_lines,
         "        )",
         "        raise SystemExit(2)",
@@ -2500,37 +3083,43 @@ def render_contribute_tool(endpoint: str, bundle_token: str | None = None, *,
         "    # exact meaning.",
         "    correction_arg = sys.argv[1]",
         "    skill_hint_arg = None",
-        "    signal_type_arg = None",
-        "    source_ref_arg = None",
         "    rest = sys.argv[2:]",
         '    if rest and not rest[0].startswith("--"):',
         "        skill_hint_arg = rest.pop(0)",
+        "    # Each flag sets the contribute_learning keyword of the same name,",
+        "    # except --evidence, which is short for learning_evidence.",
+        '    keywords = {"--signal-type": "signal_type", "--source-ref": "source_ref",',
+        '                "--session-summary": "session_summary",',
+        '                "--project-name": "project_name", "--reuse-case": "reuse_case",',
+        '                "--evidence": "learning_evidence",',
+        '                "--transaction-id": "transaction_id"}',
+        "    options = {}",
         "    while rest:",
         "        flag = rest.pop(0)",
-        '        if flag not in ("--signal-type", "--source-ref"):',
+        "        if flag not in keywords:",
         "            _usage()",
         "        # A flag with no value is a usage error, not a silent None. A",
         "        # dropped signal_type is exactly what turns a self-reflection",
         "        # into the default EXPLICIT_CORRECTION, which can be auto-written",
-        "        # into a published skill with nobody reviewing it, so a half-",
-        "        # written command line has to fail here rather than post",
-        "        # something it was never asked to post.",
+        "        # into a published skill with nobody reviewing it, and a dropped",
+        "        # transaction id turns a retry into new work, so a half-written",
+        "        # command line has to fail here rather than post something it",
+        "        # was never asked to post.",
         "        if not rest:",
         "            _usage()",
-        "        value = rest.pop(0)",
-        '        if flag == "--signal-type":',
-        "            signal_type_arg = value",
-        "        else:",
-        "            source_ref_arg = value",
+        "        options[keywords[flag]] = rest.pop(0)",
         "    try:",
-        "        ack = contribute_learning(correction_arg, skill_hint_arg,",
-        "                                  signal_type_arg, source_ref_arg)",
+        "        ack = contribute_learning(correction_arg, skill_hint_arg, **options)",
         "    except Exception as exc:  # network, HTTP, or decode failure",
         '        sys.stderr.write(f"OMS contribution FAILED: {exc}\\n")',
         "        raise SystemExit(1)",
         "    print(json.dumps(ack))",
         '    if ack.get("status") != "accepted":',
-        '        sys.stderr.write("OMS did not accept the contribution\\n")',
+        "        # A refusal says why in the server's own words, including",
+        "        # whether to send it again. Any other answer has only this line.",
+        '        sys.stderr.write("OMS did not accept the contribution"',
+        '                         + (": " + str(ack["message"]) if ack.get("message") else "")',
+        '                         + "\\n")',
         "        raise SystemExit(1)",
         "",
     ]
@@ -2553,13 +3142,23 @@ def _constraint_block(constraints: list[Constraint]) -> list[str]:
 
 
 def render_claude_md(constraints: list[Constraint], skills: list[Skill],
-                     contribution_endpoint: str | None = None) -> str:
+                     contribution_endpoint: str | None = None, *,
+                     session_learnings: bool = True,
+                     contribution_mode: ContributionMode = "automatic") -> str:
+    """One root instruction file: constraints, the skill index and, with an
+    endpoint, the contribution block in the variant asked for (see
+    `_contribution_block`). The mode is checked with or without an endpoint,
+    so a misspelt one fails wherever it is passed, not only where it would
+    show."""
+    _check_contribution_mode(contribution_mode)
     lines = _constraint_block(constraints)
     lines += ["", "# Available Skills", ""]
     for s in sorted(skills, key=lambda x: x.name):
         lines.append(f"* **{s.name}**: {s.description}")
     if contribution_endpoint:
-        lines += _contribution_block(contribution_endpoint)
+        lines += _contribution_block(contribution_endpoint,
+                                     session_learnings=session_learnings,
+                                     mode=contribution_mode)
     return "\n".join(lines) + "\n"
 
 

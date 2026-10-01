@@ -5,12 +5,19 @@ from pydantic import ValidationError
 from oms.domain.models import Principal
 from oms.domain.types import SourceRuntime
 from oms.ingestion.contribution import ContributionRequest, correction_payload
-from oms.ingestion.schema import CorrectionPayload
+from oms.ingestion.schema import SESSION_CONTEXT_FIELDS, CorrectionPayload
 from oms.ingestion.service import (
+    TRANSACTION_ID_REUSED,
+    TRANSACTION_ID_REUSED_MESSAGE,
     IngestionService,
     SanitisationError,
     TenantMismatchError,
+    TransactionIdReused,
     UnauthorisedError,
+)
+from oms.ports.contribution_policy import (
+    POLICY_UNAVAILABLE, POLICY_UNAVAILABLE_MESSAGE,
+    ContributionPolicyUnavailable, ContributionRefused,
 )
 from oms.publish.catalogue import (
     CatalogueBlocked, ResourceNotFound, SkillCatalogue, SkillNotFound,
@@ -38,11 +45,18 @@ class ToolDocument:
 
 class ToolError(Exception):
     """Raised when a tool call cannot be processed; surfaced to the MCP client
-    with a typed `code` so clients can branch without string-matching (Section 5.3)."""
+    with a typed `code` so clients can branch without string-matching (Section 5.3).
 
-    def __init__(self, message: str, code: str = "error") -> None:
+    `retryable` is set only where the server knows whether resending the same
+    call can succeed: False for a policy refusal or a reused transaction id,
+    True for a policy that could not be read. None leaves the key out of the
+    result, so every error that existed before it keeps its exact shape."""
+
+    def __init__(self, message: str, code: str = "error",
+                 retryable: bool | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.retryable = retryable
 
 
 def _submit(service: IngestionService, payload: CorrectionPayload, principal: Principal) -> dict:
@@ -54,6 +68,20 @@ def _submit(service: IngestionService, payload: CorrectionPayload, principal: Pr
         raise ToolError(f"tenant mismatch: {exc}", code="tenant_mismatch") from exc
     except SanitisationError as exc:
         raise ToolError(f"sanitisation failed, quarantined: {exc}", code="quarantined") from exc
+    # Final for this id, so `retryable` is False; the sentence tells the
+    # caller that the contribution itself can go again under a new id.
+    except TransactionIdReused as exc:
+        raise ToolError(TRANSACTION_ID_REUSED_MESSAGE, code=TRANSACTION_ID_REUSED,
+                        retryable=False) from exc
+    # Both policy outcomes are errors, never a receipt, so a client that reads
+    # only `isError` cannot take either for an accepted contribution. The
+    # policy's own sentence goes through for a refusal. An unreadable policy
+    # gets the fixed sentence, because its exception may describe the store.
+    except ContributionRefused as exc:
+        raise ToolError(exc.message, code=exc.code, retryable=False) from exc
+    except ContributionPolicyUnavailable as exc:
+        raise ToolError(POLICY_UNAVAILABLE_MESSAGE, code=POLICY_UNAVAILABLE,
+                        retryable=True) from exc
     result = {"transaction_id": txn.id, "status": "accepted"}
     if txn.workflow_state is not None:
         result["state"] = txn.workflow_state
@@ -81,6 +109,17 @@ def _explain(exc: ValidationError) -> str:
 
 
 def _ingest(service: IngestionService, arguments: dict, principal: Principal) -> dict:
+    # The full envelope keeps the session context inside `execution_context`,
+    # and the model ignores keys it does not declare, so a copy at the top
+    # level was dropped without a word: the agent heard "accepted" and the
+    # reviewer read that no context was provided. Refused by name instead,
+    # before anything is written, because nothing says which copy was meant.
+    if "execution_context" in arguments:
+        misplaced = [name for name in SESSION_CONTEXT_FIELDS if name in arguments]
+        if misplaced:
+            raise ToolError(f"invalid payload: {', '.join(misplaced)}: send these inside "
+                            "execution_context when the call carries one",
+                            code="invalid_payload")
     try:
         payload = CorrectionPayload.model_validate(arguments)
     except ValidationError as exc:
@@ -94,12 +133,18 @@ def handle_log_correction(service: IngestionService, arguments: dict, principal:
     # CorrectionPayload stays accepted for existing clients and for
     # skill-import style calls that need the envelope's extra fields.
     if "execution_context" not in arguments:
+        # Building the envelope validates it again, and the envelope checks
+        # one thing the thin body does not: the form of a supplied
+        # `transaction_id`. Inside the same `try`, so that refusal is typed
+        # and names the field like every other, rather than reaching the SDK
+        # as an exception whose text repeats the id.
         try:
             body = ContributionRequest.model_validate(arguments)
+            payload = correction_payload(body, principal, SourceRuntime.MCP)
         except ValidationError as exc:
             raise ToolError(f"invalid payload: {_explain(exc)}",
                             code="invalid_payload") from exc
-        return _submit(service, correction_payload(body, principal, SourceRuntime.MCP), principal)
+        return _submit(service, payload, principal)
     return _ingest(service, arguments, principal)
 
 
@@ -121,9 +166,15 @@ def _required(arguments: dict, field: str) -> str:
 
 def handle_list_skills(catalogue: SkillCatalogue, arguments: dict, principal: Principal) -> dict:
     hint = arguments.get("domain_hint")
+    # The SDK no longer checks arguments against the input schema, which
+    # declares this one a string. Checked here instead: a hint that is not
+    # text is refused as the schema says, never quietly read as no hint,
+    # which would answer with the whole catalogue.
+    if "domain_hint" in arguments and not isinstance(hint, str):
+        raise ToolError("invalid payload: domain_hint must be a string",
+                        code="invalid_payload")
     try:
-        listings = catalogue.list_skills(principal.tenant_id,
-                                         domain_hint=hint if isinstance(hint, str) else None,
+        listings = catalogue.list_skills(principal.tenant_id, domain_hint=hint,
                                          person_id=principal.person_id)
     except CatalogueBlocked as exc:
         raise ToolError(str(exc), code="blocked") from exc

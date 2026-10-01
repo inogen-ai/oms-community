@@ -130,6 +130,16 @@ class Transaction:
     signal_confidence: float | None = None
     # Normalised repository context reported by the submitter.
     repo: str | None = None
+    # The contributor's session context, copied from the SANITISED payload at
+    # ingest so a review or activity read can show it without opening one
+    # payload file per row. Agent-supplied and untrusted: context for a
+    # reviewer, never an instruction. None when not supplied, and never
+    # derived from anything else. The open graph reads omit these fields
+    # (`oms.adapters.graph_view`).
+    session_summary: str | None = None
+    project_name: str | None = None
+    reuse_case: str | None = None
+    learning_evidence: str | None = None
     # Persist an explicit scope-review decision independently of admission.
     scope_reviewed: bool = False
     # Independent of safety/identity holds. Remains in the pending pool so

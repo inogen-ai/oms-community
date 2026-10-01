@@ -91,7 +91,11 @@ def main(argv=None):
             if txn is None or txn.tenant_id != settings.tenant_id:
                 parser.error("transaction not found in this workspace")
             services.payloads.delete(txn.id)
-            result = {"deleted": txn.id}
+            # The row holds the contributor's words too (the summary and the
+            # session context, copied from the payload at ingest), so the
+            # payload file alone is not the whole of what they wrote.
+            cleared = services.store.clear_transaction_context([txn.id], settings.tenant_id)
+            result = {"deleted": txn.id, "context_cleared": cleared}
         else:
             if args.git_url:
                 from oms.publish.git import GitCommandError, hold_checkout_lock, publish_to_repo

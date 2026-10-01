@@ -19,7 +19,7 @@ from oms.domain.types import (
     SkillVersionCause,
 )
 from oms.domain.auth import Assurance
-from oms.ports.graph_store import RuleContext, SectionMutabilityError
+from oms.ports.graph_store import TRANSACTION_CONTEXT_FIELDS, RuleContext, SectionMutabilityError
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,8 @@ class Neo4jGraphStore:
                 "n.person_id=$person_id, n.assurance=$assurance, "
                 "n.admitted=$admitted, n.signal_confidence=$signal_confidence, "
                 "n.repo=$repo, n.scope_reviewed=$scope_reviewed, n.licence_hold=$licence_hold, "
+                "n.session_summary=$session_summary, n.project_name=$project_name, "
+                "n.reuse_case=$reuse_case, n.learning_evidence=$learning_evidence, "
                 "n.workflow_state=$workflow_state, n.workflow_decision=$workflow_decision, "
                 "n.workflow_rule_id=$workflow_rule_id, n.workflow_safety_digest=$workflow_safety_digest",
                 id=transaction.id, st=transaction.signal_type.value,
@@ -118,6 +120,10 @@ class Neo4jGraphStore:
                 repo=transaction.repo,
                 scope_reviewed=transaction.scope_reviewed,
                 licence_hold=transaction.licence_hold,
+                session_summary=transaction.session_summary,
+                project_name=transaction.project_name,
+                reuse_case=transaction.reuse_case,
+                learning_evidence=transaction.learning_evidence,
                 workflow_state=transaction.workflow_state,
                 workflow_decision=transaction.workflow_decision,
                 workflow_rule_id=transaction.workflow_rule_id,
@@ -167,6 +173,14 @@ class Neo4jGraphStore:
             # An absent review marker must not imply a decision was made.
             scope_reviewed=bool(n.get("scope_reviewed")),
             licence_hold=n.get("licence_hold"),
+            # Absent on rows written before session context existed, which
+            # reads as "not provided", never as empty context. Read back here
+            # because workflow code writes whole rows: a field missed on read
+            # would be erased by the next write.
+            session_summary=n.get("session_summary"),
+            project_name=n.get("project_name"),
+            reuse_case=n.get("reuse_case"),
+            learning_evidence=n.get("learning_evidence"),
             workflow_state=n.get("workflow_state"),
             workflow_decision=n.get("workflow_decision"),
             workflow_rule_id=n.get("workflow_rule_id"),
@@ -490,6 +504,25 @@ class Neo4jGraphStore:
                 tid=tenant_id, since=since, limit=limit,
             )
             return [self._transaction_from_node(rec["t"]) for rec in recs]
+
+    def clear_transaction_context(self, transaction_ids: list[str], tenant_id: str) -> int:
+        wanted = sorted(set(transaction_ids))
+        if not wanted:
+            return 0
+        # Setting a property to null removes it, which is how a row written
+        # before the context existed already reads: "not provided". The
+        # property names come from the constant, never from a caller. Counted
+        # before the SET, so a row that carried none of them is not counted.
+        carried = " OR ".join(f"t.{name} IS NOT NULL" for name in TRANSACTION_CONTEXT_FIELDS)
+        cleared = ", ".join(f"t.{name} = null" for name in TRANSACTION_CONTEXT_FIELDS)
+        with self._driver.session() as session:
+            record = session.run(
+                "MATCH (t:Transaction) WHERE t.id IN $ids AND t.tenant_id = $tid "
+                f"WITH t, ({carried}) AS carried SET {cleared} "
+                "RETURN count(CASE WHEN carried THEN 1 END) AS cleared",
+                ids=wanted, tid=tenant_id,
+            ).single()
+        return record["cleared"] if record is not None else 0
 
     def rules_for_tenant(self, tenant_id: str, limit: int = 500) -> list[Rule]:
         with self._driver.session() as session:

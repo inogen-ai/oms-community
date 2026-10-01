@@ -18,9 +18,17 @@ from oms.publish.catalogue import SkillCatalogue
 _PAYLOAD_SCHEMA = CorrectionPayload.model_json_schema()
 _CONTRIBUTION_SCHEMA = ContributionRequest.model_json_schema()
 
+# What each tool records and what qualifies, and nothing about when or whether
+# to call it. One server answers every installation, and installations differ:
+# some log a correction in the same turn, some ask the person first, some ask
+# for no session learnings at all. Only the instructions an installation loaded
+# know which, so a description that commanded either would contradict them.
+_WHEN_TO_SUBMIT = ("Follow your OMS instructions for when to submit; some installations "
+                   "ask the person to confirm first.")
+
 TOOL_SCHEMAS = [
-    {"name": "log_correction", "description": "Capture useful durable guidance in the local manual inbox. Submit a standing preference, a correction to existing guidance, or an evidenced reusable lesson. Do not submit task requests, answer outlines, generic advice or one-off answer coaching. Zero contributions is normal. For self_reflection send learning instead of correction. A person reviews the wording and target skills before publication.", "inputSchema": _CONTRIBUTION_SCHEMA},
-    {"name": "log_signal", "description": "Capture an interaction or useful session learning with its source and signal type for local manual review. For self_reflection, execution_context.learning must contain the reusable instruction; user_input and agent_raw_output are only historical context. Do not submit tasks, generic advice or one-off answer coaching. Zero contributions is normal.", "inputSchema": _PAYLOAD_SCHEMA},
+    {"name": "log_correction", "description": "Records durable guidance in the local manual inbox. A standing preference, a correction to existing guidance or an evidenced reusable lesson qualifies; task requests, answer outlines, generic advice and one-off answer coaching do not, and zero contributions is normal. For self_reflection send learning instead of correction, with session_summary, reuse_case and learning_evidence as its context. A person reviews the wording and target skills before publication. " + _WHEN_TO_SUBMIT, "inputSchema": _CONTRIBUTION_SCHEMA},
+    {"name": "log_signal", "description": "Records an interaction or a session learning, with its source and signal type, for local manual review. For self_reflection, execution_context.learning must contain the reusable instruction, with session_summary, reuse_case and learning_evidence as its context; user_input and agent_raw_output are only historical context. Tasks, generic advice and one-off answer coaching do not qualify, and zero contributions is normal. " + _WHEN_TO_SUBMIT, "inputSchema": _PAYLOAD_SCHEMA},
 ]
 
 # Consumption Tier 2 (spec §9.2): the read side of the same connection. A host
@@ -167,7 +175,16 @@ def build_server(service: IngestionService, resolve_principal: PrincipalResolver
     async def list_tools() -> list[types.Tool]:
         return [types.Tool(**schema) for schema in tools]
 
-    @server.call_tool()
+    # The SDK's own check of the arguments against each input schema is off,
+    # so every argument is validated once, by the handlers, with the models
+    # the HTTP door uses. The SDK's check ran first and answered in its own
+    # words: it named no field, echoed the whole value back, and measured
+    # whitespace the models strip, so a padded value within its limit on
+    # HTTP was refused here. The advertised schemas are unchanged, so clients
+    # still see every limit; a read tool checks its own arguments' types.
+    # Validation now also comes after authorisation and the write and read
+    # gates, which is where the handlers run.
+    @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict) -> types.CallToolResult:
         try:
             handler = _DISPATCH.get(name)
@@ -188,8 +205,14 @@ def build_server(service: IngestionService, resolve_principal: PrincipalResolver
                       else reader(catalogue, arguments, principal))
             return types.CallToolResult(content=_content(result), isError=False)
         except ToolError as exc:
+            error = {"error": str(exc), "code": exc.code}
+            # Added only when the handler knows the answer (a policy outcome
+            # or a reused transaction id), so every other error keeps the two
+            # keys clients already parse.
+            if exc.retryable is not None:
+                error["retryable"] = exc.retryable
             return types.CallToolResult(
-                content=[types.TextContent(type="text", text=json.dumps({"error": str(exc), "code": exc.code}))],
+                content=[types.TextContent(type="text", text=json.dumps(error))],
                 isError=True,
             )
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from oms.domain.ids import slug as _slug
-from oms.domain.models import Publication, Rule, Skill
+from oms.domain.models import Constraint, Publication, Rule, Skill
 from oms.domain.repo import is_repo_skill
 from oms.domain.types import ArtefactKind, SectionKind, SkillStatus
 from oms.ports.blob_store import BlobStore
@@ -18,7 +18,8 @@ from oms.publish.parts import DocPart
 from oms.ports.publishing import PublishingRenderer
 from oms.publish.render import (
     DEFAULT_ROOT_INSTRUCTION_FILES, REFERENCES_FILE, ROOT_RULE_FORMATS,
-    LocalPublishingRenderer, ManifestEntry, RenderedSkill, describe,
+    ContributionMode, LocalPublishingRenderer, ManifestEntry, RenderedSkill,
+    confirm_variant_name, describe,
     has_nothing_to_say, publishable,
     render_claude_md, render_cursor_mcp_json, render_mcp_json,
     outline_skill_flat, outline_skill_sectioned,
@@ -44,6 +45,8 @@ class Publisher:
         bundle_token: str | None = None,
         distribution_repo: str | None = None,
         renderer: PublishingRenderer | None = None,
+        *,
+        session_learnings: bool = True,
     ) -> None:
         self._store = store
         self._body_budget = body_budget
@@ -51,6 +54,11 @@ class Publisher:
         # When set, the published root file carries the standing contribution
         # instruction pointing agents at this ingest endpoint (spec §6.1).
         self._contribution_endpoint = contribution_endpoint
+        # Whether that instruction asks agents for session learnings. The
+        # caller resolves it for the tenant and passes it in: every file one
+        # publish writes, automatic and confirm alike, says the same thing.
+        # True, the default, is the behaviour before the choice existed.
+        self._session_learnings = session_learnings
         # When set, baked into the shim and the MCP configs (spec §8.2): a
         # shared low-privilege secret proving bundle possession, never
         # identity, admitted server-side by BundleGuard as the fallback when
@@ -69,6 +77,19 @@ class Publisher:
         # for one of these names.
         self._root_files = list(root_instruction_files
                                 or DEFAULT_ROOT_INSTRUCTION_FILES)
+        # Each root file's confirm-mode copy is published beside it under
+        # `confirm_variant_name`. A configured name that IS another's copy
+        # would put two files on one path: publish would write one over the
+        # other, and an installer choosing a mode would open the wrong one.
+        # Refused here, whether or not an endpoint is set today, so the
+        # setting cannot become invalid the day one is.
+        for filename in self._root_files:
+            variant = confirm_variant_name(filename)
+            if variant in self._root_files:
+                raise ValueError(
+                    f"root instruction files {filename!r} and {variant!r} cannot both "
+                    f"be published: {variant!r} is the name of {filename!r}'s "
+                    f"confirm-mode copy")
         # Frameworks with a directory-and-format rule scheme (Cursor, Windsurf)
         # get the same content wrapped in their format. None falls back to the
         # supported set; pass [] to emit only the plain markdown files.
@@ -87,19 +108,36 @@ class Publisher:
         self._distribution_repo = distribution_repo
         self._renderer = renderer if renderer is not None else LocalPublishingRenderer()
 
-    def render_root(self, tenant_id: str, *, skills: list[Skill] | None = None) -> str:
+    def render_root(self, tenant_id: str, *, skills: list[Skill] | None = None,
+                    contribution_mode: ContributionMode = "automatic") -> str:
         """Render the root constraints and index through the shared projection.
 
         Extensions can project the same selected skills into another target.
         A supplied selection is checked against the requested tenant.
+        `contribution_mode` picks the variant; the session-learnings choice
+        is the publisher's own, so no caller can render a root that disagrees
+        with the files it publishes.
         """
         selected = ([skill for skill, _ in self.publishable_skills(tenant_id)]
                     if skills is None else skills)
         if any(skill.tenant_id != tenant_id for skill in selected):
             raise ValueError("root instructions cannot contain another tenant's skills")
+        return self._root_md(self._store.active_constraints(tenant_id), selected,
+                             contribution_mode)
+
+    def _root_md(self, constraints: list[Constraint], skills: list[Skill],
+                 contribution_mode: ContributionMode = "automatic") -> str:
+        """One root file from constraints the caller has already read.
+
+        `publish` reads the constraints once and renders every file from that
+        one list. Reading them again for each file let an edit made during a
+        publish give the automatic and confirm files, and the Tier 2
+        manifest, different constraints in one publication."""
         return render_claude_md(
-            self._store.active_constraints(tenant_id), selected,
-            contribution_endpoint=self._contribution_endpoint)
+            constraints, skills,
+            contribution_endpoint=self._contribution_endpoint,
+            session_learnings=self._session_learnings,
+            contribution_mode=contribution_mode)
 
     def check(self, tenant_id: str) -> GateResult:
         """The gate alone: everything `publish` would refuse over, with nothing
@@ -160,13 +198,34 @@ class Publisher:
         # emits" would eventually disagree with the code above it.
         root_refs: set[str] = {".oms-publication", ".oms-ownership.json"}
 
-        root_md = self.render_root(tenant_id, skills=skills)
+        # From the constraints read above, like the Tier 2 manifest below:
+        # one read, so every file in this publication states the same ones.
+        root_md = self._root_md(constraints, skills)
         for filename in self._root_files:
             root_refs.add(self._write_with_ledger(
                 out_dir / filename, root_md,
                 tenant_id=tenant_id, skill_id="(org)",
                 source_ref=filename,
             ))
+        # The confirm-mode copy of every root file, for an installation that
+        # asks its person before sharing. Written beside the automatic files
+        # rather than instead of them: the mode belongs to each installation,
+        # and one published tree serves both kinds. A sibling under its own
+        # name (`confirm_variant_name`), so no harness loads it by itself.
+        # Only with an endpoint, because without one there is no
+        # contribution block to vary; and ledgered like the rest, so
+        # withdrawing the endpoint prunes them. The Cursor and Windsurf rules
+        # below stay automatic: those are project files an installer never
+        # copies into a global location.
+        if self._contribution_endpoint:
+            confirm_md = self._root_md(constraints, skills, contribution_mode="confirm")
+            for filename in self._root_files:
+                variant = confirm_variant_name(filename)
+                root_refs.add(self._write_with_ledger(
+                    out_dir / variant, confirm_md,
+                    tenant_id=tenant_id, skill_id="(org)",
+                    source_ref=variant,
+                ))
         for fmt in self._root_rule_formats:
             rel_path, wrap = ROOT_RULE_FORMATS[fmt]
             target = out_dir / rel_path
