@@ -910,11 +910,11 @@
     },
     "src/oms/publish/publisher.py": {
       "mode": 420,
-      "sha256": "eac8f4f2af1d7ee758319973da3021b2325a453fc87f3379805af90fba897e48"
+      "sha256": "35bc69da410d92864aee4a21f059c273fc8eab9081e55518dd9768ef780d103b"
     },
     "src/oms/publish/render.py": {
       "mode": 420,
-      "sha256": "6addab8263228418021fa41dd99383a65f8d42d2e9291f3b4657425ed57073fd"
+      "sha256": "3d49501af503bc961443aaaca69422e533ec467babe50c5d623892d36acd075b"
     },
     "src/oms/publish/urls.py": {
       "mode": 420,
@@ -1082,7 +1082,7 @@
     },
     "tests/community/test_publication_selection.py": {
       "mode": 420,
-      "sha256": "93df29ad923a23cc55b48fb00b031db0691e47204bb8960c25d4f4682314bf19"
+      "sha256": "d15cf40f3fe54067fe7c82d8b65259649d00297f08329b9d84f1e81681b3c2c2"
     },
     "tests/community/test_recent_skill_changes.py": {
       "mode": 420,

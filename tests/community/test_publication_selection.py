@@ -14,6 +14,8 @@ existing deployment runs.
 """
 from pathlib import Path
 
+import pytest
+
 from oms.adapters.memory.store import InMemoryGraphStore
 from oms.domain.models import (
     Artefact, Constraint, ContentBlock, Edge, Rule, Section, Skill,
@@ -209,3 +211,139 @@ def test_a_selection_that_chooses_nothing_publishes_an_empty_tree(tmp_path):
     assert gate.passed, gate.reasons
     assert not (out / "skills").exists() or not any((out / "skills").iterdir())
     assert (out / "install.sh").is_file()
+
+
+# -- Skills-only destinations ------------------------------------------------------
+#
+# A destination that holds skills for another bundle's installer to link: no
+# root instruction file, no installer, no token, nothing that could collide
+# with the bundle a machine already installs from.
+
+def _endpoints_publisher(store: InMemoryGraphStore) -> Publisher:
+    """A publisher configured for every conditional root artefact, so a
+    skills-only tree that wrote none of them proves the flag, not the
+    configuration."""
+    return Publisher(store, contribution_endpoint="https://oms.acme/api/ingest",
+                     mcp_endpoint="https://oms.acme/mcp", bundle_token="bundle-token")
+
+
+def _files(root: Path) -> set[str]:
+    return {path.relative_to(root).as_posix() for path in root.rglob("*")
+            if path.is_file() and ".git" not in path.relative_to(root).parts}
+
+
+def test_a_skills_only_tree_holds_skills_and_the_manifest_fragment_only(tmp_path):
+    out = tmp_path / "team"
+    gate = _endpoints_publisher(_store()).publish(TENANT, out, select=_finance,
+                                                  skills_only=True)
+    assert gate.passed, gate.reasons
+    assert _files(out) == {
+        "skills/revenue-recognition/SKILL.md", "tier2/AGENTS.md",
+        ".oms-ownership.json", ".oms-publication",
+    }
+
+
+def test_the_manifest_fragment_names_its_skills_and_carries_no_constraints(tmp_path):
+    out = tmp_path / "team"
+    _endpoints_publisher(_store()).publish(TENANT, out, select=_finance, skills_only=True)
+    fragment = (out / "tier2" / "AGENTS.md").read_text(encoding="utf-8")
+    assert 'query_skill("revenue-recognition")' in fragment
+    assert "Honour GDPR" not in fragment
+    assert "# Organisational Constraints" not in fragment
+
+
+def test_a_full_bundle_republished_skills_only_loses_its_root_files(tmp_path):
+    out = tmp_path / "out"
+    publisher = _endpoints_publisher(_store())
+    assert publisher.publish(TENANT, out, select=_finance).passed
+    assert (out / "install.sh").is_file() and (out / "CLAUDE.md").is_file()
+    assert publisher.publish(TENANT, out, select=_finance, skills_only=True).passed
+    assert _files(out) == {
+        "skills/revenue-recognition/SKILL.md", "tier2/AGENTS.md",
+        ".oms-ownership.json", ".oms-publication",
+    }
+
+
+def test_a_fresh_skills_only_folder_leaves_the_database_ledger_alone(tmp_path):
+    """The database's (org) rows describe the newest full bundle, written to a
+    different folder. A new skills-only destination has no ownership file yet
+    and must not read those rows as its own: they would name files it does not
+    hold, and the prune would delete their rows as 'already gone'."""
+    store = _store()
+    publisher = _endpoints_publisher(store)
+    assert publisher.publish(TENANT, tmp_path / "org", select=_marketing).passed
+    before = {p.source_ref for p in store.publications_for_skill(TENANT, "(org)")}
+    assert "CLAUDE.md" in before
+    assert publisher.publish(TENANT, tmp_path / "team", select=_finance, skills_only=True).passed
+    after = {p.source_ref for p in store.publications_for_skill(TENANT, "(org)")}
+    assert before <= after
+
+
+def test_two_destinations_never_prune_each_others_skills(tmp_path):
+    store = _store()
+    publisher = _endpoints_publisher(store)
+    org, team = tmp_path / "org", tmp_path / "team"
+    for _ in range(2):
+        assert publisher.publish(TENANT, org, select=_marketing).passed
+        assert publisher.publish(TENANT, team, select=_finance, skills_only=True).passed
+    assert (org / "skills" / "campaign-briefs" / "SKILL.md").is_file()
+    assert not (org / "skills" / "revenue-recognition").exists()
+    assert (team / "skills" / "revenue-recognition" / "SKILL.md").is_file()
+    assert not (team / "skills" / "campaign-briefs").exists()
+
+
+def test_a_skill_that_moves_destination_leaves_the_old_tree_and_reaches_the_new(tmp_path):
+    store = _store()
+    publisher = _endpoints_publisher(store)
+    org, team = tmp_path / "org", tmp_path / "team"
+    everyone = {"finance", "marketing"}
+    assert publisher.publish(TENANT, org, select=lambda s: s.domain in everyone).passed
+    assert publisher.publish(TENANT, team, select=lambda s: False, skills_only=True).passed
+    assert (org / "skills" / "revenue-recognition").is_dir()
+    everyone.discard("finance")
+    assert publisher.publish(TENANT, team, select=_finance, skills_only=True).passed
+    assert publisher.publish(TENANT, org, select=lambda s: s.domain in everyone).passed
+    assert not (org / "skills" / "revenue-recognition").exists()
+    assert (team / "skills" / "revenue-recognition" / "SKILL.md").is_file()
+
+
+# -- Extra root files ---------------------------------------------------------------
+
+def test_an_extra_root_file_is_written_and_owned(tmp_path):
+    import json
+    out = tmp_path / "out"
+    gate = Publisher(_store()).publish(TENANT, out, extra_root_files={"teams.json": '{"teams": {}}\n'})
+    assert gate.passed, gate.reasons
+    assert (out / "teams.json").read_text(encoding="utf-8") == '{"teams": {}}\n'
+    assert "teams.json" in json.loads((out / ".oms-ownership.json").read_text(encoding="utf-8"))
+
+
+def test_an_extra_root_file_is_pruned_when_no_longer_sent(tmp_path):
+    out = tmp_path / "out"
+    publisher = Publisher(_store())
+    assert publisher.publish(TENANT, out, extra_root_files={"teams.json": "{}\n"}).passed
+    assert publisher.publish(TENANT, out).passed
+    assert not (out / "teams.json").exists()
+
+
+def test_an_extra_root_file_changes_the_publication_revision(tmp_path):
+    out = tmp_path / "out"
+    publisher = Publisher(_store())
+    publisher.publish(TENANT, out, extra_root_files={"teams.json": "{}\n"})
+    first = (out / ".oms-publication").read_text(encoding="utf-8")
+    publisher.publish(TENANT, out, extra_root_files={"teams.json": '{"a": 1}\n'})
+    assert (out / ".oms-publication").read_text(encoding="utf-8") != first
+
+
+@pytest.mark.parametrize("name", [
+    "", "/teams.json", "../teams.json", "a/../../teams.json", "a//b.json", "./teams.json",
+    "skills/x/SKILL.md", ".oms-ownership.json", ".oms-anything", ".git/config",
+    "CLAUDE.md", "AGENTS.md", "CLAUDE.confirm.md", "install.sh", "install.ps1",
+    "README.md", "oms_contribute.py", ".mcp.json", ".cursor/mcp.json",
+    "tier2/AGENTS.md", "a\\b.json", "bad\x00name",
+])
+def test_an_extra_root_file_cannot_take_a_reserved_or_escaping_name(tmp_path, name):
+    out = tmp_path / "out"
+    with pytest.raises(ValueError):
+        Publisher(_store()).publish(TENANT, out, extra_root_files={name: "x\n"})
+    assert not out.exists()

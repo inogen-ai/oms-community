@@ -3189,13 +3189,27 @@ def _cell(text: str) -> str:
 
 
 def render_tier2_manifest(constraints: list[Constraint], entries: list[ManifestEntry],
-                          mcp_endpoint: str | None = None) -> str:
+                          mcp_endpoint: str | None = None, *,
+                          include_constraints: bool = True) -> str:
     """The Tier 2 manifest (spec §9.2): constraints inlined, a dispatch table,
     and a version map. Hosts without native skill selection read this instead
-    of a bundled tree and fetch bodies over MCP on demand."""
-    lines = _constraint_block(constraints)
+    of a bundled tree and fetch bodies over MCP on demand.
+
+    `include_constraints=False` renders the fragment a skills-only destination
+    carries: the same dispatch table and version map for its own skills, and
+    no constraint block, because the constraints are published once, with the
+    main bundle, and a second copy is one that can disagree with it."""
+    if include_constraints:
+        lines = _constraint_block(constraints)
+        lines.append("")
+    else:
+        lines = [
+            "This repository holds skills only. The constraints every agent "
+            "follows are published with the main bundle's manifest.",
+            "",
+        ]
     lines += [
-        "", "# Fetching Skills", "",
+        "# Fetching Skills", "",
         "Skill bodies are NOT bundled with this file. Before doing work that "
         "matches a trigger below, fetch that skill over MCP and follow it.",
         "",

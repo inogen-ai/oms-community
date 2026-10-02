@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -114,6 +114,39 @@ class Publisher:
         self._distribution_repo = distribution_repo
         self._renderer = renderer if renderer is not None else LocalPublishingRenderer()
 
+    # The core's own root artefacts, whatever this deployment's settings
+    # switch on today, plus the root names a publish keeps for itself. An
+    # extension's root file may not take one: two writers would fight over
+    # the path on every publish, and the prune would delete one of them.
+    _CORE_ROOT_NAMES = frozenset({
+        "oms_contribute.py", "install.sh", "install.ps1", "README.md",
+        ".mcp.json", ".cursor/mcp.json",
+    })
+
+    def _checked_extra_root_files(self, files: Mapping[str, str] | None) -> dict[str, str]:
+        if not files:
+            return {}
+        reserved = set(self._CORE_ROOT_NAMES)
+        reserved.update(self._root_files)
+        reserved.update(confirm_variant_name(name) for name in self._root_files)
+        reserved.update(rel_path for rel_path, _ in ROOT_RULE_FORMATS.values())
+        if self._tier2_manifest_path:
+            reserved.add(self._tier2_manifest_path)
+        checked: dict[str, str] = {}
+        for source_ref, body in files.items():
+            if not isinstance(source_ref, str) or not isinstance(body, str):
+                raise ValueError("an extra root file needs a path and text")
+            parts = source_ref.split("/")
+            if (not source_ref or source_ref.startswith("/") or "\\" in source_ref
+                    or any(ord(char) < 32 for char in source_ref)
+                    or any(part in ("", ".", "..") for part in parts)
+                    or parts[0] in ("skills", ".git") or parts[0].startswith(".oms-")
+                    or source_ref in reserved):
+                raise ValueError(
+                    f"{source_ref!r} cannot be published as an extra root file")
+            checked[source_ref] = body
+        return checked
+
     def render_root(self, tenant_id: str, *, skills: list[Skill] | None = None,
                     contribution_mode: ContributionMode = "automatic") -> str:
         """Render the root constraints and index through the shared projection.
@@ -162,14 +195,29 @@ class Publisher:
         )
 
     def publish(self, tenant_id: str, out_dir: Path, *,
-                select: SkillSelector | None = None) -> GateResult:
+                select: SkillSelector | None = None,
+                skills_only: bool = False,
+                extra_root_files: Mapping[str, str] | None = None) -> GateResult:
         """Write the tenant's bundle into `out_dir`.
 
         `select` chooses which of the tenant's skills this destination holds.
         The tree, the skill index in the root files and the Tier 2 manifest
         then name only those, and the gate refuses only over findings in them
         or in no skill at all (`run_publish_gate`). None publishes every
-        skill, exactly as before destinations could differ."""
+        skill, exactly as before destinations could differ.
+
+        `skills_only` makes the destination a skill source for another
+        bundle's installer: `skills/`, the Tier 2 manifest as a fragment, and
+        the ownership and revision files, with no root instruction file,
+        installer, README, contribution tool or MCP configuration. Anything
+        of the root bundle an earlier publish left there is pruned.
+
+        `extra_root_files` maps a relative path to text, for an extension's
+        own root artefacts. Each is written, ledgered and pruned like the
+        core's. A path that is absolute, escapes the tree, sits under
+        `skills/` or `.git/`, starts `.oms-`, or names a file the core
+        publishes is refused with ValueError before anything is written."""
+        extra = self._checked_extra_root_files(extra_root_files)
         rendered = self.publishable_skills(tenant_id, select=select)
         skills = [skill for skill, _ in rendered]
 
@@ -195,6 +243,12 @@ class Publisher:
                     any(not isinstance(ref, str) or not isinstance(value, str)
                         for ref, value in owned_hashes.items())):
                 raise ValueError("the publication ownership manifest is invalid")
+        if owned_hashes is None and skills_only:
+            # A skills-only destination is newer than the database ledger and
+            # never had a publish that left no ownership file. The ledger's
+            # rows describe the newest full bundle, written elsewhere; read as
+            # this folder's, the root prune would drop them as already gone.
+            owned_hashes = {}
         if owned_hashes is None:
             # Legacy outputs use the database until their first local
             # manifest is committed. Later destinations never share it.
@@ -216,47 +270,13 @@ class Publisher:
         # emits" would eventually disagree with the code above it.
         root_refs: set[str] = {".oms-publication", ".oms-ownership.json"}
 
-        # From the constraints read above, like the Tier 2 manifest below:
-        # one read, so every file in this publication states the same ones.
-        root_md = self._root_md(constraints, skills)
-        for filename in self._root_files:
-            root_refs.add(self._write_with_ledger(
-                out_dir / filename, root_md,
-                tenant_id=tenant_id, skill_id="(org)",
-                source_ref=filename,
-            ))
-        # The confirm-mode copy of every root file, for an installation that
-        # asks its person before sharing. Written beside the automatic files
-        # rather than instead of them: the mode belongs to each installation,
-        # and one published tree serves both kinds. A sibling under its own
-        # name (`confirm_variant_name`), so no harness loads it by itself.
-        # Only with an endpoint, because without one there is no
-        # contribution block to vary; and ledgered like the rest, so
-        # withdrawing the endpoint prunes them. The Cursor and Windsurf rules
-        # below stay automatic: those are project files an installer never
-        # copies into a global location.
-        if self._contribution_endpoint:
-            confirm_md = self._root_md(constraints, skills, contribution_mode="confirm")
-            for filename in self._root_files:
-                variant = confirm_variant_name(filename)
-                root_refs.add(self._write_with_ledger(
-                    out_dir / variant, confirm_md,
-                    tenant_id=tenant_id, skill_id="(org)",
-                    source_ref=variant,
-                ))
-        for fmt in self._root_rule_formats:
-            rel_path, wrap = ROOT_RULE_FORMATS[fmt]
-            target = out_dir / rel_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            root_refs.add(self._write_with_ledger(
-                target, wrap(root_md),
-                tenant_id=tenant_id, skill_id="(org)",
-                source_ref=rel_path,
-            ))
-
+        if not skills_only:
+            self._write_root_bundle(tenant_id, out_dir, constraints, skills, root_refs)
         # The Tier 2 manifest (spec §9.2): same constraints, but the skill
         # bodies are replaced by fetch instructions and a version map, for
-        # hosts that cannot select skills from a directory themselves.
+        # hosts that cannot select skills from a directory themselves. A
+        # skills-only destination carries it as a fragment: its own skills'
+        # dispatch table, and no constraints, which the main bundle states.
         if self._tier2_manifest_path:
             manifest = render_tier2_manifest(
                 constraints,
@@ -264,6 +284,7 @@ class Publisher:
                                version=version_of(self.fetch_view(s, r)[0]))
                  for s, r in rendered],
                 mcp_endpoint=self._mcp_endpoint,
+                include_constraints=not skills_only,
             )
             manifest_path = out_dir / self._tier2_manifest_path
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -273,67 +294,15 @@ class Publisher:
                 source_ref=self._tier2_manifest_path,
             ))
 
-        # The bundled, dependency-free contribution tool (spec §6): a typed
-        # function harnesses can call instead of hand-building a request. Only
-        # emitted when an ingest endpoint is configured, so it can be baked in.
-        if self._contribution_endpoint:
+        # An extension's own root artefacts, ledgered and counted like the
+        # rest, so the prune below retires one the moment a publish stops
+        # sending it, and the revision changes when one changes.
+        for source_ref, body in extra.items():
+            target = out_dir / source_ref
+            target.parent.mkdir(parents=True, exist_ok=True)
             root_refs.add(self._write_with_ledger(
-                out_dir / "oms_contribute.py",
-                self._renderer.contribute_tool(self._contribution_endpoint,
-                                        bundle_token=self._bundle_token),
-                tenant_id=tenant_id, skill_id="(org)",
-                source_ref="oms_contribute.py",
-            ))
-
-        # The once-per-machine bootstrap and its human-facing README: user-scope
-        # install (skills links, instruction import, user-scoped MCP), so every
-        # project on the machine picks the tree up with no per-project setup.
-        installer = out_dir / "install.sh"
-        # The same list the root files above were written from. The installer
-        # imports one of them into the user's ~/.claude/CLAUDE.md, so a name it
-        # invented for itself would survive exactly as long as the default:
-        # narrow the setting to AGENTS.md and the prune below deletes the
-        # CLAUDE.md the installer was still pointing at.
-        root_refs.add(self._write_with_ledger(
-            installer,
-            self._renderer.install_script(self._mcp_endpoint, root_files=self._root_files,
-                                  bundle_token=self._bundle_token),
-            tenant_id=tenant_id, skill_id="(org)", source_ref="install.sh",
-        ))
-        installer.chmod(0o755)
-        # The Windows twin. Native Windows has no POSIX shell, so the same
-        # contract ships a second time in the one language a stock machine
-        # already has. Not chmod'ed: PowerShell is invoked by file path, and
-        # the execute bit means nothing on the platform this is for.
-        root_refs.add(self._write_with_ledger(
-            out_dir / "install.ps1",
-            self._renderer.install_ps1(self._mcp_endpoint, root_files=self._root_files,
-                               bundle_token=self._bundle_token),
-            tenant_id=tenant_id, skill_id="(org)", source_ref="install.ps1",
-        ))
-        root_refs.add(self._write_with_ledger(
-            out_dir / "README.md", self._renderer.readme(self._mcp_endpoint,
-                                        distribution_repo=self._distribution_repo),
-            tenant_id=tenant_id, skill_id="(org)", source_ref="README.md",
-        ))
-
-        # MCP wiring for harnesses with project-scoped config (Claude Code,
-        # Cursor): rides the same pull as the skills, so the tool appears in
-        # the agent's tool list after a one-time approval.
-        if self._mcp_endpoint:
-            root_refs.add(self._write_with_ledger(
-                out_dir / ".mcp.json",
-                render_mcp_json(self._mcp_endpoint, bundle_token=self._bundle_token),
-                tenant_id=tenant_id, skill_id="(org)",
-                source_ref=".mcp.json",
-            ))
-            cursor_mcp = out_dir / ".cursor" / "mcp.json"
-            cursor_mcp.parent.mkdir(parents=True, exist_ok=True)
-            root_refs.add(self._write_with_ledger(
-                cursor_mcp,
-                render_cursor_mcp_json(self._mcp_endpoint, bundle_token=self._bundle_token),
-                tenant_id=tenant_id, skill_id="(org)",
-                source_ref=".cursor/mcp.json",
+                target, body, tenant_id=tenant_id, skill_id="(org)",
+                source_ref=source_ref,
             ))
 
         # Retired skills leave the tree: prune-on-publish, ledger-driven so a
@@ -401,7 +370,113 @@ class Publisher:
 
         return gate
 
+    def _write_root_bundle(self, tenant_id: str, out_dir: Path,
+                           constraints: list[Constraint], skills: list[Skill],
+                           root_refs: set[str]) -> None:
+        """The root bundle every installation reads: the instruction files and
+        their confirm copies, the editors' rule files, the contribution tool,
+        both installers, the README and the MCP configurations. Each write is
+        added to `root_refs`. A skills-only destination writes none of it."""
+        # From the constraints `publish` read once, as the Tier 2 manifest is:
+        # one read, so every file in this publication states the same ones.
+        root_md = self._root_md(constraints, skills)
+        for filename in self._root_files:
+            root_refs.add(self._write_with_ledger(
+                out_dir / filename, root_md,
+                tenant_id=tenant_id, skill_id="(org)",
+                source_ref=filename,
+            ))
+        # The confirm-mode copy of every root file, for an installation that
+        # asks its person before sharing. Written beside the automatic files
+        # rather than instead of them: the mode belongs to each installation,
+        # and one published tree serves both kinds. A sibling under its own
+        # name (`confirm_variant_name`), so no harness loads it by itself.
+        # Only with an endpoint, because without one there is no
+        # contribution block to vary; and ledgered like the rest, so
+        # withdrawing the endpoint prunes them. The Cursor and Windsurf rules
+        # below stay automatic: those are project files an installer never
+        # copies into a global location.
+        if self._contribution_endpoint:
+            confirm_md = self._root_md(constraints, skills, contribution_mode="confirm")
+            for filename in self._root_files:
+                variant = confirm_variant_name(filename)
+                root_refs.add(self._write_with_ledger(
+                    out_dir / variant, confirm_md,
+                    tenant_id=tenant_id, skill_id="(org)",
+                    source_ref=variant,
+                ))
+        for fmt in self._root_rule_formats:
+            rel_path, wrap = ROOT_RULE_FORMATS[fmt]
+            target = out_dir / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            root_refs.add(self._write_with_ledger(
+                target, wrap(root_md),
+                tenant_id=tenant_id, skill_id="(org)",
+                source_ref=rel_path,
+            ))
 
+        # The bundled, dependency-free contribution tool (spec §6): a typed
+        # function harnesses can call instead of hand-building a request. Only
+        # emitted when an ingest endpoint is configured, so it can be baked in.
+        if self._contribution_endpoint:
+            root_refs.add(self._write_with_ledger(
+                out_dir / "oms_contribute.py",
+                self._renderer.contribute_tool(self._contribution_endpoint,
+                                        bundle_token=self._bundle_token),
+                tenant_id=tenant_id, skill_id="(org)",
+                source_ref="oms_contribute.py",
+            ))
+
+        # The once-per-machine bootstrap and its human-facing README: user-scope
+        # install (skills links, instruction import, user-scoped MCP), so every
+        # project on the machine picks the tree up with no per-project setup.
+        installer = out_dir / "install.sh"
+        # The same list the root files above were written from. The installer
+        # imports one of them into the user's ~/.claude/CLAUDE.md, so a name it
+        # invented for itself would survive exactly as long as the default:
+        # narrow the setting to AGENTS.md and the prune in `publish` deletes
+        # the CLAUDE.md the installer was still pointing at.
+        root_refs.add(self._write_with_ledger(
+            installer,
+            self._renderer.install_script(self._mcp_endpoint, root_files=self._root_files,
+                                  bundle_token=self._bundle_token),
+            tenant_id=tenant_id, skill_id="(org)", source_ref="install.sh",
+        ))
+        installer.chmod(0o755)
+        # The Windows twin. Native Windows has no POSIX shell, so the same
+        # contract ships a second time in the one language a stock machine
+        # already has. Not chmod'ed: PowerShell is invoked by file path, and
+        # the execute bit means nothing on the platform this is for.
+        root_refs.add(self._write_with_ledger(
+            out_dir / "install.ps1",
+            self._renderer.install_ps1(self._mcp_endpoint, root_files=self._root_files,
+                               bundle_token=self._bundle_token),
+            tenant_id=tenant_id, skill_id="(org)", source_ref="install.ps1",
+        ))
+        root_refs.add(self._write_with_ledger(
+            out_dir / "README.md", self._renderer.readme(self._mcp_endpoint,
+                                        distribution_repo=self._distribution_repo),
+            tenant_id=tenant_id, skill_id="(org)", source_ref="README.md",
+        ))
+
+        # MCP wiring for harnesses with project-scoped config (Claude Code,
+        # Cursor): rides the same pull as the skills, so the tool appears in
+        # the agent's tool list after a one-time approval.
+        if self._mcp_endpoint:
+            root_refs.add(self._write_with_ledger(
+                out_dir / ".mcp.json",
+                render_mcp_json(self._mcp_endpoint, bundle_token=self._bundle_token),
+                tenant_id=tenant_id, skill_id="(org)",
+                source_ref=".mcp.json",
+            ))
+            cursor_mcp = out_dir / ".cursor" / "mcp.json"
+            cursor_mcp.parent.mkdir(parents=True, exist_ok=True)
+            root_refs.add(self._write_with_ledger(
+                cursor_mcp,
+                render_cursor_mcp_json(self._mcp_endpoint, bundle_token=self._bundle_token),
+                tenant_id=tenant_id, skill_id="(org)",
+                source_ref=".cursor/mcp.json",
+            ))
 
     def render_skill(self, skill_id: str, tenant_id: str) -> str:
         """Render a single skill's SKILL.md as a string, without writing to disk.
