@@ -914,7 +914,7 @@
     },
     "src/oms/publish/render.py": {
       "mode": 420,
-      "sha256": "c497ead53a13408535e99d1171b414381b9becfc36cb18ba2818908847bb2f0b"
+      "sha256": "113b3045ae59d89c400bcc97966078b33dfdbee63e82ee4bba3fa660be823e63"
     },
     "src/oms/publish/urls.py": {
       "mode": 420,
@@ -1058,11 +1058,11 @@
     },
     "tests/community/test_install_contribution_mode.py": {
       "mode": 420,
-      "sha256": "f7f90962011947bb91ffc83274a38526438b2aac46ac3956d2024876714ef7b9"
+      "sha256": "1b05acf1ce3c3c04680a1bf0372a2ed7b26116e56e008fe92ed1ef071c669b5a"
     },
     "tests/community/test_instruction_policy.py": {
       "mode": 420,
-      "sha256": "3517913f31c3bf5c224b17576d81d8c005701b31c7d8dd7f060e9856ca15872f"
+      "sha256": "8f90b3e20cb0bf23bb36631e29280aa677fbe6d8c5521f8245cb79c9df3c6676"
     },
     "tests/community/test_manual_amendment.py": {
       "mode": 420,

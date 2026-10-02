@@ -36,20 +36,22 @@ CHOICES = ("**Share with the team**", "**Just this time**")
 # instructions say the client asks before each call, a reply to share
 # everywhere else.
 CONSENT = (
-    "Apply a qualifying correction a person gives you to the current task, "
-    "then offer it in one message:",
-    "with the wording, its skill and any context it shares",
+    "Apply a person's qualifying correction to the current task, then offer it in one message:",
+    "with the wording, its skill, any context it shares",
     "If your instructions say your client asks the person before each `log_correction` "
-    "call, call it right after the offer: their answer there is the choice.",
-    "Otherwise call it, or any other door, only once they say to share.",
-    "Declining, blocking or silence sends nothing; do not send it another way or offer it "
-    "again unless they reopen it.",
+    "call, call it right after the offer: their answer is the choice.",
+    "Otherwise call it only once they say to share.",
+    # The Python helper and HTTP are no client's tool calls, so no client
+    # prompt covers them: they need the reply in every client (review I1).
+    "Other doors need that reply in any client.",
+    "Declining, blocking or silence sends nothing; do not send it another way or re-offer "
+    "it unless they reopen it.",
     "New wording is a new offer.",
     "If they ask to share, skip the question.",
     # A new UUID, said outright: told only to "give" an id, agents invent
     # natural ones that collide with another person's.
     "Give each shared wording a new UUID `transaction_id`, reused on a retry.",
-    "One tool approval does not cover later suggestions.",
+    "One tool approval covers no later suggestion.",
 )
 LEARNING_APPROVAL = ("Show the person each proposed learning with its context; submit "
                      "only those they approve.")
