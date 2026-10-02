@@ -16,6 +16,7 @@ temporary HOME does not isolate. The PowerShell installer is checked by what
 it renders, because `pwsh` is not assumed.
 """
 from collections.abc import Sequence
+import json
 import os
 from pathlib import Path
 import shutil
@@ -35,8 +36,7 @@ from oms.publish.render import (
 
 MCP_URL = "https://oms.example/mcp"
 # The confirm-mode question, which only the confirm instructions ask.
-OFFER = ("Should this apply just to this task, or would you like to suggest it "
-         "for the team's <skill> guidance?")
+OFFER = "Use this for the team's <skill> guidance too?"
 # Quoted exactly: what the installer says when it refuses a mode.
 MODE_ERROR = "OMS_CONTRIBUTION_MODE must be automatic or confirm"
 NO_VARIANT = ("This bundle has no confirm-mode instructions. "
@@ -60,6 +60,30 @@ MODE_FILE = ".oms/contribution-mode"
 # The mode the tools were last given, written at the end of a run.
 INSTALLED_FILE = ".oms/contribution-mode-installed"
 CONTRIBUTION_TOOLS = ("log_correction", "log_signal")
+# Claude Code's permission rules for the same two tools, which confirm mode
+# adds as `ask` rules so Claude Code asks before every call.
+ASK_RULES = ["mcp__oms__log_correction", "mcp__oms__log_signal"]
+ASK_RECORD = ".oms/claude-ask-rules"
+# How every form of the line confirm mode adds to Claude Code's import block
+# begins. It goes there only, once Claude Code asks.
+NOTE_START = "On this machine, Claude Code asks the person before each"
+
+
+def approval_note(settings: Path) -> str:
+    """Quoted exactly: the line, which names the settings file whose rules make
+    it true, so an agent can check them before relying on it (review I6)."""
+    return ("On this machine, Claude Code asks the person before each `log_correction` "
+            "and `log_signal` call to the `oms` server while `permissions.ask` in "
+            f"{settings} lists `mcp__oms__log_correction` and `mcp__oms__log_signal`. "
+            "Check that it does before you rely on this.")
+
+
+def record_lines(settings: Path, *rules: str) -> str:
+    """The record of rules confirm mode added, one settings file and rule per
+    line, so two Claude Code folders on one machine keep apart (review I5)."""
+    return "".join(f"{settings}\t{rule}\n" for rule in rules)
+# What a run says when it could not make Claude Code ask.
+NO_RULE = "Claude Code agents will ask in the conversation before sharing."
 
 
 def automatic_text(name: str) -> str:
@@ -118,7 +142,11 @@ def environment(home: Path, bin_dir: Path, mode: str | None = None) -> dict[str,
     """Built from nothing, so neither a mode nor a Claude configuration
     directory set in the environment running the suite can reach the run."""
     env = {"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin",
-           "CLAUDE_CONFIG_DIR": str(home / ".claude")}
+           "CLAUDE_CONFIG_DIR": str(home / ".claude"),
+           # Where the installer looks for Claude Code's managed settings: a
+           # folder that does not exist, so the machine running the suite has
+           # no say, unless a test writes one.
+           "OMS_CLAUDE_MANAGED_DIR": str(home / "managed")}
     if mode is not None:
         env["OMS_CONTRIBUTION_MODE"] = mode
     return env
@@ -669,6 +697,220 @@ def test_a_machine_installed_before_the_record_of_what_it_was_given(tmp_path: Pa
     assert read(home, INSTALLED_FILE) == "confirm\n"
 
 
+def claude_settings(home: Path) -> dict:
+    return json.loads(read(home, ".claude/settings.json"))
+
+
+def test_confirm_mode_makes_claude_code_ask_and_tells_claude_code_only(tmp_path: Path) -> None:
+    """The rule goes into the person's own Claude Code settings beside what is
+    there, once however often the installer runs, and the line that lets the
+    agent use Claude Code's prompt as the share action reaches Claude Code's
+    import block and no copied or staged file."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, *HARNESS_DIRS)
+    (home / ".claude" / "settings.json").write_text(
+        '{"theme": "dark", "permissions": {"allow": ["Read"]}}\n', encoding="utf-8")
+
+    first = install(bundle, home, bin_dir, "confirm")
+    assert first.returncode == 0, first.stderr
+    assert install(bundle, home, bin_dir, "confirm").returncode == 0
+
+    settings = claude_settings(home)
+    assert settings["theme"] == "dark"
+    assert settings["permissions"]["allow"] == ["Read"]
+    assert settings["permissions"]["ask"] == ASK_RULES
+    assert read(home, ASK_RECORD) == record_lines(home / ".claude" / "settings.json", *ASK_RULES)
+    claude_md = read(home, ".claude/CLAUDE.md")
+    note = approval_note(home / ".claude" / "settings.json")
+    assert note in claude_md
+    assert claude_md.count(NOTE_START) == 1
+    for relative in COPIED:
+        assert NOTE_START not in read(home, relative), relative
+    assert NOTE_START not in read(home, STAGED)
+    assert "Claude Code: asks the person before each OMS contribution" in first.stdout
+
+
+def test_automatic_mode_never_touches_claude_code_settings(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    assert install(bundle, home, bin_dir).returncode == 0
+    assert not (home / ".claude" / "settings.json").exists()
+    assert not (home / ASK_RECORD).exists()
+    assert NOTE_START not in read(home, ".claude/CLAUDE.md")
+
+    own = '{"permissions": {"ask": ["Bash"]}}\n'
+    (home / ".claude" / "settings.json").write_text(own, encoding="utf-8")
+    assert install(bundle, home, bin_dir).returncode == 0
+    assert read(home, ".claude/settings.json") == own
+
+
+def test_automatic_mode_removes_only_the_rules_confirm_mode_added(tmp_path: Path) -> None:
+    """A rule the person wrote is theirs: confirm mode records only the rules
+    it added, and choosing automatic again takes out only those, and the line
+    that told Claude Code it asks."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    (home / ".claude" / "settings.json").write_text(
+        '{"permissions": {"ask": ["mcp__oms__log_signal"]}}\n', encoding="utf-8")
+
+    assert install(bundle, home, bin_dir, "confirm").returncode == 0
+    assert claude_settings(home)["permissions"]["ask"] == ["mcp__oms__log_signal",
+                                                           "mcp__oms__log_correction"]
+    assert read(home, ASK_RECORD) == record_lines(home / ".claude" / "settings.json",
+                                                  "mcp__oms__log_correction")
+
+    switched = install(bundle, home, bin_dir, "automatic")
+    assert switched.returncode == 0, switched.stderr
+    assert claude_settings(home)["permissions"]["ask"] == ["mcp__oms__log_signal"]
+    assert not (home / ASK_RECORD).exists()
+    assert NOTE_START not in read(home, ".claude/CLAUDE.md")
+    assert "Claude Code: removed the approval rule confirm mode added" in switched.stdout
+
+
+def test_an_ask_list_that_only_oms_filled_goes_when_automatic_is_chosen(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    assert install(bundle, home, bin_dir, "confirm").returncode == 0
+    assert claude_settings(home)["permissions"]["ask"] == ASK_RULES
+    assert install(bundle, home, bin_dir, "automatic").returncode == 0
+    assert claude_settings(home) == {"permissions": {}}
+
+
+@pytest.mark.parametrize("contents", [
+    "[1, 2]\n",
+    '{"permissions": {"ask": "mcp__oms__log_correction"}}\n',
+    '{"permissions": ["ask"]}\n',
+    "{ not json\n",
+], ids=["array", "ask-not-a-list", "permissions-not-an-object", "not-json"])
+def test_a_settings_file_it_cannot_change_is_left_alone_and_claude_gets_no_line(
+        tmp_path: Path, contents: str) -> None:
+    """Fail safe: without the rule, Claude Code is not told that it asks, so its
+    agent waits for a reply to share rather than relying on a prompt that may
+    never come."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    (home / ".claude" / "settings.json").write_text(contents, encoding="utf-8")
+
+    run = install(bundle, home, bin_dir, "confirm")
+
+    assert run.returncode == 0, run.stderr
+    assert read(home, ".claude/settings.json") == contents
+    assert NOTE_START not in read(home, ".claude/CLAUDE.md")
+    assert f"@{bundle}/CLAUDE.confirm.md\n" in read(home, ".claude/CLAUDE.md")
+    assert not (home / ASK_RECORD).exists()
+    assert NO_RULE in spaced(run.stdout)
+
+
+def test_a_python3_that_fails_leaves_claude_without_the_line(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    (bin_dir / "python3").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    (bin_dir / "python3").chmod(0o755)
+
+    run = install(bundle, home, bin_dir, "confirm")
+
+    assert run.returncode == 0, run.stderr
+    assert NOTE_START not in read(home, ".claude/CLAUDE.md")
+    assert NO_RULE in spaced(run.stdout)
+
+
+@pytest.mark.parametrize("where, contents", [
+    ("managed-settings.json", '{"allowManagedPermissionRulesOnly": true}'),
+    ("managed-settings.d/50-policy.json", '{"allowManagedPermissionRulesOnly": true}'),
+    ("managed-settings.json", "{ not json"),
+], ids=["policy", "drop-in", "unreadable-policy"])
+def test_managed_settings_that_apply_only_their_own_rules_keep_claude_without_the_line(
+        tmp_path: Path, where: str, contents: str) -> None:
+    """Review C1: with allowManagedPermissionRulesOnly, a rule in the person's
+    own settings has no effect, so Claude Code would not ask. A managed file
+    that cannot be read might say so: either way the line is left out, the
+    person's settings are not touched, and the run says why."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    managed = home / "managed" / where
+    managed.parent.mkdir(parents=True)
+    managed.write_text(contents, encoding="utf-8")
+
+    run = install(bundle, home, bin_dir, "confirm")
+
+    assert run.returncode == 0, run.stderr
+    assert NOTE_START not in read(home, ".claude/CLAUDE.md")
+    assert not (home / ".claude" / "settings.json").exists()
+    assert not (home / ASK_RECORD).exists()
+    assert "managed Claude Code settings" in spaced(run.stdout)
+    assert NO_RULE in spaced(run.stdout)
+
+
+def test_managed_settings_that_allow_user_rules_do_not_stop_the_rule(tmp_path: Path) -> None:
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    (home / "managed").mkdir()
+    (home / "managed" / "managed-settings.json").write_text(
+        '{"allowManagedPermissionRulesOnly": false, "permissions": {"deny": ["WebFetch"]}}',
+        encoding="utf-8")
+    assert install(bundle, home, bin_dir, "confirm").returncode == 0
+    assert approval_note(home / ".claude" / "settings.json") in read(home, ".claude/CLAUDE.md")
+
+
+def test_the_settings_file_keeps_its_owner_only_mode(tmp_path: Path) -> None:
+    """Review I4: Claude Code keeps settings.json owner-only, and it can hold
+    tokens. Rewriting it must not open it to other users."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude")
+    settings = home / ".claude" / "settings.json"
+    settings.write_text('{"env": {"GITHUB_TOKEN": "secret"}}\n', encoding="utf-8")
+    settings.chmod(0o600)
+    assert install(bundle, home, bin_dir, "confirm").returncode == 0
+    assert claude_settings(home)["permissions"]["ask"] == ASK_RULES
+    assert settings.stat().st_mode & 0o777 == 0o600
+
+    (tmp_path / "fresh").mkdir()
+    fresh_home, fresh_bin = make_machine(tmp_path / "fresh", ".claude")
+    assert install(bundle, fresh_home, fresh_bin, "confirm").returncode == 0
+    assert (fresh_home / ".claude" / "settings.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_two_claude_folders_keep_their_own_record(tmp_path: Path) -> None:
+    """Review I5: one machine can run the installer for two Claude Code
+    folders. Choosing automatic for one removes what confirm mode added there
+    only, never the person's own rule, and leaves the other folder's record."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".claude", ".claude-work")
+    work = home / ".claude-work"
+    (work / "settings.json").write_text('{"permissions": {"ask": ["mcp__oms__log_signal"]}}\n',
+                                        encoding="utf-8")
+
+    def run_for(folder: Path, mode: str) -> subprocess.CompletedProcess[str]:
+        env = environment(home, bin_dir, mode)
+        env["CLAUDE_CONFIG_DIR"] = str(folder)
+        return subprocess.run(["bash", str(bundle / "install.sh")], env=env,
+                              capture_output=True, text=True, timeout=60)
+
+    assert run_for(home / ".claude", "confirm").returncode == 0
+    assert run_for(work, "confirm").returncode == 0
+    assert run_for(work, "automatic").returncode == 0
+
+    assert json.loads((work / "settings.json").read_text())["permissions"]["ask"] == [
+        "mcp__oms__log_signal"]
+    assert claude_settings(home)["permissions"]["ask"] == ASK_RULES
+    assert read(home, ASK_RECORD) == record_lines(home / ".claude" / "settings.json", *ASK_RULES)
+
+
+def test_a_machine_without_claude_code_gets_no_rule(tmp_path: Path) -> None:
+    """No Claude Code directory, CLI or CLAUDE_CONFIG_DIR: nothing is created
+    for it, a settings file least of all."""
+    bundle = make_bundle(tmp_path)
+    home, bin_dir = make_machine(tmp_path, ".codex")
+    (bin_dir / "claude").unlink()
+    env = environment(home, bin_dir, "confirm")
+    del env["CLAUDE_CONFIG_DIR"]
+    run = subprocess.run(["bash", str(bundle / "install.sh")], env=env,
+                         capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    assert not (home / ".claude").exists()
+    assert not (home / ASK_RECORD).exists()
+
+
 def test_codex_with_its_own_oms_table_is_told_confirm_mode_set_no_approval(
         tmp_path: Path) -> None:
     bundle = make_bundle(tmp_path)
@@ -776,6 +1018,136 @@ def test_the_powershell_installer_reports_what_it_could_not_update() -> None:
     assert confirm < automatic
 
 
+def test_the_powershell_installer_makes_claude_code_ask_in_confirm_mode() -> None:
+    body = render_install_ps1(MCP_URL)
+    assert "function Update-ClaudeAskRules($Mode)" in body
+    assert "$OmsAskRules = @('mcp__oms__log_correction', 'mcp__oms__log_signal')" in body
+    assert '$OmsAskRecord = "$OMS_DIR/claude-ask-rules"' in body
+    assert "ConvertTo-Json -InputObject $settings -Depth 100" in body
+    # Only where the confirm copy is installed, and only for Claude Code.
+    assert ("if ($HAVE_CLAUDE -and $OmsRootFile -ceq 'CLAUDE.confirm.md') "
+            "{ $OmsAskMode = 'confirm' }") in body
+    # In single quotes: in double quotes PowerShell reads a backtick as an
+    # escape and the line would reach Claude Code without its code marks.
+    assert "'On this machine, Claude Code asks the person before each `log_correction` " in body
+    assert "if ($OmsClaudeAsks)" in body
+    assert NO_RULE in body
+    assert "Claude Code: removed the approval rule confirm mode added to $path" in body
+    # Settled before any instructions are written.
+    assert body.index("$OmsClaudeAsks = $false") < body.index("@$SRC/$OmsRootFile")
+    assert body.index("Update-ClaudeAskRules $OmsAskMode") < body.index("# 1. Skills into the user scope")
+    assert "@@" not in body
+
+
+def _ps_ask_harness(tmp_path: Path) -> Path:
+    """The rendered Update-ClaudeAskRules with the helpers it calls, and a
+    driver that runs it on the settings file named by its arguments."""
+    body = render_install_ps1(MCP_URL)
+    helpers = body[body.index("$Utf8NoBom = "):body.index("function Write-Err")]
+    step = body[body.index("$OmsAskRules = "):body.index("$OmsClaudeAsks = $false")]
+    helpers = helpers.replace("$Utf8NoBom = ", "$OMS_DIR = $OmsDir\n$Utf8NoBom = ", 1)
+    script = tmp_path / "ask.ps1"
+    script.write_text(
+        "param($ClaudeDir, $OmsDir, $Mode)\n"
+        "$ErrorActionPreference = 'Stop'\n"
+        "$CLAUDE_DIR = $ClaudeDir\n$OMS_DIR = $OmsDir\n"
+        + helpers + step +
+        "Update-ClaudeAskRules $Mode\n",
+        encoding="utf-8")
+    return script
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh is not installed")
+@pytest.mark.parametrize("before, mode, recorded, after, record, answer", [
+    (None, "confirm", (), {"permissions": {"ask": ASK_RULES}}, ASK_RULES, "done"),
+    ('{"theme": "dark", "permissions": {"allow": ["Read"], "ask": ["mcp__oms__log_signal"]}}',
+     "confirm", (),
+     {"theme": "dark", "permissions": {"allow": ["Read"],
+                                       "ask": ["mcp__oms__log_signal", "mcp__oms__log_correction"]}},
+     ["mcp__oms__log_correction"], "done"),
+    ('{"permissions": {"ask": ["mcp__oms__log_signal", "mcp__oms__log_correction"]}}',
+     "automatic", ("mcp__oms__log_correction",),
+     {"permissions": {"ask": ["mcp__oms__log_signal"]}}, None, "done"),
+    ('{"permissions": {"ask": ["mcp__oms__log_correction", "mcp__oms__log_signal"]}}',
+     "automatic", tuple(ASK_RULES), {"permissions": {}}, None, "done"),
+    ("[1, 2]", "confirm", (), None, None, "refused"),
+    ('[{"theme": "dark"}]', "confirm", (), None, None, "refused"),
+    ('{"permissions": {"ask": "x"}}', "confirm", (), None, None, "refused"),
+    ("{ not json", "confirm", (), None, None, "refused"),
+    ('{"theme": "dark", // a comment\n}', "confirm", (), None, None, "refused"),
+    ('{"theme": "dark",}', "confirm", (), None, None, "refused"),
+    ("{'theme': 'dark'}", "confirm", (), None, None, "refused"),
+], ids=["new-file", "beside-the-persons-rules", "removes-only-recorded", "empties-ask",
+        "array", "array-of-object", "ask-not-a-list", "not-json", "comment", "trailing-comma",
+        "single-quotes"])
+def test_the_powershell_rule_step_does_what_the_shell_one_does(
+        tmp_path: Path, before: str | None, mode: str, recorded: tuple[str, ...],
+        after: dict | None, record: list[str] | None, answer: str) -> None:
+    """The shell helper's refusals, by pwsh (review I3): what the strict JSON
+    the shell parses refuses, PowerShell must refuse too, and leave alone."""
+    claude_dir, oms_dir = tmp_path / "claude", tmp_path / "oms"
+    claude_dir.mkdir()
+    oms_dir.mkdir()
+    settings = claude_dir / "settings.json"
+    if before is not None:
+        settings.write_text(before, encoding="utf-8")
+    if recorded:
+        (oms_dir / "claude-ask-rules").write_text(record_lines(settings, *recorded), encoding="utf-8")
+    run = _ps_ask(tmp_path, claude_dir, oms_dir, mode)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines()[-1] == answer
+    if after is None:
+        assert settings.read_text(encoding="utf-8") == before
+    else:
+        assert json.loads(settings.read_text(encoding="utf-8")) == after
+    record_file = oms_dir / "claude-ask-rules"
+    if record is None:
+        assert not record_file.exists() or answer == "refused"
+    else:
+        assert record_file.read_text(encoding="utf-8") == record_lines(settings, *record)
+
+
+def _ps_ask(tmp_path: Path, claude_dir: Path, oms_dir: Path, mode: str,
+            managed: Path | None = None) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "OMS_CLAUDE_MANAGED_DIR": str(managed or tmp_path / "no-managed")}
+    return subprocess.run(["pwsh", "-NoProfile", "-File", str(_ps_ask_harness(tmp_path)),
+                           str(claude_dir), str(oms_dir), mode],
+                          capture_output=True, text=True, timeout=120, env=env)
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh is not installed")
+def test_the_powershell_rule_step_refuses_what_is_not_a_plain_file(tmp_path: Path) -> None:
+    """A folder or a link where settings.json should be: no rule is written,
+    nothing is moved into or over it, and nothing is recorded."""
+    for name, make in (("folder", lambda p: p.mkdir()),
+                       ("link", lambda p: p.symlink_to(p.parent / "real.json"))):
+        case = tmp_path / name
+        claude_dir, oms_dir = case / "claude", case / "oms"
+        claude_dir.mkdir(parents=True)
+        oms_dir.mkdir()
+        (claude_dir / "real.json").write_text('{"theme": "dark"}', encoding="utf-8")
+        make(claude_dir / "settings.json")
+        run = _ps_ask(case, claude_dir, oms_dir, "confirm")
+        assert run.returncode == 0, run.stderr
+        assert run.stdout.splitlines()[-1] == "refused", name
+        assert (claude_dir / "real.json").read_text(encoding="utf-8") == '{"theme": "dark"}'
+        assert not (oms_dir / "claude-ask-rules").exists()
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh is not installed")
+def test_the_powershell_rule_step_respects_managed_settings(tmp_path: Path) -> None:
+    claude_dir, oms_dir, managed = tmp_path / "claude", tmp_path / "oms", tmp_path / "managed"
+    for folder in (claude_dir, oms_dir, managed / "managed-settings.d"):
+        folder.mkdir(parents=True)
+    (managed / "managed-settings.d" / "10.json").write_text(
+        '{"allowManagedPermissionRulesOnly": true}', encoding="utf-8")
+    run = _ps_ask(tmp_path, claude_dir, oms_dir, "confirm", managed)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines()[-1] == "managed"
+    assert not (claude_dir / "settings.json").exists()
+    assert not (oms_dir / "claude-ask-rules").exists()
+
+
 @pytest.mark.parametrize("root_files, variant, other", [
     (None, "CLAUDE.confirm.md", "AGENTS.confirm.md"),
     (["AGENTS.md"], "AGENTS.confirm.md", "CLAUDE.confirm.md"),
@@ -809,5 +1181,11 @@ def test_the_readme_describes_both_modes() -> None:
     # The one sentence that described automatic mode as the only behaviour.
     assert ("you state one and the agent files it with `log_correction`, asking you "
             "first where the installer ran in confirm mode") in text
+    # The installer edits the person's own Claude Code settings in confirm
+    # mode, so the README says so, and what it is for.
+    assert ("In confirm mode the installer also adds a permission rule to your Claude Code "
+            "settings, so Claude Code asks before each contribution and your answer there "
+            "is the choice. Choosing automatic again takes it out.") in text
     # A bundle with no MCP address takes no contributions, so it offers no mode.
     assert "OMS_CONTRIBUTION_MODE" not in render_readme(None)
+    assert "permission rule" not in render_readme(None)

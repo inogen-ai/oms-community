@@ -668,7 +668,23 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
     invent the same. Confirm is now 3648 on and 2365 off. The HTTP example
     still carries no `transaction_id`: the 32 bytes it needs would put
     confirm with learnings on over the budget, and the sentence already
-    reaches all three doors."""
+    reaches all three doors.
+
+    Confirm then became one step: one offer, and one action by the person,
+    in place of a question, a preview and an approval. The client's own
+    prompt is that action only where the agent's instructions say the client
+    asks before each call; an installer adds that sentence for Claude Code,
+    outside this block, only once it has made Claude Code ask. Everywhere
+    else the action is a reply to share. The new flow first measured 3743
+    bytes; "editable", "the intended", "from them" and the second telling of
+    the approval rule paid for it. Measured on 1 October 2026: confirm 3651
+    on and 2368 off.
+
+    Review then found the Python helper and HTTP doors limited only in the
+    "Otherwise" branch, though no client prompt covers them: "Other doors
+    need that reply in any client" says it for both. Shorter words for the
+    approval rule, the correction and the decline paid for it. Measured on
+    2 October 2026: confirm 3645 on and 2362 off."""
     _check_contribution_mode(mode)
     confirm = mode == "confirm"
     lines = [
@@ -681,22 +697,24 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
                      "acknowledge them as remembered."), "",
     ]
     if confirm:
-        # In place of logging in the same turn. The question and the two
-        # bold choices are exact copy; the rest says what each answer sends,
-        # which is nothing until the person approves a preview.
+        # In place of logging in the same turn: one offer, and one action by
+        # the person. The question and the two bold choices are exact copy.
+        # Where the agent's own instructions say its client asks before each
+        # call (an installer writes that only when it made the client ask),
+        # the client's prompt is that action; everywhere else it is a reply.
         lines += [
-            "When a person gives you a qualifying correction, apply it to the "
-            "current task, then ask: \"Should this apply just to this task, or "
-            "would you like to suggest it for the team's <skill> guidance?\" "
-            "Offer **Just this time** and **Review suggestion**. Just this time "
-            "sends nothing to OMS; do not offer it again unless they reopen it. "
-            "Review suggestion shows the editable wording, the intended skill, "
-            "the audience and any context to be shared; submit only after the "
-            "person approves that preview. Silence or cancelling sends nothing. If "
-            "they ask to share it, go straight to the preview. Give each "
-            "approved suggestion a new UUID as its `transaction_id` and reuse "
-            "it on a retry; edited wording needs a new preview and a new id. "
-            "Approving the tool once is not approval of later suggestions.", "",
+            "Apply a person's qualifying correction to the current task, then "
+            "offer it in one message: \"Use this for the team's <skill> guidance "
+            "too?\" with the wording, its skill, any context it shares, and "
+            "**Share with the team** or **Just this time**. If your instructions "
+            "say your client asks the person before each `log_correction` call, "
+            "call it right after the offer: their answer is the choice. Otherwise "
+            "call it only once they say to share. Other doors need that reply in "
+            "any client. Declining, blocking or silence sends nothing; do not send "
+            "it another way or re-offer it unless they reopen it. New wording is a "
+            "new offer. If they ask to share, skip the question. Give each shared "
+            "wording a new UUID `transaction_id`, reused on a retry. One tool "
+            "approval covers no later suggestion.", "",
         ]
     lines += [
         "Do not submit task or research requests, answer outlines, completion "
@@ -992,6 +1010,218 @@ def validate_script_literals(**values: str | None) -> None:
 
 
 
+# Claude Code's own approval for the two contribution tools, in confirm mode.
+# The confirm instructions let an agent use its client's prompt as the
+# person's one share action only where its instructions say the client asks
+# before each call. This is that sentence. Installers write it into Claude
+# Code's import block, and nowhere else, only once Claude Code has an `ask`
+# rule for both tools, which makes it ask in every permission mode, auto
+# mode and "always allow" included. Without the rule the sentence is left
+# out and the agent waits for a reply to share: one step slower, never
+# unasked.
+CLAUDE_ASK_RULES: tuple[str, ...] = ("mcp__oms__log_correction", "mcp__oms__log_signal")
+# The line, around the path of the settings file that holds the rules. It
+# names that file and the rules, so an agent can check that they are still
+# there before relying on the line: the person can remove a rule between
+# installer runs, and the line would otherwise outlive it. No single quote in
+# either part: both are written inside single quotes in sh and PowerShell.
+CLAUDE_APPROVAL_NOTE_BEFORE = (
+    "On this machine, Claude Code asks the person before each `log_correction` "
+    "and `log_signal` call to the `oms` server while `permissions.ask` in ")
+CLAUDE_APPROVAL_NOTE_AFTER = (
+    " lists `mcp__oms__log_correction` and `mcp__oms__log_signal`. Check that it "
+    "does before you rely on this.")
+
+# Adds the `ask` rules to the person's own Claude Code settings (argv: the
+# settings file, the record of rules this installer added, "confirm" or
+# "automatic", and the folder of Claude Code's managed settings), or, in
+# automatic mode, takes out only the recorded ones: a rule the person wrote is
+# theirs. The record holds one settings file and one rule per line, so two
+# Claude Code folders on one machine keep apart. Exit 0 when done, 3 when the
+# file is not settings it can change, 4 when it cannot be read or written, and
+# 5 when managed settings apply only their own permission rules (or could not
+# be read, and might): a rule in the person's settings would then have no
+# effect. Every failure leaves the settings file as it was. Written through a
+# temporary file beside the target, which is the link's target where
+# settings.json is a link, with the file's own mode, or owner-only for a new
+# file: Claude Code keeps it owner-only, and it can hold tokens.
+_CLAUDE_ASK_PY = '''\
+import json, os, pathlib, stat, sys
+
+RULES = %(rules)r
+settings_path = pathlib.Path(sys.argv[1])
+record_path = pathlib.Path(sys.argv[2])
+mode = sys.argv[3]
+managed_dir = pathlib.Path(sys.argv[4])
+key = str(settings_path)
+
+
+def managed_rules_only():
+    files = [managed_dir / "managed-settings.json"]
+    drop_ins = managed_dir / "managed-settings.d"
+    if drop_ins.is_dir():
+        files += sorted(drop_ins.glob("*.json"))
+    for path in files:
+        if not path.exists():
+            continue
+        try:
+            managed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return True
+        if not isinstance(managed, dict) or managed.get("allowManagedPermissionRulesOnly") is True:
+            return True
+    return False
+
+
+if mode == "confirm" and managed_rules_only():
+    raise SystemExit(5)
+try:
+    rows = [line.split("\\t", 1) for line in record_path.read_text(encoding="utf-8").splitlines()
+            if "\\t" in line]
+except FileNotFoundError:
+    rows = []
+except OSError:
+    raise SystemExit(4)
+others = [(path, rule) for path, rule in rows if path != key]
+recorded = [rule for path, rule in rows if path == key and rule in RULES]
+try:
+    raw = settings_path.read_text(encoding="utf-8")
+except FileNotFoundError:
+    raw = ""
+except OSError:
+    raise SystemExit(4)
+try:
+    data = json.loads(raw) if raw.strip() else {}
+except ValueError:
+    raise SystemExit(3)
+if not isinstance(data, dict):
+    raise SystemExit(3)
+permissions = data.get("permissions", {})
+if not isinstance(permissions, dict):
+    raise SystemExit(3)
+ask = permissions.get("ask", [])
+if not isinstance(ask, list):
+    raise SystemExit(3)
+
+
+def save_record(keep):
+    lines = [(path, rule) for path, rule in others] + [(key, rule) for rule in keep]
+    try:
+        if lines:
+            record_path.write_text("".join("%%s\\t%%s\\n" %% line for line in lines), encoding="utf-8")
+        elif record_path.exists():
+            record_path.unlink()
+    except OSError:
+        raise SystemExit(4)
+
+
+def save_settings(new_ask):
+    if new_ask:
+        permissions["ask"] = new_ask
+    else:
+        permissions.pop("ask", None)
+    data["permissions"] = permissions
+    target = settings_path.resolve()
+    tmp = target.with_name(target.name + ".oms.tmp")
+    try:
+        bits = stat.S_IMODE(os.stat(target).st_mode) if target.exists() else 0o600
+        target.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w",
+                           encoding="utf-8")
+        with handle:
+            handle.write(json.dumps(data, indent=2) + "\\n")
+        os.chmod(tmp, bits)
+        os.replace(tmp, target)
+    except OSError:
+        raise SystemExit(4)
+
+
+if mode == "confirm":
+    added = [rule for rule in RULES if rule not in ask]
+    # Recorded first, so a rule in the file is never one the record misses.
+    save_record([rule for rule in RULES if rule in recorded or rule in added])
+    if added:
+        save_settings(ask + added)
+else:
+    new_ask = [rule for rule in ask if rule not in recorded]
+    if new_ask != ask:
+        save_settings(new_ask)
+    save_record([])
+    if len(new_ask) < len(ask):
+        print("  Claude Code: removed the approval rule confirm mode added to %%s" %% settings_path)
+''' % {"rules": list(CLAUDE_ASK_RULES)}
+
+
+def _claude_ask_step(confirm_file: str) -> str:
+    """Section 1a of install.sh: Claude Code's `ask` rules in confirm mode, and
+    their removal when automatic is chosen again. Built as a plain string, as
+    `_mcp_helpers` is, because it carries a Python program.
+
+    Runs after detection, so it knows whether Claude Code is here, and before
+    any instructions are written, because `write_instructions` reads
+    OMS_CLAUDE_ASKS to decide whether Claude Code is told that it asks. Never
+    fatal: a machine where the rule cannot be written still installs, and its
+    Claude Code agents ask in the conversation instead."""
+    return '''
+# 1a. Claude Code's own approval, in confirm mode (see CLAUDE_APPROVAL_NOTE_BEFORE
+#     in the renderer). OMS_CLAUDE_ASKS is set only once Claude Code has the
+#     `ask` rules, and section 2 tells Claude Code it asks only then.
+OMS_CLAUDE_ASKS=""
+OMS_ASK_RECORD="$OMS_DIR/claude-ask-rules"
+oms_ask_mode=""
+if [ "$OMS_CONTRIBUTION_MODE_RESOLVED" = confirm ]; then
+  # Only where the confirm instructions are installed: a bundle that takes
+  # no contributions installs its one file in both modes, and asks nothing.
+  if [ -n "$HAVE_CLAUDE" ] && [ "$OMS_ROOT_FILE" = "''' + confirm_file + '''" ]; then
+    oms_ask_mode=confirm
+  fi
+elif [ -f "$OMS_ASK_RECORD" ]; then
+  oms_ask_mode=automatic
+fi
+# Claude Code's managed settings, which can make a rule in the person's own
+# settings ineffective. OMS_CLAUDE_MANAGED_DIR points elsewhere, for a test or
+# a machine that keeps them somewhere else.
+if [ -z "${OMS_CLAUDE_MANAGED_DIR:-}" ]; then
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin) OMS_CLAUDE_MANAGED_DIR="/Library/Application Support/ClaudeCode" ;;
+    *) OMS_CLAUDE_MANAGED_DIR="/etc/claude-code" ;;
+  esac
+fi
+if [ -n "$oms_ask_mode" ]; then
+  oms_ask_done=""
+  oms_ask_code=""
+  if command -v python3 >/dev/null 2>&1; then
+    cat > "$OMS_DIR/.claude-ask.py" <<'OMS_ASK_PY'
+''' + _CLAUDE_ASK_PY + '''OMS_ASK_PY
+    if python3 "$OMS_DIR/.claude-ask.py" "$CLAUDE_DIR/settings.json" "$OMS_ASK_RECORD" "$oms_ask_mode" "$OMS_CLAUDE_MANAGED_DIR"; then
+      oms_ask_done=1
+    else
+      oms_ask_code=$?
+    fi
+    rm -f "$OMS_DIR/.claude-ask.py"
+  fi
+  if [ "$oms_ask_mode" = confirm ]; then
+    if [ -n "$oms_ask_done" ]; then
+      OMS_CLAUDE_ASKS=1
+      echo "  Claude Code: asks the person before each OMS contribution (a permission rule in $CLAUDE_DIR/settings.json)."
+    elif [ "$oms_ask_code" = 5 ]; then
+      echo "  Claude Code: the managed Claude Code settings on this machine apply only their own"
+      echo "    permission rules, or could not be read, so no approval rule was added."
+      echo "    Claude Code agents will ask in the conversation before sharing."
+    else
+      echo "  Claude Code: could not add the approval rule to $CLAUDE_DIR/settings.json"
+      echo "    (it needs python3 and a settings file that is a JSON object), so"
+      echo "    Claude Code agents will ask in the conversation before sharing."
+    fi
+  elif [ -z "$oms_ask_done" ]; then
+    echo "  Claude Code: could not take the approval rule confirm mode added out of"
+    echo "    $CLAUDE_DIR/settings.json. Remove mcp__oms__log_correction and"
+    echo "    mcp__oms__log_signal from permissions.ask there if you no longer want it."
+  fi
+fi
+'''
+
+
 def _mcp_helpers(mcp_url: str, bundle_token: str | None,
                  credential_setup: str | None = None, notice: str = "") -> str:
     """The two global-MCP writers, plus the per-harness calls.
@@ -1137,6 +1367,9 @@ def render_install_script(mcp_url: str | None,
     detection = _detection_blocks()
     install_blocks = _install_blocks()
     before_links = fragments.before_links
+    claude_ask_step = _claude_ask_step(confirm_file)
+    claude_note_before = CLAUDE_APPROVAL_NOTE_BEFORE
+    claude_note_after = CLAUDE_APPROVAL_NOTE_AFTER
     # Resolved at run time, by section 0, to the root file of the mode this
     # installation chose, so every harness below reads the same variant.
     root_md = fragments.root_source or "$SRC/$OMS_ROOT_FILE"
@@ -1469,7 +1702,7 @@ touch "$OMS_DIR/status.md"
 # OMS_CONTRIBUTION_MODE: the machine keeps the variant it was installed with
 # until somebody chooses again. One word on one line, so `cat` answers which.
 printf '%s\\n' "$OMS_CONTRIBUTION_MODE_RESOLVED" > "$OMS_MODE_FILE"
-{before_links}
+{claude_ask_step}{before_links}
 # 1. Skills into the user scope. Symlinks, so the daily pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
 #    First sweep OMS-owned garbage: a symlink pointing into this tree that no
@@ -1571,6 +1804,9 @@ write_instructions() {{
     if [ "$wi_style" = import ]; then
       printf '%s\\n' "@{root_md}"
       printf '%s\\n' "@$OMS_DIR/status.md"
+      if [ -n "$OMS_CLAUDE_ASKS" ]; then
+        printf '%s%s%s\\n' '{claude_note_before}' "$CLAUDE_DIR/settings.json" '{claude_note_after}'
+      fi
     else
       cat "{root_md}"
       printf '\\n%s\\n' "If the user asks whether their organisational skills are current, read $OMS_DIR/status.md. Empty means healthy."
@@ -2136,6 +2372,179 @@ if (-not (Test-Path -LiteralPath "$OMS_DIR/status.md")) {
 # The mode, recorded for the refresh, which re-runs this installer without
 # OMS_CONTRIBUTION_MODE, so the machine keeps it until somebody chooses again.
 Write-TextFile $OmsModeFile "$OmsContributionMode`n"
+# 1a. Claude Code's own approval, in confirm mode (install.sh gives the
+#     reasons). $OmsClaudeAsks is set only once Claude Code has the `ask`
+#     rules, and Write-Instructions tells Claude Code it asks only then.
+#     Never fatal: without the rules its agents ask in the conversation.
+$OmsAskRules = @('mcp__oms__log_correction', 'mcp__oms__log_signal')
+$OmsAskRecord = "$OMS_DIR/claude-ask-rules"
+# Claude Code's managed settings, which can make a rule in the person's own
+# settings ineffective. OMS_CLAUDE_MANAGED_DIR points elsewhere, for a test or
+# a machine that keeps them somewhere else.
+$OmsManagedDirs = if ($env:OMS_CLAUDE_MANAGED_DIR) { @($env:OMS_CLAUDE_MANAGED_DIR) }
+    elseif ($IsMacOS) { @('/Library/Application Support/ClaudeCode') }
+    elseif ($IsLinux) { @('/etc/claude-code') }
+    else { @("$env:ProgramFiles\ClaudeCode", "$env:ProgramData\ClaudeCode") }
+# $true when managed settings apply only their own permission rules, or when
+# one cannot be read and might.
+function Test-ManagedRulesOnly {
+    foreach ($dir in $OmsManagedDirs) {
+        if (-not $dir) { continue }
+        $files = @(Join-Path $dir 'managed-settings.json')
+        $dropIns = Join-Path $dir 'managed-settings.d'
+        if (Test-Path -LiteralPath $dropIns -PathType Container) {
+            $files += @(Get-ChildItem -LiteralPath $dropIns -Filter '*.json' -File |
+                        Sort-Object Name | ForEach-Object { $_.FullName })
+        }
+        foreach ($file in $files) {
+            if (-not (Test-Path -LiteralPath $file)) { continue }
+            try { $managed = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($file)) }
+            catch { return $true }
+            if ($managed -isnot [System.Management.Automation.PSCustomObject]) { return $true }
+            if ($managed.PSObject.Properties['allowManagedPermissionRulesOnly'] -and
+                $managed.allowManagedPermissionRulesOnly -eq $true) { return $true }
+        }
+    }
+    return $false
+}
+# 'done' once the person's Claude Code settings say what $Mode wants: the
+# rules added in confirm mode (and the ones added recorded, one settings file
+# and rule per line), or the recorded ones taken out in automatic mode, never
+# a rule the person wrote. 'managed' when managed settings would make the
+# rule ineffective. 'refused', with the file as it was, for anything else:
+# a path that is not a plain file, text that is not one strict JSON object,
+# permissions or an ask list that are not what Claude Code writes, a failure
+# to read or write, or a written file that does not read back as intended.
+function Update-ClaudeAskRules($Mode) {
+    $path = Join-Path $CLAUDE_DIR 'settings.json'
+    try {
+        if ($Mode -ceq 'confirm' -and (Test-ManagedRulesOnly)) { return 'managed' }
+        $rows = @()
+        if (Test-Path -LiteralPath $OmsAskRecord) {
+            $rows = @(([System.IO.File]::ReadAllText($OmsAskRecord) -split "`r?`n") | Where-Object { $_ -match "`t" })
+        }
+        $others = @($rows | Where-Object { ($_ -split "`t", 2)[0] -cne $path })
+        $recorded = @($rows | Where-Object { ($_ -split "`t", 2)[0] -ceq $path } |
+                      ForEach-Object { ($_ -split "`t", 2)[1] } | Where-Object { $OmsAskRules -ccontains $_ })
+        $info = New-Object System.IO.FileInfo($path)
+        $existed = ([int]$info.Attributes) -ne -1
+        $raw = ''
+        if ($existed) {
+            $notPlain = [System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::ReparsePoint
+            if ($info.Attributes -band $notPlain) { return 'refused' }
+            $raw = [System.IO.File]::ReadAllText($path)
+        }
+        $text = $raw.Trim()
+        if ($text) {
+            # ConvertFrom-Json takes comments, trailing commas and single
+            # quotes on PowerShell 7; Claude Code's settings are strict JSON.
+            if (-not $text.StartsWith('{')) { return 'refused' }
+            if ($PSVersionTable.PSVersion.Major -ge 6) { ([System.Text.Json.JsonDocument]::Parse($text)).Dispose() }
+            $settings = ConvertFrom-Json -InputObject $text
+        } else {
+            $settings = [pscustomobject]@{}
+        }
+        if ($settings -isnot [System.Management.Automation.PSCustomObject]) { return 'refused' }
+        $permsProp = $settings.PSObject.Properties['permissions']
+        if ($permsProp) {
+            $perms = $permsProp.Value
+            if ($perms -isnot [System.Management.Automation.PSCustomObject]) { return 'refused' }
+        } else {
+            $perms = [pscustomobject]@{}
+        }
+        $askProp = $perms.PSObject.Properties['ask']
+        $ask = @()
+        if ($askProp) {
+            if ($askProp.Value -isnot [array]) { return 'refused' }
+            $ask = @($askProp.Value)
+        }
+        if ($Mode -ceq 'confirm') {
+            $added = @($OmsAskRules | Where-Object { $ask -cnotcontains $_ })
+            $keep = @($OmsAskRules | Where-Object { ($recorded -ccontains $_) -or ($added -ccontains $_) })
+            $newAsk = @($ask + $added)
+        } else {
+            $keep = @()
+            $newAsk = @($ask | Where-Object { $recorded -cnotcontains $_ })
+        }
+        $lines = @($others) + @($keep | ForEach-Object { "$path`t$_" })
+        # In confirm mode the record is written first, so a rule in the file is
+        # never one the record misses.
+        if ($Mode -ceq 'confirm') {
+            if ($lines.Count -gt 0) { Write-TextFile $OmsAskRecord (($lines -join "`n") + "`n") }
+        }
+        if ($newAsk.Count -ne $ask.Count) {
+            if ($newAsk.Count -gt 0) {
+                if ($askProp) { $perms.ask = $newAsk }
+                else { $perms | Add-Member -NotePropertyName 'ask' -NotePropertyValue $newAsk }
+            } else {
+                $perms.PSObject.Properties.Remove('ask')
+            }
+            if (-not $permsProp) { $settings | Add-Member -NotePropertyName 'permissions' -NotePropertyValue $perms }
+            # Through a file beside the target, so an install interrupted here
+            # cannot leave Claude Code a half-written settings file.
+            $tmp = "$path.oms.tmp"
+            Write-TextFile $tmp ((ConvertTo-Json -InputObject $settings -Depth 100) + "`n")
+            Move-Item -LiteralPath $tmp -Destination $path -Force
+            # Read back: a PowerShell that wrote the list in another shape would
+            # leave Claude Code without the rule while this reported it.
+            $check = (ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path))).permissions
+            # Assigned inside the branch, not from it: a value that leaves an
+            # if statement is unrolled, and a one-rule list would arrive as a
+            # string.
+            $checkAsk = $null
+            if ($check) { $checkAsk = $check.ask }
+            if ($Mode -ceq 'confirm') {
+                $ok = ($checkAsk -is [array]) -and
+                      (@($OmsAskRules | Where-Object { @($checkAsk) -ccontains $_ }).Count -eq $OmsAskRules.Count)
+            } else {
+                $ok = ($null -eq $checkAsk) -or (($checkAsk -is [array]) -and
+                      (@(@($checkAsk) | Where-Object { $recorded -ccontains $_ }).Count -eq 0))
+            }
+            if (-not $ok) {
+                if ($existed) { Write-TextFile $path $raw } else { Remove-Item -LiteralPath $path -Force }
+                return 'refused'
+            }
+        }
+        if ($Mode -cne 'confirm') {
+            if ($lines.Count -gt 0) { Write-TextFile $OmsAskRecord (($lines -join "`n") + "`n") }
+            elseif (Test-Path -LiteralPath $OmsAskRecord) { Remove-Item -LiteralPath $OmsAskRecord -Force }
+            if ($newAsk.Count -lt $ask.Count) {
+                Write-Host "  Claude Code: removed the approval rule confirm mode added to $path"
+            }
+        }
+        return 'done'
+    } catch {
+        return 'refused'
+    }
+}
+$OmsClaudeAsks = $false
+$OmsAskMode = $null
+if ($OmsContributionMode -ceq 'confirm') {
+    if ($HAVE_CLAUDE -and $OmsRootFile -ceq '@@CONFIRM_FILE@@') { $OmsAskMode = 'confirm' }
+} elseif (Test-Path -LiteralPath $OmsAskRecord) {
+    $OmsAskMode = 'automatic'
+}
+if ($OmsAskMode) {
+    $OmsAskResult = Update-ClaudeAskRules $OmsAskMode
+    if ($OmsAskMode -ceq 'confirm') {
+        if ($OmsAskResult -ceq 'done') {
+            $OmsClaudeAsks = $true
+            Write-Host "  Claude Code: asks the person before each OMS contribution (a permission rule in $CLAUDE_DIR/settings.json)."
+        } elseif ($OmsAskResult -ceq 'managed') {
+            Write-Host "  Claude Code: the managed Claude Code settings on this machine apply only their own"
+            Write-Host "    permission rules, or could not be read, so no approval rule was added."
+            Write-Host "    Claude Code agents will ask in the conversation before sharing."
+        } else {
+            Write-Host "  Claude Code: could not add the approval rule to $CLAUDE_DIR/settings.json"
+            Write-Host "    (it needs a plain settings file holding one JSON object), so"
+            Write-Host "    Claude Code agents will ask in the conversation before sharing."
+        }
+    } elseif ($OmsAskResult -cne 'done') {
+        Write-Host "  Claude Code: could not take the approval rule confirm mode added out of"
+        Write-Host "    $CLAUDE_DIR/settings.json. Remove mcp__oms__log_correction and"
+        Write-Host "    mcp__oms__log_signal from permissions.ask there if you no longer want it."
+    }
+}
 @@BEFORE_LINKS@@
 # 1. Skills into the user scope, as links, so the daily pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
@@ -2232,7 +2641,8 @@ function Write-Instructions($File, $Style, $Label, $Cap) {
     }
     $kept = Remove-OmsBlock (Read-TextFile $File)
     $block = if ($Style -eq 'import') {
-        "@@ROOT_IMPORT@@`n@$OMS_DIR/status.md"
+        # The line in single quotes: in double quotes a backtick is an escape.
+        "@@ROOT_IMPORT@@`n@$OMS_DIR/status.md" + $(if ($OmsClaudeAsks) { "`n" + '@@CLAUDE_NOTE_BEFORE@@' + "$CLAUDE_DIR/settings.json" + '@@CLAUDE_NOTE_AFTER@@' } else { '' })
     } else {
         $content.TrimEnd() + "`n`nIf the user asks whether their organisational skills are current, read $OMS_DIR/status.md. Empty means healthy."
     }
@@ -2615,6 +3025,8 @@ def render_install_ps1(mcp_url: str | None,
             # instruction file, and resolving this one first would leave the
             # token sitting in the shipped script for PowerShell to read as a
             # command. `test_no_placeholder_survives_rendering` is the guard.
+            .replace("@@CLAUDE_NOTE_BEFORE@@", CLAUDE_APPROVAL_NOTE_BEFORE)
+            .replace("@@CLAUDE_NOTE_AFTER@@", CLAUDE_APPROVAL_NOTE_AFTER)
             .replace("@@CONFIRM_FILE@@", confirm_variant_name(import_file))
             .replace("@@IMPORT_FILE@@", import_file))
     if mcp_url:
@@ -2724,7 +3136,10 @@ def render_readme(mcp_url: str | None, distribution_repo: str | None = None, *,
             "install.sh` (on Windows, run `$env:OMS_CONTRIBUTION_MODE = "
             "'confirm'` first). The machine keeps that choice until you run "
             "the installer again with `OMS_CONTRIBUTION_MODE=automatic` (on "
-            "Windows, `$env:OMS_CONTRIBUTION_MODE = 'automatic'`).", "",
+            "Windows, `$env:OMS_CONTRIBUTION_MODE = 'automatic'`). In confirm "
+            "mode the installer also adds a permission rule to your Claude Code "
+            "settings, so Claude Code asks before each contribution and your "
+            "answer there is the choice. Choosing automatic again takes it out.", "",
         ] if mcp_url else []),
         "For a local folder instead of a Git clone, `install.sh` checks for "
         "completed publications every minute using a macOS launch agent or "
