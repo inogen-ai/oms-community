@@ -24,12 +24,12 @@ from __future__ import annotations
 import fcntl
 import os
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
 from oms.publish.gate import GateResult
-from oms.publish.publisher import Publisher
+from oms.publish.publisher import Publisher, SkillSelector
 
 # The ceiling on every git subprocess. `subprocess.run` waits for ever by
 # default, and the console's publish button runs these inside a request, so an
@@ -144,17 +144,34 @@ def commit_and_push(work_dir: Path, message: str, branch: str = "main",
 
 def publish_to_repo(publisher: Publisher, tenant: str, repo: str,
                     work_dir: Path, branch: str = "main",
-                    dry_run: bool = False) -> tuple[GateResult, bool]:
-    """Sync, render, and push. Returns `(gate result, whether a commit landed)`."""
+                    dry_run: bool = False, *,
+                    select: SkillSelector | None = None,
+                    skills_only: bool = False,
+                    extra_root_files: Mapping[str, str] | None = None,
+                    message: str | None = None) -> tuple[GateResult, bool]:
+    """Sync, render, and push. Returns `(gate result, whether a commit landed)`.
+
+    `select`, `skills_only` and `extra_root_files` are the destination's
+    publish options (`Publisher.publish`), passed only when a caller names
+    them: a publisher wrapper written against `publish(tenant, out_dir)` sees
+    exactly the call it always saw. `message` is the commit message, by
+    default the one every publish has always made."""
     sync_checkout(repo, work_dir, branch)
-    gate = publisher.publish(tenant, work_dir)
+    options: dict[str, object] = {}
+    if select is not None:
+        options["select"] = select
+    if skills_only:
+        options["skills_only"] = True
+    if extra_root_files:
+        options["extra_root_files"] = extra_root_files
+    gate = publisher.publish(tenant, work_dir, **options)
     if not gate.passed:
         # The gate blocks the PUSH, not merely the render. Returning here,
         # before anything is staged, is the whole reason publish runs inside
         # the checkout rather than before it.
         return gate, False
     return gate, commit_and_push(
-        work_dir, f"Publish {tenant} skills", branch, dry_run)
+        work_dir, message or f"Publish {tenant} skills", branch, dry_run)
 
 
 class CheckoutBusyError(RuntimeError):

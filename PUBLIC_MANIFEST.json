@@ -898,7 +898,7 @@
     },
     "src/oms/publish/git.py": {
       "mode": 420,
-      "sha256": "c9393cc8c6da392cb36ae45020a06fda758bcbe451e7a4a41fb003acedd280b4"
+      "sha256": "72bc289ab29959e8a7d573c2f62b4c70f107e2b6f6583b7b32ec0783ff9b33cd"
     },
     "src/oms/publish/harnesses.py": {
       "mode": 420,
@@ -1083,6 +1083,10 @@
     "tests/community/test_publication_selection.py": {
       "mode": 420,
       "sha256": "d15cf40f3fe54067fe7c82d8b65259649d00297f08329b9d84f1e81681b3c2c2"
+    },
+    "tests/community/test_publish_to_repo_options.py": {
+      "mode": 420,
+      "sha256": "9c8556c32b20d8f99b5c1d9fa758d0ea93c0cf86f49e464d5934291279a7dac5"
     },
     "tests/community/test_recent_skill_changes.py": {
       "mode": 420,
