@@ -73,6 +73,11 @@ class PowerShellInstallFragments:
     same exception applies: `refresh_success` is text inside the refresh
     script's here-string, where an unescaped reference is fixed when the
     installer writes it and an escaped one is undefined when it runs.
+
+    `select_sources` sets `$OmsSources` to an array of `name=url` strings, the
+    shell contract's entries; it may read the script's `$args`. `skip_skill`
+    has `$dir` (the skill folder) and `$link` (the link path), and should test
+    `Test-OmsOwnedLink $link` before removing a link it skips.
     """
 
     before_links: str = ""
@@ -84,6 +89,7 @@ class PowerShellInstallFragments:
     refresh_success: str = '        [System.IO.File]::WriteAllText(`$status, "", `$utf8)'
     credential_setup: str | None = None
     credential_notice: str = ""
+    select_sources: str = ""
 
 
 @dataclass(frozen=True)

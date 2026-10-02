@@ -85,7 +85,8 @@ class Machine:
     the bundle cloned from the organisation's remote."""
 
     def __init__(self, tmp_path: Path, *, fragments: ShellInstallFragments,
-                 bundle_clone: str = "oms-org", local_bundle: bool = False) -> None:
+                 bundle_clone: str = "oms-org", local_bundle: bool = False,
+                 extra_files: dict[str, str] | None = None) -> None:
         self.tmp = tmp_path
         self.home = tmp_path / "home"
         (self.home / ".claude").mkdir(parents=True)
@@ -116,6 +117,7 @@ class Machine:
             "install.sh": render_install_script(MCP_URL, fragments=fragments),
             "skills/demo/SKILL.md": "---\nname: Demo\ndescription: A demo.\n---\n",
             ".oms-publication": "revision-1\n",
+            **(extra_files or {}),
         }
         if local_bundle:
             self.src = self.tmp / "bundle"
