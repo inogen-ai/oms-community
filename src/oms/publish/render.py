@@ -1122,6 +1122,20 @@ def _toml_header_printf(toml_headers: str) -> str:
     return f"\n    printf '%s\\n' '{line}'"
 
 
+# What git says when a remote refuses access rather than being unreachable:
+# SSH key refusals, HTTPS authentication failures, and the "not found" a host
+# answers for a private repository the caller may not see. Matched without
+# case. A network failure ("could not resolve host", a timeout, "connection
+# refused") is not in here, and neither is a local file permission error,
+# which says "permission denied" without "(publickey". Shared by both
+# installers and both refresh scripts, so a machine reaches one answer.
+SOURCE_REFUSAL_PATTERN = (
+    r"permission denied \(publickey|permission to .* denied|authentication failed"
+    r"|repository not found|repository .* not found"
+    r"|could not be found or you (do not|don.t) have permission"
+    r"|you (do not|don.t) have permission|access denied|returned error: 40[134]")
+
+
 def render_install_script(mcp_url: str | None,
                           root_files: Sequence[str] | None = None,
                           bundle_token: str | None = None,
@@ -1144,6 +1158,8 @@ def render_install_script(mcp_url: str | None,
     skip_skill = fragments.skip_skill
     link_report = fragments.link_report
     refresh_ok = fragments.refresh_success
+    select_sources = fragments.select_sources
+    refused = SOURCE_REFUSAL_PATTERN
     have_any = "".join(f"${_have(h)}" for h in HARNESSES)
     looked_for = " ".join(h.detect for h in HARNESSES)
     mcp_step = ""
@@ -1369,7 +1385,17 @@ writable_target "$OMS_MODE_FILE" ||
   abort "$OMS_MODE_FILE is not a writable file, and this machine's contribution mode is recorded there."
 writable_target "$OMS_INSTALLED_MODE_FILE" ||
   abort "$OMS_INSTALLED_MODE_FILE is not a writable file, and the mode this machine's tools were given is recorded there."
-
+writable_target "$OMS_DIR/sources.list" ||
+  abort "$OMS_DIR/sources.list is not a writable file, and the skill sources the refresh pulls are listed there."
+writable_target "$OMS_DIR/.sources-notice" ||
+  abort "$OMS_DIR/.sources-notice is not a writable file, and what goes wrong with a skill source is recorded there."
+writable_dir "$OMS_DIR/sources" ||
+  abort "$OMS_DIR/sources is not a writable directory, and extra skill sources are downloaded there."
+# The extra skill sources this installation links (section 0d), named by an
+# extension below and never inherited from the environment: an OMS_SOURCES
+# left in somebody's shell must not add repositories to a machine.
+OMS_SOURCES=""
+{select_sources}
 # 0b. Which agent tools are on this machine, and can each one be written to.
 #     Detection is the tool's own config directory, or its CLI on PATH where
 #     the command name is known - the directory is created by the tool's first
@@ -1470,6 +1496,151 @@ touch "$OMS_DIR/status.md"
 # until somebody chooses again. One word on one line, so `cat` answers which.
 printf '%s\\n' "$OMS_CONTRIBUTION_MODE_RESOLVED" > "$OMS_MODE_FILE"
 {before_links}
+# 0d. Extra skill sources: git repositories beside this bundle whose skills
+#     are linked with its own. An extension names them in OMS_SOURCES, as
+#     whitespace-separated name=url entries; with none named this section
+#     clones nothing and links nothing. Each source is a clone in
+#     $OMS_DIR/sources/<name> that this installer makes and the refresh
+#     pulls. A source the refresh found refused carries a refusal marker: it
+#     stays listed, so every refresh tries it again, and its skills stay
+#     unlinked until a pull works. What goes wrong is recorded in
+#     $OMS_DIR/.sources-notice and added to status.md by the refresh, which
+#     owns that file because it alone knows whether the bundle is current.
+OMS_SOURCES_DIR="$OMS_DIR/sources"
+OMS_SOURCES_NOTICE="$OMS_DIR/.sources-notice"
+OMS_ACTIVE_SOURCES=""
+oms_sources_listed=""
+: > "$OMS_SOURCES_NOTICE"
+oms_source_notice() {{
+  printf '%s\\n' "$1" >> "$OMS_SOURCES_NOTICE"
+}}
+oms_source_name_ok() {{
+  case "$1" in
+    ''|-*|*[!a-z0-9-]*) return 1 ;;
+  esac
+  [ "${{#1}}" -le 64 ]
+}}
+# HTTPS, SSH and scp-style remotes only, spelt in characters that no shell
+# and no git option parser gives a meaning to: no credential in an HTTPS
+# address, no local path, no file:// and no transport helper. The address
+# came out of a published file, and git is about to be handed it.
+oms_source_url_ok() {{
+  printf '%s\\n' "$1" | grep -Eq '^(https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]+)?/|ssh://([A-Za-z0-9._-]+@)?[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]+)?/|[A-Za-z0-9._-]+@[A-Za-z0-9][A-Za-z0-9.-]*:)[A-Za-z0-9._~%+/][A-Za-z0-9._~%+/-]*$'
+}}
+oms_source_active() {{
+  case " $OMS_ACTIVE_SOURCES " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}}
+# True for a link this installer made: into the bundle, or into one of its
+# extra skill sources. A link the user made points anywhere else.
+oms_owned_link() {{
+  case "$(readlink "$1")" in
+    "$SRC"/*|"$OMS_SOURCES_DIR"/*) return 0 ;;
+  esac
+  return 1
+}}
+oms_refused() {{
+  printf '%s\\n' "$1" | grep -Eqi '{refused}'
+}}
+if [ -n "$OMS_SOURCES" ]; then
+  if [ ! -e "$SRC/.git" ]; then
+    # Only a clone has a refresh that pulls, and a source that nothing pulls
+    # is a copy going stale without telling anybody.
+    echo "  extra skill sources skipped: this bundle is not a git clone, so they would never be updated."
+  elif ! command -v git >/dev/null 2>&1; then
+    echo "  extra skill sources skipped: this machine has no git command." >&2
+    oms_source_notice "**Some skills are not installed:** this machine has no git command, so their repositories cannot be downloaded."
+  else
+    mkdir -p "$OMS_SOURCES_DIR"
+    oms_src_real="$(cd "$SRC" && pwd -P)"
+    # No pathname expansion while the entries are split: an entry is data.
+    set -f
+    for oms_entry in $OMS_SOURCES; do
+      oms_name="${{oms_entry%%=*}}"
+      oms_url="${{oms_entry#*=}}"
+      if [ "$oms_name" = "$oms_entry" ] || ! oms_source_name_ok "$oms_name"; then
+        echo "  skipped a skill source with an unusable name: $oms_entry" >&2
+        continue
+      fi
+      if ! oms_source_url_ok "$oms_url"; then
+        echo "  skipped the $oms_name skills: $oms_url is not a repository address this installer uses." >&2
+        oms_source_notice "**The $oms_name skills are not installed:** their repository address is not one this installer uses. Ask whoever administers OMS to check it."
+        continue
+      fi
+      oms_dir="$OMS_SOURCES_DIR/$oms_name"
+      # A source cannot be this bundle itself: a bundle cloned into
+      # $OMS_DIR/sources/<name>, and a source of the same name.
+      if [ -d "$oms_dir" ] && [ "$(cd "$oms_dir" && pwd -P)" = "$oms_src_real" ]; then
+        echo "  skipped the $oms_name skills: $oms_dir is this bundle's own folder." >&2
+        continue
+      fi
+      oms_marker="$OMS_SOURCES_DIR/.$oms_name.refused"
+      if [ -d "$oms_dir/.git" ]; then
+        oms_origin="$(git -C "$oms_dir" config --get remote.origin.url 2>/dev/null || true)"
+        if [ "$oms_origin" != "$oms_url" ]; then
+          # The repository moved. Downloaded afresh beside the old clone and
+          # swapped in only once complete, so a failure keeps what works.
+          rm -rf "$oms_dir.oms-new"
+          if oms_out="$(GIT_TERMINAL_PROMPT=0 git clone --quiet -- "$oms_url" "$oms_dir.oms-new" 2>&1 </dev/null)"; then
+            rm -rf "$oms_dir"
+            mv "$oms_dir.oms-new" "$oms_dir"
+            rm -f "$oms_marker"
+            echo "  $oms_name skills: now from $oms_url"
+          else
+            rm -rf "$oms_dir.oms-new"
+            echo "  $oms_name skills: could not be downloaded from their new address, $oms_url; the copy from $oms_origin stays." >&2
+            oms_source_notice "**The $oms_name skills could not move to their new repository.** The copy from the old one stays loaded. Running the installer in a terminal shows why."
+          fi
+        fi
+      elif [ -e "$oms_dir" ] || [ -L "$oms_dir" ]; then
+        echo "  skipped the $oms_name skills: $oms_dir is not a download this installer made, so it was left alone." >&2
+        oms_source_notice "**The $oms_name skills are not installed:** $oms_dir is in the way. Move it aside and run the installer again."
+        continue
+      elif oms_out="$(GIT_TERMINAL_PROMPT=0 git clone --quiet -- "$oms_url" "$oms_dir" 2>&1 </dev/null)"; then
+        rm -f "$oms_marker"
+        echo "  $oms_name skills: downloaded from $oms_url"
+      else
+        if oms_refused "$oms_out"; then
+          echo "  skipped the $oms_name skills: access to $oms_url was refused." >&2
+          oms_source_notice "**The $oms_name skills are not installed:** access to their repository was refused. If you should have them, ask whoever manages access to $oms_url."
+        else
+          echo "  skipped the $oms_name skills: $oms_url could not be downloaded:" >&2
+          printf '%s\\n' "$oms_out" | sed 's/^/    /' >&2
+          oms_source_notice "**The $oms_name skills are not installed:** their repository could not be downloaded. Running the installer in a terminal shows why."
+        fi
+        continue
+      fi
+      oms_sources_listed="$oms_sources_listed $oms_name"
+      if [ -f "$oms_marker" ]; then
+        oms_refused_on="$(cat "$oms_marker" 2>/dev/null || true)"
+        echo "  $oms_name skills: not linked, because access to $oms_url was refused on $oms_refused_on." >&2
+        oms_source_notice "**Access to the $oms_name skills was refused** on $oms_refused_on, so they were removed from this machine's agents. If you should still have them, ask whoever manages access to $oms_url; the next daily update restores them once access is back."
+        continue
+      fi
+      OMS_ACTIVE_SOURCES="$OMS_ACTIVE_SOURCES $oms_name"
+    done
+    set +f
+  fi
+fi
+: > "$OMS_DIR/sources.list"
+for oms_name in $oms_sources_listed; do
+  printf '%s\\n' "$oms_name" >> "$OMS_DIR/sources.list"
+done
+# The skill folders to link, one per line: the bundle's first, then each
+# active source's in the order the sources were named.
+oms_skill_dirs() {{
+  for ls_d in "$SRC"/skills/*/; do
+    [ ! -d "$ls_d" ] || printf '%s\\n' "$ls_d"
+  done
+  for ls_s in $OMS_ACTIVE_SOURCES; do
+    for ls_d in "$OMS_SOURCES_DIR/$ls_s"/skills/*/; do
+      [ ! -d "$ls_d" ] || printf '%s\\n' "$ls_d"
+    done
+  done
+  return 0
+}}
 # 1. Skills into the user scope. Symlinks, so the daily pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
 #    First sweep OMS-owned garbage: a symlink pointing into this tree that no
@@ -1479,29 +1650,57 @@ printf '%s\\n' "$OMS_CONTRIBUTION_MODE_RESOLVED" > "$OMS_MODE_FILE"
 #    writable and that nothing unusable is sitting at this path already.)
 link_skills() {{
   ls_dir="$1"; ls_label="$2"; ls_n=0{link_initialiser}
+  ls_seen=" "
   mkdir -p "$ls_dir"
   for link in "$ls_dir"/*; do
     [ -L "$link" ] || continue
-    case "$(readlink "$link")" in
+    ls_to="$(readlink "$link")"
+    case "$ls_to" in
       "$SRC"/*)
         if [ ! -e "$link" ]; then
           rm -f "$link"
           echo "  removed retired skill $(basename "$link")"
         fi
         ;;
+      "$OMS_SOURCES_DIR"/*)
+        # Into an extra source (section 0d): retired there, or a source
+        # this machine no longer links, whether it was dropped from the
+        # selection or its access was refused.
+        ls_from="${{ls_to#"$OMS_SOURCES_DIR"/}}"
+        ls_from="${{ls_from%%/*}}"
+        if [ ! -e "$link" ]; then
+          rm -f "$link"
+          echo "  removed retired skill $(basename "$link")"
+        elif ! oms_source_active "$ls_from"; then
+          rm -f "$link"
+          echo "  removed $(basename "$link"): the $ls_from skills are no longer installed here"
+        fi
+        ;;
     esac
   done
-  for dir in "$SRC"/skills/*/; do
-    [ -d "$dir" ] || continue
+  ls_dirs="$(oms_skill_dirs)"
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
     name="$(basename "$dir")"
     target="$ls_dir/$name"
+    # The first source to offer a name keeps it: the bundle before any
+    # extra source, and the sources in the order they were named.
+    case "$ls_seen" in
+      *" $name "*)
+        echo "  skip ${{dir%/}}: an earlier source already provides skills/$name"
+        continue
+        ;;
+    esac
 {skip_skill}    if [ -e "$target" ] && [ ! -L "$target" ]; then
       echo "  skip skills/$name: you already have a directory with this name"
       continue
     fi
     ln -sfn "${{dir%/}}" "$target"
+    ls_seen="$ls_seen$name "
     ls_n=$((ls_n + 1))
-  done
+  done <<OMS_SKILL_DIRS
+$ls_dirs
+OMS_SKILL_DIRS
 {link_report}
 }}
 
@@ -1738,6 +1937,32 @@ if [ "$local_refresh" = 1 ]; then
   fi
   exit 0
 fi
+# Extra skill sources first (installer section 0d), so a refusal is on disk
+# before the installer reads it. git's own words decide what a failure means.
+# Refused access is a revocation: its marker makes the installer unlink that
+# source's skills. Anything else, a network failure above all, is staleness
+# and unlinks nothing.
+PULL_NOTICE="$OMS_DIR/.sources-pull-notice"
+: > "\\$PULL_NOTICE"
+sources_changed=0
+oms_refused() {{
+  printf '%s\\n' "\\$1" | grep -Eqi '{refused}'
+}}
+if [ -f "$OMS_DIR/sources.list" ]; then
+  while IFS= read -r name; do
+    case "\\$name" in ''|-*|*[!a-z0-9-]*) continue ;; esac
+    dir="$OMS_SOURCES_DIR/\\$name"
+    [ -d "\\$dir/.git" ] || continue
+    marker="$OMS_SOURCES_DIR/.\\$name.refused"
+    if out=\\$(cd "\\$dir" && GIT_TERMINAL_PROMPT=0 git pull --ff-only 2>&1 </dev/null); then
+      if [ -f "\\$marker" ]; then rm -f "\\$marker"; sources_changed=1; fi
+    elif oms_refused "\\$out"; then
+      if [ ! -f "\\$marker" ]; then date +%Y-%m-%d > "\\$marker"; sources_changed=1; fi
+    else
+      printf '%s\\n' "**The \\$name skills on this machine are out of date.** Their daily update failed on \\$(date +%Y-%m-%d), so the previous version is still loaded. The most likely cause is no network connection." >> "\\$PULL_NOTICE"
+    fi
+  done < "$OMS_DIR/sources.list"
+fi
 if cd "\\$SRC" && git pull --ff-only >/dev/null 2>&1; then
   # A pull that lands bytes nobody wires in is not a successful refresh: the
   # new skills sit in \\$SRC unlinked and the machine runs a version behind.
@@ -1755,7 +1980,13 @@ else
   printf '%s\\n' "**The organisational skills on this machine are out of date.**" > "\\$STATUS"
   printf '%s\\n' "The daily update failed on \\$(date +%Y-%m-%d). The most likely cause is an expired access token." >> "\\$STATUS"
   printf '%s\\n' "Tell the user their OMS skills are stale, that the most likely cause is an expired access token, and that the install line in the bundle's README.md is what re-clones it once they have access again." >> "\\$STATUS"
+  # The bundle could not be pulled, but a source whose access changed must
+  # still gain or lose its links today: that is the retraction it exists for.
+  if [ "\\$sources_changed" = 1 ]; then
+    sh "\\$SRC/install.sh" >/dev/null 2>&1 || true
+  fi
 fi
+cat "$OMS_DIR/.sources-notice" "\\$PULL_NOTICE" >> "\\$STATUS" 2>/dev/null || true
 REFRESH
 chmod +x "$OMS_DIR/.oms-refresh.sh.tmp"
 # Same directory as the target, so this is a rename and not a copy.
