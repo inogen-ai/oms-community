@@ -35,11 +35,11 @@ MUTE = '''        if ((Read-TextFile "$HOME/muted") -split '\\s+' -contains $dir
 
 
 class WindowsMachine(Machine):
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, bundle_clone: str = "oms-org") -> None:
         script = render_install_ps1(MCP_URL, fragments=PowerShellInstallFragments(
             select_sources=READ_SOURCES, skip_skill=MUTE))
         super().__init__(tmp_path, fragments=ShellInstallFragments(),
-                         extra_files={"install.ps1": script})
+                         bundle_clone=bundle_clone, extra_files={"install.ps1": script})
         shim = self.bin / "powershell"
         shim.write_text(f'#!/bin/sh\nexec "{PWSH}" "$@"\n', encoding="utf-8")
         shim.chmod(0o755)
@@ -113,6 +113,8 @@ def test_a_muted_skill_from_a_source_is_unlinked(tmp_path):
     "finance=file:///tmp/finance.git",
     "finance=--upload-pack=touch",
     "finance=https://user:token@git.example/finance.git",
+    "finance=-x@git.example:finance.git",
+    "finance=ssh://-x@git.example/finance.git",
     "finance",
 ])
 def test_an_unusable_entry_is_skipped(tmp_path, entry):
@@ -151,3 +153,45 @@ def test_without_sources_the_refresh_leaves_the_status_empty(tmp_path):
     assert machine.install().returncode == 0
     assert machine.refresh().returncode == 0
     assert machine.status() == ""
+
+
+def test_a_source_beside_a_bundle_in_the_sources_folder_is_unlinked_when_refused(tmp_path):
+    machine = WindowsMachine(tmp_path, bundle_clone=".oms/sources/org")
+    machine.remote("org-ops", _skill("rota"))
+    machine.sources(f"org-ops={BASE}org-ops.git")
+    assert machine.install().returncode == 0
+    assert machine.link("rota").is_symlink()
+    machine.listing("refuse-pull", "org-ops")
+    machine.refresh()
+    assert not machine.link("rota").is_symlink()
+    assert machine.link("demo").is_symlink()
+
+
+def test_a_refusal_is_recognised_whatever_language_the_machine_speaks(tmp_path):
+    machine = _installed(tmp_path)
+    machine.env["LC_ALL"] = "de_DE.UTF-8"
+    machine.listing("refuse-pull", "finance")
+    machine.refresh()
+    assert not machine.link("month-end").is_symlink()
+    assert "Access to the finance skills was refused" in machine.status()
+
+
+def test_running_the_installer_retries_a_refused_source_at_once(tmp_path):
+    machine = _installed(tmp_path)
+    machine.listing("refuse-pull", "finance")
+    machine.refresh()
+    assert not machine.link("month-end").is_symlink()
+    machine.listing("refuse-pull")
+    run = machine.install()
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert machine.link("month-end").is_symlink()
+
+
+def test_the_separator_reaches_git_quoted():
+    """PowerShell drops a bare -- when it binds a function's arguments, so the
+    one that keeps an address from reading as an option is quoted."""
+    script = render_install_ps1(MCP_URL, fragments=PowerShellInstallFragments(
+        select_sources=READ_SOURCES))
+    assert "Invoke-SourceGit clone --quiet '--' $url" in script
+    assert "Invoke-SourceGit clone --quiet -- " not in script
+

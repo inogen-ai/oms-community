@@ -858,7 +858,7 @@
     },
     "src/oms/ports/publishing.py": {
       "mode": 420,
-      "sha256": "97815ce77a5755c8b9d82f882a763e2207dbd4a09d86192a0178bf529d23a4f2"
+      "sha256": "c037147d843d65be31489f9281193fc5243e0d8cf4eadb441771afec2eb65691"
     },
     "src/oms/ports/repositories.py": {
       "mode": 420,
@@ -898,7 +898,7 @@
     },
     "src/oms/publish/git.py": {
       "mode": 420,
-      "sha256": "72bc289ab29959e8a7d573c2f62b4c70f107e2b6f6583b7b32ec0783ff9b33cd"
+      "sha256": "4a0ae60f1caf7a28cb05d0604a59fba52bd1858dadd0dbc7cef554643440fd1c"
     },
     "src/oms/publish/harnesses.py": {
       "mode": 420,
@@ -914,7 +914,7 @@
     },
     "src/oms/publish/render.py": {
       "mode": 420,
-      "sha256": "163a1c0e2e9edf436b2e2f93205fd4ed6c265dbb49bf244ff69607db5efa83cb"
+      "sha256": "b0e80330eec6a980ad7a8c70539ca109630b23731049492585469c612cdc539b"
     },
     "src/oms/publish/urls.py": {
       "mode": 420,
@@ -1062,11 +1062,11 @@
     },
     "tests/community/test_install_sources.py": {
       "mode": 420,
-      "sha256": "cb8f8ae3c8dd8fb43daae25c16b5b2374d289c606729f88bd6ffe4278fdc3f87"
+      "sha256": "9ba19954cb44c52a5ed64cf892297c2a687a1afaffd3288ea0f750e3b8efdd27"
     },
     "tests/community/test_install_sources_ps1.py": {
       "mode": 420,
-      "sha256": "5b018221f1099e91ef8c5a0c6e3534569cfd864af83fcdc7ac2c29208a9ac391"
+      "sha256": "92585e765067e47057145b2feaf62f677d1b3a78c37eef45de9aff79539b3758"
     },
     "tests/community/test_instruction_policy.py": {
       "mode": 420,
@@ -1094,7 +1094,7 @@
     },
     "tests/community/test_publish_to_repo_options.py": {
       "mode": 420,
-      "sha256": "9c8556c32b20d8f99b5c1d9fa758d0ea93c0cf86f49e464d5934291279a7dac5"
+      "sha256": "3894ac75fec9c2fe4e73847bfbf77a13aa9d55d4f76c8c8d331d25f87ee36323"
     },
     "tests/community/test_recent_skill_changes.py": {
       "mode": 420,

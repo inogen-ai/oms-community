@@ -50,11 +50,13 @@ GIT_STANDIN = f'''#!/bin/sh
 here="$(basename "$(pwd)")"
 if [ "$1" = pull ]; then
   if grep -qxF "$here" "$HOME/refuse-pull" 2>/dev/null; then
-    echo "ERROR: Repository not found." >&2
-    echo "fatal: Could not read from remote repository." >&2
-    echo "" >&2
-    echo "Please make sure you have the correct access rights" >&2
-    echo "and the repository exists." >&2
+    # What a translated git prints, unless it is asked for the C locale: the
+    # scripts must ask, or a refusal reads as a network failure.
+    if [ "${{LC_ALL:-}}" != C ]; then
+      echo "fatal: Authentifizierung fehlgeschlagen" >&2
+      exit 128
+    fi
+    echo "fatal: Authentication failed for 'https://git.example/$here.git/'" >&2
     exit 128
   fi
   if grep -qxF "$here" "$HOME/offline-pull" 2>/dev/null; then
@@ -66,7 +68,10 @@ if [ "$1" = clone ]; then
   for arg in "$@"; do last_url="$arg"; case "$arg" in https://*) url="$arg" ;; esac; done
   name="$(basename "${{url:-none}}" .git)"
   if grep -qxF "$name" "$HOME/refuse-clone" 2>/dev/null; then
-    echo "remote: Repository not found." >&2
+    if [ "${{LC_ALL:-}}" != C ]; then
+      echo "fatal: Repository '$url/' nicht gefunden" >&2
+      exit 128
+    fi
     echo "fatal: repository '$url/' not found" >&2
     exit 128
   fi
@@ -260,6 +265,9 @@ def test_a_muted_skill_from_a_source_is_unlinked(tmp_path):
     "finance=--upload-pack=touch",
     "finance=https://user:token@git.example/finance.git",
     "finance=ext::sh",
+    "finance=-x@git.example:finance.git",
+    "finance=-oProxyCommand@git.example:finance.git",
+    "finance=ssh://-x@git.example/finance.git",
     "=https://git.example/finance.git",
     "finance",
 ])
@@ -417,7 +425,6 @@ def test_without_sources_the_refresh_leaves_the_status_empty(tmp_path):
 # grep exactly as the generated scripts run it, over what real hosts say.
 
 REFUSALS = [
-    "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
     "ERROR: Repository not found.\nfatal: Could not read from remote repository.",
     "remote: Repository not found.\nfatal: repository 'https://github.com/acme/x.git/' not found",
     "remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/acme/x.git/'",
@@ -430,6 +437,10 @@ REFUSALS = [
 ]
 
 NOT_REFUSALS = [
+    # The key itself was not accepted. Under cron that is most often an SSH
+    # agent the job cannot reach, not a decision about the repository: a host
+    # that knows the key and withdraws access answers "Repository not found".
+    "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
     "ssh: Could not resolve hostname github.com: nodename nor servname provided, or not known\n"
     "fatal: Could not read from remote repository.\n\nPlease make sure you have the correct "
     "access rights\nand the repository exists.",
@@ -458,3 +469,93 @@ def test_an_access_refusal_is_recognised(message):
 @pytest.mark.parametrize("message", NOT_REFUSALS)
 def test_a_network_or_local_failure_is_not_a_refusal(message):
     assert not _matches(message)
+
+
+# -- the review's findings ----------------------------------------------------------
+
+def test_a_source_beside_a_bundle_in_the_sources_folder_is_unlinked_when_refused(tmp_path):
+    """The bundle cloned to ~/.oms/sources/org, and a source whose name
+    starts the same way: a link into the source is the source's, not the
+    bundle's."""
+    machine = _machine(tmp_path, bundle_clone=".oms/sources/org")
+    machine.remote("org-ops", _skill("rota"))
+    machine.sources(f"org-ops={BASE}org-ops.git")
+    assert machine.install().returncode == 0
+    assert machine.link("rota").is_symlink()
+    machine.listing("refuse-pull", "org-ops")
+    machine.refresh()
+    assert not machine.link("rota").is_symlink()
+    assert machine.link("demo").is_symlink()
+
+
+def test_a_source_inside_a_bundle_cloned_to_the_oms_folder_is_unlinked_when_refused(tmp_path):
+    """The bundle cloned to ~/.oms itself, so the sources folder sits inside
+    it: a link into a source is still the source's."""
+    machine = _machine(tmp_path, bundle_clone=".oms")
+    machine.remote("finance", _skill("month-end"))
+    machine.sources(f"finance={BASE}finance.git")
+    assert machine.install().returncode == 0
+    assert machine.link("month-end").is_symlink()
+    machine.listing("refuse-pull", "finance")
+    machine.refresh()
+    assert not machine.link("month-end").is_symlink()
+    assert machine.link("demo").is_symlink()
+
+
+def test_a_refusal_is_recognised_whatever_language_the_machine_speaks(tmp_path):
+    machine = _installed(tmp_path)
+    machine.env["LC_ALL"] = "de_DE.UTF-8"
+    machine.env["LANG"] = "de_DE.UTF-8"
+    machine.listing("refuse-pull", "finance")
+    machine.refresh()
+    assert not machine.link("month-end").is_symlink()
+    assert "Access to the finance skills was refused" in machine.status()
+
+
+def test_a_refused_clone_is_recognised_whatever_language_the_machine_speaks(tmp_path):
+    machine = _machine(tmp_path)
+    machine.env["LC_ALL"] = "de_DE.UTF-8"
+    machine.remote("finance", _skill("month-end"))
+    machine.sources(f"finance={BASE}finance.git")
+    machine.listing("refuse-clone", "finance")
+    assert machine.install().returncode == 0
+    notice = (machine.home / ".oms" / ".sources-notice").read_text(encoding="utf-8")
+    assert "access to their repository was refused" in notice
+
+
+def test_running_the_installer_retries_a_refused_source_at_once(tmp_path):
+    """A person whose access is back need not wait a day: running the
+    installer themselves tries the refused source again."""
+    machine = _installed(tmp_path)
+    machine.listing("refuse-pull", "finance")
+    machine.refresh()
+    assert not machine.link("month-end").is_symlink()
+    machine.listing("refuse-pull")
+    run = machine.install()
+    assert run.returncode == 0, run.stderr
+    assert machine.link("month-end").is_symlink()
+    assert not (machine.home / ".oms" / "sources" / ".finance.refused").exists()
+
+
+def test_the_refresh_does_not_pull_a_refused_source_twice(tmp_path):
+    """The refresh has just pulled every source, so the installer it runs is
+    told not to try again."""
+    script = render_install_script(MCP_URL, fragments=ShellInstallFragments(
+        select_sources=READ_SOURCES))
+    assert "OMS_SOURCES_PULLED=1 sh" in script
+
+
+@pytest.mark.parametrize("entry", [
+    "finance=-x@git.example:finance.git",
+    "finance=-oProxyCommand@git.example:finance.git",
+    "finance=ssh://-x@git.example/finance.git",
+])
+def test_an_address_starting_with_a_hyphen_is_refused_by_the_installer_itself(tmp_path, entry):
+    """Refused by the address check, not left for git to refuse: git's own
+    refusal is a second layer, never the first."""
+    machine = _machine(tmp_path)
+    machine.sources(entry)
+    run = machine.install()
+    assert run.returncode == 0, run.stderr
+    assert "is not a repository address this installer uses" in run.stderr
+

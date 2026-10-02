@@ -49,6 +49,8 @@ class ShellInstallFragments:
     name) and `$target` (the link path) set, and may `continue`. To remove a
     link it skips, it should test `oms_owned_link "$target"` first: true only
     for a link this installer made, into the bundle or into an extra source.
+    The loop reads its folders from a here-document, so the fragment must not
+    read standard input.
     """
 
     before_links: str = ""

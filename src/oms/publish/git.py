@@ -27,6 +27,7 @@ import subprocess
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from oms.publish.gate import GateResult
 from oms.publish.publisher import Publisher, SkillSelector
@@ -69,6 +70,38 @@ def _git(*args: str, cwd: Path, timeout: float = GIT_TIMEOUT_SECONDS) -> str:
     return result.stdout.strip()
 
 
+class CheckoutBelongsElsewhere(GitCommandError):
+    """The checkout is a clone of a different repository from the one this
+    publish is for.
+
+    Refused rather than reused: `sync_checkout` fetches, resets to and pushes
+    `origin`, so reusing it would push one destination's tree to another's
+    remote, and a reset onto an empty new remote would carry the old
+    repository's files and ownership record across with it. Refused rather
+    than deleted, because the checkout directory is the caller's to name and
+    may be something other than a checkout this code made. The message names
+    both repositories without their credentials."""
+
+
+def _without_userinfo(url: str) -> str:
+    parts = urlsplit(url)
+    if not parts.scheme or "@" not in parts.netloc:
+        return url
+    return urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[1], parts.path,
+                       parts.query, parts.fragment))
+
+
+def _origin(work_dir: Path) -> str | None:
+    try:
+        result = subprocess.run(("git", "config", "--get", "remote.origin.url"),
+                                cwd=work_dir, capture_output=True, text=True,
+                                timeout=GIT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        raise GitCommandError(
+            f"git config timed out after {GIT_TIMEOUT_SECONDS:g}s") from None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
 def _has_remote_branch(work_dir: Path, branch: str) -> bool:
     try:
         result = subprocess.run(("git", "rev-parse", "--verify", f"origin/{branch}"),
@@ -88,6 +121,20 @@ def sync_checkout(repo: str, work_dir: Path, branch: str = "main") -> None:
     the previous one left behind. An empty remote has no origin/<branch> yet,
     which is the first-publish case and is not an error.
     """
+    if (work_dir / ".git").is_dir():
+        origin = _origin(work_dir)
+        if origin != repo:
+            if origin is not None and _without_userinfo(origin) == _without_userinfo(repo):
+                # The same repository with a new credential in its address: a
+                # rotated token. The checkout pushes with what its remote
+                # holds, so the remote has to carry the new one.
+                _git("remote", "set-url", "origin", repo, cwd=work_dir)
+            else:
+                raise CheckoutBelongsElsewhere(
+                    f"{work_dir} is a checkout of a different repository "
+                    f"({_without_userinfo(origin or 'no remote')}), not of "
+                    f"{_without_userinfo(repo)}. Nothing was published. Remove "
+                    f"it, or give this publish a checkout of its own.")
     if not (work_dir / ".git").is_dir():
         work_dir.parent.mkdir(parents=True, exist_ok=True)
         # Routed through _git rather than called bare: a bad --repo value or

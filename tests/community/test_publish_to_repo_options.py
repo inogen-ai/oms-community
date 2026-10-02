@@ -91,3 +91,60 @@ def test_a_caller_naming_no_option_makes_the_original_call(bare, tmp_path):
     gate, pushed = publish_to_repo(wrapper, TENANT, str(bare), tmp_path / "checkout")
     assert gate.passed and pushed
     assert wrapper.calls == [(TENANT, tmp_path / "checkout")]
+
+
+# -- a checkout belongs to one repository -----------------------------------------
+#
+# A checkout keeps the remote it was cloned from. Pushing a different
+# repository's publish through it would send one destination's tree to
+# another's remote, so a checkout of another repository is refused, never
+# reused. The same repository with a new credential is a rotated token, and the
+# checkout's remote is simply updated.
+
+def _remote_count(remote: Path) -> int:
+    run = subprocess.run(["git", "rev-list", "--count", "main"], cwd=remote,
+                         capture_output=True, text=True)
+    return int(run.stdout.strip()) if run.returncode == 0 else 0
+
+
+def test_a_checkout_of_another_repository_is_refused_not_pushed_to(bare, tmp_path):
+    from oms.publish.git import GitCommandError
+    other = tmp_path / "other.git"
+    subprocess.run(["git", "init", "--bare", "--quiet", str(other)], check=True)
+    work = tmp_path / "checkout"
+    publish_to_repo(Publisher(_store()), TENANT, str(bare), work)
+    with pytest.raises(GitCommandError) as refused:
+        publish_to_repo(Publisher(_store()), TENANT, str(other), work)
+    assert "another repository" in str(refused.value) or "different repository" in str(refused.value)
+    assert _remote_count(other) == 0
+
+
+def test_a_rotated_credential_updates_the_checkouts_remote(tmp_path, monkeypatch):
+    if shutil.which("git") is None:
+        pytest.skip("needs git")
+    for key in tuple(os.environ):
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key, raising=False)
+    remotes = tmp_path / "remotes"
+    remotes.mkdir()
+    subprocess.run(["git", "init", "--bare", "--quiet", str(remotes / "skills.git")], check=True)
+    config = tmp_path / "gitconfig"
+    config.write_text(
+        "[user]\n\tname = Test\n\temail = test@example.org\n"
+        f'[url "{remotes}/"]\n\tinsteadOf = https://bot:old@git.example/\n'
+        f"\tinsteadOf = https://bot:new@git.example/\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    work = tmp_path / "checkout"
+    publish_to_repo(Publisher(_store()), TENANT, "https://bot:old@git.example/skills.git", work)
+    store = _store()
+    store.upsert_skill(Skill(id="year-end", name="year-end", description="Guidance.",
+                             domain="finance", tenant_id=TENANT))
+    store.upsert_rule(Rule(id="year-end-rule", body="Close the year.", tenant_id=TENANT))
+    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="year-end-rule", to_id="year-end"))
+    gate, pushed = publish_to_repo(Publisher(store), TENANT,
+                                   "https://bot:new@git.example/skills.git", work)
+    assert gate.passed and pushed
+    origin = subprocess.run(["git", "config", "--get", "remote.origin.url"], cwd=work,
+                            capture_output=True, text=True).stdout.strip()
+    assert origin == "https://bot:new@git.example/skills.git"
