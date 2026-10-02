@@ -894,7 +894,7 @@
     },
     "src/oms/publish/gate.py": {
       "mode": 420,
-      "sha256": "8f721e5c3b8ee7a49b5d9837690c67c7fd8d7065aa2e170922d70d1575bceb0e"
+      "sha256": "3b461923565d54f0b117b19d142f2198bcb05d4c5e90ac84543f92810d0c2b3c"
     },
     "src/oms/publish/git.py": {
       "mode": 420,
@@ -910,7 +910,7 @@
     },
     "src/oms/publish/publisher.py": {
       "mode": 420,
-      "sha256": "13a3bc0435b043855f54c0384895df0bdc5c7339ade1c79cc28e12923ea9e9d2"
+      "sha256": "eac8f4f2af1d7ee758319973da3021b2325a453fc87f3379805af90fba897e48"
     },
     "src/oms/publish/render.py": {
       "mode": 420,
@@ -1079,6 +1079,10 @@
     "tests/community/test_publication_destinations.py": {
       "mode": 420,
       "sha256": "b05396323a333c4904e67685ec1083c190d24c7682c6693a4fe367840856e851"
+    },
+    "tests/community/test_publication_selection.py": {
+      "mode": 420,
+      "sha256": "93df29ad923a23cc55b48fb00b031db0691e47204bb8960c25d4f4682314bf19"
     },
     "tests/community/test_recent_skill_changes.py": {
       "mode": 420,

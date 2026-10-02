@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -29,6 +30,11 @@ from oms.publish.render import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A destination's choice of skills. An extension that publishes one tenant to
+# several destinations hands each publish its own; None is every skill, which
+# is what a publish was before destinations could differ.
+SkillSelector = Callable[[Skill], bool]
 
 
 class Publisher:
@@ -139,27 +145,39 @@ class Publisher:
             session_learnings=self._session_learnings,
             contribution_mode=contribution_mode)
 
-    def check(self, tenant_id: str) -> GateResult:
+    def check(self, tenant_id: str, *, select: SkillSelector | None = None) -> GateResult:
         """The gate alone: everything `publish` would refuse over, with nothing
         written. The console's dry run - an administrator reads the reasons
         while the publish button is still unpressed, rather than learning them
         from a failed publish. Renders the same skills `publish` would, because
-        half the gate's checks are about the rendered text."""
-        rendered = self.publishable_skills(tenant_id)
+        half the gate's checks are about the rendered text. `select` is the
+        same destination selection `publish` takes, and scopes the gate the
+        same way."""
+        rendered = self.publishable_skills(tenant_id, select=select)
         return run_publish_gate(
             self._store, tenant_id,
             rendered_skill_texts=[r.skill_md for _, r in rendered],
             blob_store=self._blob_store,
+            select=select,
         )
 
-    def publish(self, tenant_id: str, out_dir: Path) -> GateResult:
-        rendered = self.publishable_skills(tenant_id)
+    def publish(self, tenant_id: str, out_dir: Path, *,
+                select: SkillSelector | None = None) -> GateResult:
+        """Write the tenant's bundle into `out_dir`.
+
+        `select` chooses which of the tenant's skills this destination holds.
+        The tree, the skill index in the root files and the Tier 2 manifest
+        then name only those, and the gate refuses only over findings in them
+        or in no skill at all (`run_publish_gate`). None publishes every
+        skill, exactly as before destinations could differ."""
+        rendered = self.publishable_skills(tenant_id, select=select)
         skills = [skill for skill, _ in rendered]
 
         gate = run_publish_gate(
             self._store, tenant_id,
             rendered_skill_texts=[r.skill_md for _, r in rendered],
             blob_store=self._blob_store,
+            select=select,
         )
         if not gate.passed:
             return gate
@@ -419,8 +437,11 @@ class Publisher:
         resources = self.resource_names(skill.id, package.references_md is not None)
         return rewrite_resource_links(package.skill_md, skill.id, resources), resources
 
-    def publishable_skills(self, tenant_id: str) -> list[tuple[Skill, RenderedSkill]]:
-        """This tenant's skills, minus the ones with nothing in them yet.
+    def publishable_skills(self, tenant_id: str, *,
+                           select: SkillSelector | None = None,
+                           ) -> list[tuple[Skill, RenderedSkill]]:
+        """This tenant's skills, minus the ones with nothing in them yet, and
+        minus any a destination's `select` leaves out.
 
         `_skills` in the name, not just `publishable`, because this module
         already imports `render.publishable`, which answers the same question
@@ -444,6 +465,10 @@ class Publisher:
         """
         out: list[tuple[Skill, RenderedSkill]] = []
         for skill in self._store.skills_for_tenant(tenant_id):
+            if select is not None and not select(skill):
+                # First, before the render: a skill another destination holds
+                # costs this one nothing.
+                continue
             if not skill.publish_enabled:
                 continue
             if is_repo_skill(skill.id):
