@@ -910,7 +910,7 @@
     },
     "src/oms/publish/publisher.py": {
       "mode": 420,
-      "sha256": "35bc69da410d92864aee4a21f059c273fc8eab9081e55518dd9768ef780d103b"
+      "sha256": "cffd63dd365f36b42a5ac211c8f07b9d80b2f9529d1fec7ab606ac3578e609c7"
     },
     "src/oms/publish/render.py": {
       "mode": 420,
@@ -1090,7 +1090,7 @@
     },
     "tests/community/test_publication_selection.py": {
       "mode": 420,
-      "sha256": "d15cf40f3fe54067fe7c82d8b65259649d00297f08329b9d84f1e81681b3c2c2"
+      "sha256": "654bc56aa8fdc959f2ae3e48dc822b5cfc7574d1bf86984b684649b03c28f02e"
     },
     "tests/community/test_publish_to_repo_options.py": {
       "mode": 420,

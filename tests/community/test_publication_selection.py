@@ -252,16 +252,30 @@ def test_the_manifest_fragment_names_its_skills_and_carries_no_constraints(tmp_p
     assert "# Organisational Constraints" not in fragment
 
 
-def test_a_full_bundle_republished_skills_only_loses_its_root_files(tmp_path):
+def test_a_skills_only_publish_into_a_full_bundle_is_refused(tmp_path):
+    """A skills-only destination that turns out to hold a full bundle is the
+    main bundle under another name, or another spelling of its address.
+    Publishing skills only there would delete the installer and the root
+    files every machine reads, so it is refused before anything is written."""
     out = tmp_path / "out"
     publisher = _endpoints_publisher(_store())
     assert publisher.publish(TENANT, out, select=_finance).passed
-    assert (out / "install.sh").is_file() and (out / "CLAUDE.md").is_file()
-    assert publisher.publish(TENANT, out, select=_finance, skills_only=True).passed
-    assert _files(out) == {
-        "skills/revenue-recognition/SKILL.md", "tier2/AGENTS.md",
-        ".oms-ownership.json", ".oms-publication",
-    }
+    before = _files(out)
+    with pytest.raises(ValueError) as refused:
+        publisher.publish(TENANT, out, select=_finance, skills_only=True)
+    assert "full bundle" in str(refused.value)
+    assert _files(out) == before
+
+
+def test_a_skills_only_publish_into_an_unowned_full_bundle_is_refused(tmp_path):
+    """The same for a bundle published before ownership files existed: an
+    installer and a publication revision at the root say what it is."""
+    out = tmp_path / "out"
+    _endpoints_publisher(_store()).publish(TENANT, out, select=_finance)
+    (out / ".oms-ownership.json").unlink()
+    with pytest.raises(ValueError):
+        _endpoints_publisher(_store()).publish(TENANT, out, select=_finance, skills_only=True)
+    assert (out / "install.sh").is_file()
 
 
 def test_a_fresh_skills_only_folder_leaves_the_database_ledger_alone(tmp_path):

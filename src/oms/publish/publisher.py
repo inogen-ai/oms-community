@@ -123,15 +123,21 @@ class Publisher:
         ".mcp.json", ".cursor/mcp.json",
     })
 
-    def _checked_extra_root_files(self, files: Mapping[str, str] | None) -> dict[str, str]:
-        if not files:
-            return {}
+    def _core_root_refs(self) -> set[str]:
+        """Every root path the core may publish under, whatever this
+        deployment's settings switch on today."""
         reserved = set(self._CORE_ROOT_NAMES)
         reserved.update(self._root_files)
         reserved.update(confirm_variant_name(name) for name in self._root_files)
         reserved.update(rel_path for rel_path, _ in ROOT_RULE_FORMATS.values())
         if self._tier2_manifest_path:
             reserved.add(self._tier2_manifest_path)
+        return reserved
+
+    def _checked_extra_root_files(self, files: Mapping[str, str] | None) -> dict[str, str]:
+        if not files:
+            return {}
+        reserved = self._core_root_refs()
         checked: dict[str, str] = {}
         for source_ref, body in files.items():
             if not isinstance(source_ref, str) or not isinstance(body, str):
@@ -243,6 +249,22 @@ class Publisher:
                     any(not isinstance(ref, str) or not isinstance(value, str)
                         for ref, value in owned_hashes.items())):
                 raise ValueError("the publication ownership manifest is invalid")
+        if skills_only:
+            # A skills-only destination holding a full bundle is the main
+            # bundle under another name or another spelling of its address.
+            # Publishing skills only there would delete the installer and the
+            # root files every machine reads, so it is refused, before any
+            # write. Its own record says so, or, for a bundle published before
+            # records existed, an installer beside a publication revision.
+            bundle = self._core_root_refs() - {self._tier2_manifest_path}
+            if (any(ref in bundle for ref in owned_hashes or {})
+                    or (owned_hashes is None and (out_dir / "install.sh").is_file()
+                        and (out_dir / ".oms-publication").is_file())):
+                raise ValueError(
+                    f"{out_dir} holds a full bundle, with an installer and root "
+                    "files; a skills-only publish there would delete them. "
+                    "Nothing was published. Give this destination a repository "
+                    "or folder of its own.")
         if owned_hashes is None and skills_only:
             # A skills-only destination is newer than the database ledger and
             # never had a publish that left no ownership file. The ledger's
