@@ -140,8 +140,9 @@ def sync_checkout(repo: str, work_dir: Path, branch: str = "main") -> None:
         # Routed through _git rather than called bare: a bad --repo value or
         # an unreachable host fails right here, on the very first command,
         # and this is the one call in the module a first-time run cannot
-        # avoid hitting.
-        _git("clone", repo, str(work_dir), cwd=work_dir.parent)
+        # avoid hitting. The target is absolute because the clone runs in the
+        # parent folder, where a relative name would nest the checkout again.
+        _git("clone", repo, str(work_dir.absolute()), cwd=work_dir.parent)
     else:
         _git("fetch", "origin", cwd=work_dir)
         if _has_remote_branch(work_dir, branch):

@@ -148,3 +148,21 @@ def test_a_rotated_credential_updates_the_checkouts_remote(tmp_path, monkeypatch
     origin = subprocess.run(["git", "config", "--get", "remote.origin.url"], cwd=work,
                             capture_output=True, text=True).stdout.strip()
     assert origin == "https://bot:new@git.example/skills.git"
+
+
+# A server names its checkout relative to its working folder, and an extension
+# keeps one checkout per destination inside a folder of its own. The clone runs
+# in the checkout's parent folder, so a relative name must still land where it
+# was named, not one level further down.
+
+def test_a_relative_checkout_in_a_new_folder_is_cloned_where_it_was_named(
+        bare, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    checkout = Path("checkouts") / "finance"
+
+    gate, pushed = publish_to_repo(Publisher(_store()), TENANT, str(bare), checkout)
+
+    assert gate.passed and pushed
+    assert (tmp_path / "checkouts" / "finance" / ".git").is_dir()
+    assert not (tmp_path / "checkouts" / "checkouts").exists()
+    assert _remote_count(bare) == 1
