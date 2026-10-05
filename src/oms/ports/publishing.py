@@ -35,6 +35,22 @@ class ShellInstallFragments:
     `root_source` defaults to `$SRC/$OMS_ROOT_FILE`. A fragment that replaces
     it must give the same mode's instructions, or the harnesses installed in
     one run would disagree about whether to ask before sharing.
+
+    `select_sources` names the installation's extra skill sources: git
+    repositories whose `skills/` are linked after the bundle's own. It runs at
+    the end of the installer's preconditions, at the top level of the script,
+    so it may read the installer's arguments and may refuse (print why, then
+    `exit 1`, before anything is written). It sets `OMS_SOURCES` to
+    whitespace-separated `name=url` entries; the installer validates each,
+    clones it into `$OMS_DIR/sources/<name>`, and the refresh pulls it. Left
+    empty, no source is used and nothing about the installation changes.
+
+    `skip_skill` runs inside the link loop with `$name` (the skill's folder
+    name) and `$target` (the link path) set, and may `continue`. To remove a
+    link it skips, it should test `oms_owned_link "$target"` first: true only
+    for a link this installer made, into the bundle or into an extra source.
+    The loop reads its folders from a here-document, so the fragment must not
+    read standard input.
     """
 
     before_links: str = ""
@@ -45,6 +61,7 @@ class ShellInstallFragments:
     refresh_success: str = '    : > "\\$STATUS"'
     credential_setup: str | None = None
     credential_notice: str = ""
+    select_sources: str = ""
 
 
 @dataclass(frozen=True)
@@ -58,6 +75,11 @@ class PowerShellInstallFragments:
     same exception applies: `refresh_success` is text inside the refresh
     script's here-string, where an unescaped reference is fixed when the
     installer writes it and an escaped one is undefined when it runs.
+
+    `select_sources` sets `$OmsSources` to an array of `name=url` strings, the
+    shell contract's entries; it may read the script's `$args`. `skip_skill`
+    has `$dir` (the skill folder) and `$link` (the link path), and should test
+    `Test-OmsOwnedLink $link` before removing a link it skips.
     """
 
     before_links: str = ""
@@ -69,6 +91,7 @@ class PowerShellInstallFragments:
     refresh_success: str = '        [System.IO.File]::WriteAllText(`$status, "", `$utf8)'
     credential_setup: str | None = None
     credential_notice: str = ""
+    select_sources: str = ""
 
 
 @dataclass(frozen=True)

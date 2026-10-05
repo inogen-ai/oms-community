@@ -62,7 +62,7 @@
     },
     "docs/architecture.md": {
       "mode": 420,
-      "sha256": "d47bb2e386515181632e7fe2e45d27c33c29540f199493d5c393eb62c016b961"
+      "sha256": "03348e3f8d335ab3fa15e5b4ba37cce2103002254fd829de60dbe18c0eee97cc"
     },
     "docs/contribution-policy-and-context.md": {
       "mode": 420,
@@ -858,7 +858,7 @@
     },
     "src/oms/ports/publishing.py": {
       "mode": 420,
-      "sha256": "3c3caf21c702f6d7e37154c114fa704f2f05401fa3ff1ad38bc6dac25918e764"
+      "sha256": "c037147d843d65be31489f9281193fc5243e0d8cf4eadb441771afec2eb65691"
     },
     "src/oms/ports/repositories.py": {
       "mode": 420,
@@ -894,11 +894,11 @@
     },
     "src/oms/publish/gate.py": {
       "mode": 420,
-      "sha256": "8f721e5c3b8ee7a49b5d9837690c67c7fd8d7065aa2e170922d70d1575bceb0e"
+      "sha256": "3b461923565d54f0b117b19d142f2198bcb05d4c5e90ac84543f92810d0c2b3c"
     },
     "src/oms/publish/git.py": {
       "mode": 420,
-      "sha256": "c9393cc8c6da392cb36ae45020a06fda758bcbe451e7a4a41fb003acedd280b4"
+      "sha256": "331b364566b02a40cfdb3deeadff99fab7d552e301303af1ca6280cff37f9e16"
     },
     "src/oms/publish/harnesses.py": {
       "mode": 420,
@@ -910,11 +910,11 @@
     },
     "src/oms/publish/publisher.py": {
       "mode": 420,
-      "sha256": "13a3bc0435b043855f54c0384895df0bdc5c7339ade1c79cc28e12923ea9e9d2"
+      "sha256": "cffd63dd365f36b42a5ac211c8f07b9d80b2f9529d1fec7ab606ac3578e609c7"
     },
     "src/oms/publish/render.py": {
       "mode": 420,
-      "sha256": "6addab8263228418021fa41dd99383a65f8d42d2e9291f3b4657425ed57073fd"
+      "sha256": "b0e80330eec6a980ad7a8c70539ca109630b23731049492585469c612cdc539b"
     },
     "src/oms/publish/urls.py": {
       "mode": 420,
@@ -1060,6 +1060,14 @@
       "mode": 420,
       "sha256": "b24e5641513db4764a445e9f29d877e4f098ee690bdff8b058391c737845721e"
     },
+    "tests/community/test_install_sources.py": {
+      "mode": 420,
+      "sha256": "9ba19954cb44c52a5ed64cf892297c2a687a1afaffd3288ea0f750e3b8efdd27"
+    },
+    "tests/community/test_install_sources_ps1.py": {
+      "mode": 420,
+      "sha256": "92585e765067e47057145b2feaf62f677d1b3a78c37eef45de9aff79539b3758"
+    },
     "tests/community/test_instruction_policy.py": {
       "mode": 420,
       "sha256": "64219e51a9b4439b11c315929c64272916df1d1b9e318d4d7f2242f3908ff583"
@@ -1079,6 +1087,14 @@
     "tests/community/test_publication_destinations.py": {
       "mode": 420,
       "sha256": "b05396323a333c4904e67685ec1083c190d24c7682c6693a4fe367840856e851"
+    },
+    "tests/community/test_publication_selection.py": {
+      "mode": 420,
+      "sha256": "654bc56aa8fdc959f2ae3e48dc822b5cfc7574d1bf86984b684649b03c28f02e"
+    },
+    "tests/community/test_publish_to_repo_options.py": {
+      "mode": 420,
+      "sha256": "728d17e6232c42ab2d4a0d53edfa62e83d2f188ffc95adb54dc9d053219518ff"
     },
     "tests/community/test_recent_skill_changes.py": {
       "mode": 420,

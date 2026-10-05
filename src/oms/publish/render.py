@@ -1122,6 +1122,41 @@ def _toml_header_printf(toml_headers: str) -> str:
     return f"\n    printf '%s\\n' '{line}'"
 
 
+# What git says when a remote refuses access rather than being unreachable:
+# HTTPS authentication failures, and the "not found" a host answers for a
+# private repository the caller may not see, which is also how a host that
+# knows an SSH key answers once that key's owner has lost access. Matched
+# without case, and only ever against git run in the C locale, because git
+# translates its own lines. A network failure ("could not resolve host", a
+# timeout, "connection refused") is not in here, and neither is an SSH key the
+# host would not accept ("Permission denied (publickey)"): under a scheduler
+# that is most often an agent the job cannot reach, and reading it as a
+# revocation would unlink a person's skills every night. Shared by both
+# installers and both refresh scripts, so a machine reaches one answer.
+SOURCE_REFUSAL_PATTERN = (
+    r"permission to .* denied|authentication failed"
+    r"|repository not found|repository .* not found"
+    r"|could not be found or you (do not|don.t) have permission"
+    r"|you (do not|don.t) have permission|access denied|returned error: 40[134]")
+
+
+# What an extra skill source may be called: a folder name, a word in a
+# space-separated list, and a sed pattern in the paid fragment, all safely.
+SOURCE_NAME_PATTERN = r"[a-z0-9][a-z0-9-]{0,63}"
+
+# The addresses an installer will clone: HTTPS and SSH URLs and scp-style
+# remotes, spelt in characters no shell and no git option parser gives a
+# meaning to. No credential in an HTTPS address, no local path, no file:// and
+# no transport helper, and neither a user name nor a path may start with "-".
+# Unanchored, in syntax POSIX ERE, .NET and Python read alike, so the two
+# installers and the server's own check share it.
+SOURCE_URL_PATTERN = (
+    r"(https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]+)?/"
+    r"|ssh://([A-Za-z0-9_][A-Za-z0-9._-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]+)?/"
+    r"|[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*:)"
+    r"[A-Za-z0-9._~%+/][A-Za-z0-9._~%+/-]*")
+
+
 def render_install_script(mcp_url: str | None,
                           root_files: Sequence[str] | None = None,
                           bundle_token: str | None = None,
@@ -1144,6 +1179,9 @@ def render_install_script(mcp_url: str | None,
     skip_skill = fragments.skip_skill
     link_report = fragments.link_report
     refresh_ok = fragments.refresh_success
+    select_sources = fragments.select_sources
+    refused = SOURCE_REFUSAL_PATTERN
+    url_pattern = SOURCE_URL_PATTERN
     have_any = "".join(f"${_have(h)}" for h in HARNESSES)
     looked_for = " ".join(h.detect for h in HARNESSES)
     mcp_step = ""
@@ -1369,7 +1407,17 @@ writable_target "$OMS_MODE_FILE" ||
   abort "$OMS_MODE_FILE is not a writable file, and this machine's contribution mode is recorded there."
 writable_target "$OMS_INSTALLED_MODE_FILE" ||
   abort "$OMS_INSTALLED_MODE_FILE is not a writable file, and the mode this machine's tools were given is recorded there."
-
+writable_target "$OMS_DIR/sources.list" ||
+  abort "$OMS_DIR/sources.list is not a writable file, and the skill sources the refresh pulls are listed there."
+writable_target "$OMS_DIR/.sources-notice" ||
+  abort "$OMS_DIR/.sources-notice is not a writable file, and what goes wrong with a skill source is recorded there."
+writable_dir "$OMS_DIR/sources" ||
+  abort "$OMS_DIR/sources is not a writable directory, and extra skill sources are downloaded there."
+# The extra skill sources this installation links (section 0d), named by an
+# extension below and never inherited from the environment: an OMS_SOURCES
+# left in somebody's shell must not add repositories to a machine.
+OMS_SOURCES=""
+{select_sources}
 # 0b. Which agent tools are on this machine, and can each one be written to.
 #     Detection is the tool's own config directory, or its CLI on PATH where
 #     the command name is known - the directory is created by the tool's first
@@ -1470,6 +1518,162 @@ touch "$OMS_DIR/status.md"
 # until somebody chooses again. One word on one line, so `cat` answers which.
 printf '%s\\n' "$OMS_CONTRIBUTION_MODE_RESOLVED" > "$OMS_MODE_FILE"
 {before_links}
+# 0d. Extra skill sources: git repositories beside this bundle whose skills
+#     are linked with its own. An extension names them in OMS_SOURCES, as
+#     whitespace-separated name=url entries; with none named this section
+#     clones nothing and links nothing. Each source is a clone in
+#     $OMS_DIR/sources/<name> that this installer makes and the refresh
+#     pulls. A source the refresh found refused carries a refusal marker: it
+#     stays listed, so every refresh tries it again, and its skills stay
+#     unlinked until a pull works. What goes wrong is recorded in
+#     $OMS_DIR/.sources-notice and added to status.md by the refresh, which
+#     owns that file because it alone knows whether the bundle is current.
+OMS_SOURCES_DIR="$OMS_DIR/sources"
+OMS_SOURCES_NOTICE="$OMS_DIR/.sources-notice"
+OMS_ACTIVE_SOURCES=""
+oms_sources_listed=""
+: > "$OMS_SOURCES_NOTICE"
+oms_source_notice() {{
+  printf '%s\\n' "$1" >> "$OMS_SOURCES_NOTICE"
+}}
+oms_source_name_ok() {{
+  case "$1" in
+    ''|-*|*[!a-z0-9-]*) return 1 ;;
+  esac
+  [ "${{#1}}" -le 64 ]
+}}
+# HTTPS, SSH and scp-style remotes only, spelt in characters that no shell
+# and no git option parser gives a meaning to: no credential in an HTTPS
+# address, no local path, no file:// and no transport helper, and nothing
+# that starts with "-". The address came out of a published file, and git is
+# about to be handed it. The C locale, so a range means what it says.
+oms_source_url_ok() {{
+  printf '%s\\n' "$1" | LC_ALL=C grep -Eq '^{url_pattern}$'
+}}
+oms_source_active() {{
+  case " $OMS_ACTIVE_SOURCES " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}}
+# True for a link this installer made: into the bundle, or into one of its
+# extra skill sources. A link the user made points anywhere else.
+oms_owned_link() {{
+  case "$(readlink "$1")" in
+    "$SRC"/*|"$OMS_SOURCES_DIR"/*) return 0 ;;
+  esac
+  return 1
+}}
+oms_refused() {{
+  printf '%s\\n' "$1" | grep -Eqi '{refused}'
+}}
+if [ -n "$OMS_SOURCES" ]; then
+  if [ ! -e "$SRC/.git" ]; then
+    # Only a clone has a refresh that pulls, and a source that nothing pulls
+    # is a copy going stale without telling anybody.
+    echo "  extra skill sources skipped: this bundle is not a git clone, so they would never be updated."
+  elif ! command -v git >/dev/null 2>&1; then
+    echo "  extra skill sources skipped: this machine has no git command." >&2
+    oms_source_notice "**Some skills are not installed:** this machine has no git command, so their repositories cannot be downloaded."
+  else
+    mkdir -p "$OMS_SOURCES_DIR"
+    oms_src_real="$(cd "$SRC" && pwd -P)"
+    # No pathname expansion while the entries are split: an entry is data.
+    set -f
+    for oms_entry in $OMS_SOURCES; do
+      oms_name="${{oms_entry%%=*}}"
+      oms_url="${{oms_entry#*=}}"
+      if [ "$oms_name" = "$oms_entry" ] || ! oms_source_name_ok "$oms_name"; then
+        echo "  skipped a skill source with an unusable name: $oms_entry" >&2
+        continue
+      fi
+      if ! oms_source_url_ok "$oms_url"; then
+        echo "  skipped the $oms_name skills: $oms_url is not a repository address this installer uses." >&2
+        oms_source_notice "**The $oms_name skills are not installed:** their repository address is not one this installer uses. Ask whoever administers OMS to check it."
+        continue
+      fi
+      oms_dir="$OMS_SOURCES_DIR/$oms_name"
+      # A source cannot be this bundle itself: a bundle cloned into
+      # $OMS_DIR/sources/<name>, and a source of the same name.
+      if [ -d "$oms_dir" ] && [ "$(cd "$oms_dir" && pwd -P)" = "$oms_src_real" ]; then
+        echo "  skipped the $oms_name skills: $oms_dir is this bundle's own folder." >&2
+        continue
+      fi
+      oms_marker="$OMS_SOURCES_DIR/.$oms_name.refused"
+      if [ -d "$oms_dir/.git" ]; then
+        oms_origin="$(git -C "$oms_dir" config --get remote.origin.url 2>/dev/null || true)"
+        if [ "$oms_origin" != "$oms_url" ]; then
+          # The repository moved. Downloaded afresh beside the old clone and
+          # swapped in only once complete, so a failure keeps what works.
+          rm -rf "$oms_dir.oms-new"
+          if oms_out="$(LC_ALL=C GIT_TERMINAL_PROMPT=0 git clone --quiet -- "$oms_url" "$oms_dir.oms-new" 2>&1 </dev/null)"; then
+            rm -rf "$oms_dir"
+            mv "$oms_dir.oms-new" "$oms_dir"
+            rm -f "$oms_marker"
+            echo "  $oms_name skills: now from $oms_url"
+          else
+            rm -rf "$oms_dir.oms-new"
+            echo "  $oms_name skills: could not be downloaded from their new address, $oms_url; the copy from $oms_origin stays." >&2
+            oms_source_notice "**The $oms_name skills could not move to their new repository.** The copy from the old one stays loaded. Running the installer in a terminal shows why."
+          fi
+        fi
+        # Refused on an earlier refresh, and this run is not the refresh's
+        # own (which has just pulled it): somebody is running the installer
+        # themselves, most likely because their access is back, so try now
+        # rather than leave them waiting a day.
+        if [ -f "$oms_marker" ] && [ -z "${{OMS_SOURCES_PULLED:-}}" ]; then
+          if (cd "$oms_dir" && LC_ALL=C GIT_TERMINAL_PROMPT=0 git pull --ff-only >/dev/null 2>&1 </dev/null); then
+            rm -f "$oms_marker"
+            echo "  $oms_name skills: access to $oms_url works again."
+          fi
+        fi
+      elif [ -e "$oms_dir" ] || [ -L "$oms_dir" ]; then
+        echo "  skipped the $oms_name skills: $oms_dir is not a download this installer made, so it was left alone." >&2
+        oms_source_notice "**The $oms_name skills are not installed:** $oms_dir is in the way. Move it aside and run the installer again."
+        continue
+      elif oms_out="$(LC_ALL=C GIT_TERMINAL_PROMPT=0 git clone --quiet -- "$oms_url" "$oms_dir" 2>&1 </dev/null)"; then
+        rm -f "$oms_marker"
+        echo "  $oms_name skills: downloaded from $oms_url"
+      else
+        if oms_refused "$oms_out"; then
+          echo "  skipped the $oms_name skills: access to $oms_url was refused." >&2
+          oms_source_notice "**The $oms_name skills are not installed:** access to their repository was refused. If you should have them, ask whoever manages access to $oms_url."
+        else
+          echo "  skipped the $oms_name skills: $oms_url could not be downloaded:" >&2
+          printf '%s\\n' "$oms_out" | sed 's/^/    /' >&2
+          oms_source_notice "**The $oms_name skills are not installed:** their repository could not be downloaded. Running the installer in a terminal shows why."
+        fi
+        continue
+      fi
+      oms_sources_listed="$oms_sources_listed $oms_name"
+      if [ -f "$oms_marker" ]; then
+        oms_refused_on="$(cat "$oms_marker" 2>/dev/null || true)"
+        echo "  $oms_name skills: not linked, because access to $oms_url was refused on $oms_refused_on." >&2
+        oms_source_notice "**Access to the $oms_name skills was refused** on $oms_refused_on, so they were removed from this machine's agents. If you should still have them, ask whoever manages access to $oms_url. Once access is back, the next daily update restores them, or running the installer in a terminal does so at once."
+        continue
+      fi
+      OMS_ACTIVE_SOURCES="$OMS_ACTIVE_SOURCES $oms_name"
+    done
+    set +f
+  fi
+fi
+: > "$OMS_DIR/sources.list"
+for oms_name in $oms_sources_listed; do
+  printf '%s\\n' "$oms_name" >> "$OMS_DIR/sources.list"
+done
+# The skill folders to link, one per line: the bundle's first, then each
+# active source's in the order the sources were named.
+oms_skill_dirs() {{
+  for ls_d in "$SRC"/skills/*/; do
+    [ ! -d "$ls_d" ] || printf '%s\\n' "$ls_d"
+  done
+  for ls_s in $OMS_ACTIVE_SOURCES; do
+    for ls_d in "$OMS_SOURCES_DIR/$ls_s"/skills/*/; do
+      [ ! -d "$ls_d" ] || printf '%s\\n' "$ls_d"
+    done
+  done
+  return 0
+}}
 # 1. Skills into the user scope. Symlinks, so the daily pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
 #    First sweep OMS-owned garbage: a symlink pointing into this tree that no
@@ -1479,29 +1683,64 @@ printf '%s\\n' "$OMS_CONTRIBUTION_MODE_RESOLVED" > "$OMS_MODE_FILE"
 #    writable and that nothing unusable is sitting at this path already.)
 link_skills() {{
   ls_dir="$1"; ls_label="$2"; ls_n=0{link_initialiser}
+  ls_seen=" "
   mkdir -p "$ls_dir"
   for link in "$ls_dir"/*; do
     [ -L "$link" ] || continue
-    case "$(readlink "$link")" in
-      "$SRC"/*)
-        if [ ! -e "$link" ]; then
-          rm -f "$link"
-          echo "  removed retired skill $(basename "$link")"
-        fi
-        ;;
-    esac
+    ls_to="$(readlink "$link")"
+    ls_in_src=""
+    ls_in_sources=""
+    case "$ls_to" in "$SRC"/*) ls_in_src=1 ;; esac
+    case "$ls_to" in "$OMS_SOURCES_DIR"/*) ls_in_sources=1 ;; esac
+    # Both match when one folder sits inside the other: a bundle cloned into
+    # the sources folder, or one cloned to $OMS_DIR, which holds the sources
+    # folder. The longer, more specific, prefix owns the link.
+    if [ -n "$ls_in_src" ] && [ -n "$ls_in_sources" ]; then
+      if [ "${{#SRC}}" -gt "${{#OMS_SOURCES_DIR}}" ]; then ls_in_sources=""; else ls_in_src=""; fi
+    fi
+    if [ -n "$ls_in_src" ]; then
+      if [ ! -e "$link" ]; then
+        rm -f "$link"
+        echo "  removed retired skill $(basename "$link")"
+      fi
+    elif [ -n "$ls_in_sources" ]; then
+      # Into an extra source (section 0d): retired there, or a source this
+      # machine no longer links, whether it was dropped from the selection
+      # or its access was refused.
+      ls_from="${{ls_to#"$OMS_SOURCES_DIR"/}}"
+      ls_from="${{ls_from%%/*}}"
+      if [ ! -e "$link" ]; then
+        rm -f "$link"
+        echo "  removed retired skill $(basename "$link")"
+      elif ! oms_source_active "$ls_from"; then
+        rm -f "$link"
+        echo "  removed $(basename "$link"): the $ls_from skills are no longer installed here"
+      fi
+    fi
   done
-  for dir in "$SRC"/skills/*/; do
-    [ -d "$dir" ] || continue
+  ls_dirs="$(oms_skill_dirs)"
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
     name="$(basename "$dir")"
     target="$ls_dir/$name"
+    # The first source to offer a name keeps it: the bundle before any
+    # extra source, and the sources in the order they were named.
+    case "$ls_seen" in
+      *" $name "*)
+        echo "  skip ${{dir%/}}: an earlier source already provides skills/$name"
+        continue
+        ;;
+    esac
 {skip_skill}    if [ -e "$target" ] && [ ! -L "$target" ]; then
       echo "  skip skills/$name: you already have a directory with this name"
       continue
     fi
     ln -sfn "${{dir%/}}" "$target"
+    ls_seen="$ls_seen$name "
     ls_n=$((ls_n + 1))
-  done
+  done <<OMS_SKILL_DIRS
+$ls_dirs
+OMS_SKILL_DIRS
 {link_report}
 }}
 
@@ -1738,13 +1977,40 @@ if [ "$local_refresh" = 1 ]; then
   fi
   exit 0
 fi
+# Extra skill sources first (installer section 0d), so a refusal is on disk
+# before the installer reads it. git's own words decide what a failure means.
+# Refused access is a revocation: its marker makes the installer unlink that
+# source's skills. Anything else, a network failure above all, is staleness
+# and unlinks nothing.
+PULL_NOTICE="$OMS_DIR/.sources-pull-notice"
+: > "\\$PULL_NOTICE"
+sources_changed=0
+oms_refused() {{
+  printf '%s\\n' "\\$1" | grep -Eqi '{refused}'
+}}
+if [ -f "$OMS_DIR/sources.list" ]; then
+  while IFS= read -r name; do
+    case "\\$name" in ''|-*|*[!a-z0-9-]*) continue ;; esac
+    dir="$OMS_SOURCES_DIR/\\$name"
+    [ -d "\\$dir/.git" ] || continue
+    marker="$OMS_SOURCES_DIR/.\\$name.refused"
+    if out=\\$(cd "\\$dir" && LC_ALL=C GIT_TERMINAL_PROMPT=0 git pull --ff-only 2>&1 </dev/null); then
+      if [ -f "\\$marker" ]; then rm -f "\\$marker"; sources_changed=1; fi
+    elif oms_refused "\\$out"; then
+      if [ ! -f "\\$marker" ]; then date +%Y-%m-%d > "\\$marker"; sources_changed=1; fi
+    else
+      printf '%s\\n' "**The \\$name skills on this machine are out of date.** Their daily update failed on \\$(date +%Y-%m-%d), so the previous version is still loaded. The most likely cause is no network connection." >> "\\$PULL_NOTICE"
+    fi
+  done < "$OMS_DIR/sources.list"
+fi
 if cd "\\$SRC" && git pull --ff-only >/dev/null 2>&1; then
   # A pull that lands bytes nobody wires in is not a successful refresh: the
   # new skills sit in \\$SRC unlinked and the machine runs a version behind.
   # So the status file is cleared only once the re-install has also succeeded,
   # and the failure gets its own notice - a broken installer and an expired
-  # token need different people doing different things.
-  if sh "\\$SRC/install.sh" >/dev/null 2>&1; then
+  # token need different people doing different things. The installer is
+  # told the sources were just pulled, so it does not pull a refused one again.
+  if OMS_SOURCES_PULLED=1 sh "\\$SRC/install.sh" >/dev/null 2>&1; then
 {refresh_ok}
   else
     printf '%s\\n' "**The organisational skills on this machine were downloaded but not installed.**" > "\\$STATUS"
@@ -1755,7 +2021,13 @@ else
   printf '%s\\n' "**The organisational skills on this machine are out of date.**" > "\\$STATUS"
   printf '%s\\n' "The daily update failed on \\$(date +%Y-%m-%d). The most likely cause is an expired access token." >> "\\$STATUS"
   printf '%s\\n' "Tell the user their OMS skills are stale, that the most likely cause is an expired access token, and that the install line in the bundle's README.md is what re-clones it once they have access again." >> "\\$STATUS"
+  # The bundle could not be pulled, but a source whose access changed must
+  # still gain or lose its links today: that is the retraction it exists for.
+  if [ "\\$sources_changed" = 1 ]; then
+    OMS_SOURCES_PULLED=1 sh "\\$SRC/install.sh" >/dev/null 2>&1 || true
+  fi
 fi
+cat "$OMS_DIR/.sources-notice" "\\$PULL_NOTICE" >> "\\$STATUS" 2>/dev/null || true
 REFRESH
 chmod +x "$OMS_DIR/.oms-refresh.sh.tmp"
 # Same directory as the target, so this is a rename and not a copy.
@@ -2067,6 +2339,19 @@ if (-not (Test-WritableFile $OmsModeFile)) {
 if (-not (Test-WritableFile $OmsInstalledModeFile)) {
     Abort "$OmsInstalledModeFile is not a writable file, and the mode this machine's tools were given is recorded there."
 }
+if (-not (Test-WritableFile "$OMS_DIR/sources.list")) {
+    Abort "$OMS_DIR/sources.list is not a writable file, and the skill sources the refresh pulls are listed there."
+}
+if (-not (Test-WritableFile "$OMS_DIR/.sources-notice")) {
+    Abort "$OMS_DIR/.sources-notice is not a writable file, and what goes wrong with a skill source is recorded there."
+}
+if (-not (Test-WritableDir "$OMS_DIR/sources")) {
+    Abort "$OMS_DIR/sources is not a writable directory, and extra skill sources are downloaded there."
+}
+# The extra skill sources this installation links (section 0d), named by an
+# extension below as name=url entries, never taken from the environment.
+$OmsSources = @()
+@@SELECT_SOURCES@@
 
 # 0b. Which agent tools are on this machine, and can each one be written to.
 #     Nothing is ever created for a tool that is absent: a ~/.gemini conjured
@@ -2137,6 +2422,154 @@ if (-not (Test-Path -LiteralPath "$OMS_DIR/status.md")) {
 # OMS_CONTRIBUTION_MODE, so the machine keeps it until somebody chooses again.
 Write-TextFile $OmsModeFile "$OmsContributionMode`n"
 @@BEFORE_LINKS@@
+# 0d. Extra skill sources: git repositories beside this bundle whose skills
+#     are linked with its own. The same contract as install.sh's section 0d,
+#     which gives the reasons for each rule here.
+$OmsSourcesDir = "$OMS_DIR/sources"
+$OmsSourcesNotice = "$OMS_DIR/.sources-notice"
+$OmsActiveSources = @()
+$OmsSourcesListed = @()
+Write-TextFile $OmsSourcesNotice ""
+function Add-SourceNotice($Text) {
+    [System.IO.File]::AppendAllText($OmsSourcesNotice, "$Text`n", $Utf8NoBom)
+}
+function Test-SourceName($Name) {
+    return [bool]("$Name" -cmatch '^(?:@@SOURCE_NAME@@)\z')
+}
+function Test-SourceUrl($Url) {
+    return [bool]("$Url" -cmatch '^(?:@@SOURCE_URL@@)\z')
+}
+# Whether $Path lies inside $Root, compared as full paths: a link's target is
+# a native path, and $OMS_DIR is spelt with forward slashes.
+function Test-PathUnder($Path, $Root) {
+    if (-not $Path) { return $false }
+    $full = [System.IO.Path]::GetFullPath("$Path")
+    $base = [System.IO.Path]::GetFullPath("$Root").TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    $how = if ($OnWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    return $full.StartsWith($base, $how)
+}
+function Get-SourceName($Path) {
+    $base = [System.IO.Path]::GetFullPath($OmsSourcesDir).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    return ([System.IO.Path]::GetFullPath("$Path").Substring($base.Length) -split '[\\/]')[0]
+}
+# True for a link this installer made: into the bundle, or into one of its
+# extra skill sources. A link the user made points anywhere else.
+function Test-OmsOwnedLink($Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item -or -not $item.LinkType) { return $false }
+    $target = @($item.Target)[0]
+    if (-not $target) { return $false }
+    return ((Test-PathUnder $target $SRC) -or (Test-PathUnder $target $OmsSourcesDir))
+}
+# git is judged by its exit code and its own words. Under 'Stop', Windows
+# PowerShell 5.1 turns anything a native command writes to stderr into a
+# terminating error, and git writes progress and refusals alike to stderr.
+# And in the C locale, because git translates its own lines and the refusal
+# patterns are git's English ones.
+function Invoke-SourceGit {
+    $saved = $ErrorActionPreference
+    $savedLocale = $env:LC_ALL
+    $ErrorActionPreference = 'Continue'
+    try {
+        $env:GIT_TERMINAL_PROMPT = '0'
+        $env:LC_ALL = 'C'
+        $output = (& git @args 2>&1 | ForEach-Object { "$_" }) -join "`n"
+        return @{ Code = $LASTEXITCODE; Output = $output }
+    } finally {
+        $ErrorActionPreference = $saved
+        $env:LC_ALL = $savedLocale
+    }
+}
+if ($OmsSources.Count -gt 0) {
+    if (-not (Test-Path -LiteralPath "$SRC/.git")) {
+        Write-Host "  extra skill sources skipped: this bundle is not a git clone, so they would never be updated."
+    } elseif (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Err "  extra skill sources skipped: this machine has no git command."
+        Add-SourceNotice "**Some skills are not installed:** this machine has no git command, so their repositories cannot be downloaded."
+    } else {
+        New-Item -ItemType Directory -Path $OmsSourcesDir -Force | Out-Null
+        $srcFull = [System.IO.Path]::GetFullPath($SRC).TrimEnd('\', '/')
+        foreach ($sourceEntry in $OmsSources) {
+            $sourceEntry = "$sourceEntry"
+            $eq = $sourceEntry.IndexOf('=')
+            $name = if ($eq -gt 0) { $sourceEntry.Substring(0, $eq) } else { '' }
+            $url = if ($eq -ge 0) { $sourceEntry.Substring($eq + 1) } else { '' }
+            if (-not (Test-SourceName $name)) {
+                Write-Err "  skipped a skill source with an unusable name: $sourceEntry"
+                continue
+            }
+            if (-not (Test-SourceUrl $url)) {
+                Write-Err "  skipped the $name skills: $url is not a repository address this installer uses."
+                Add-SourceNotice "**The $name skills are not installed:** their repository address is not one this installer uses. Ask whoever administers OMS to check it."
+                continue
+            }
+            $dir = "$OmsSourcesDir/$name"
+            if ((Test-Path -LiteralPath $dir) -and ([System.IO.Path]::GetFullPath($dir).TrimEnd('\', '/') -eq $srcFull)) {
+                Write-Err "  skipped the $name skills: $dir is this bundle's own folder."
+                continue
+            }
+            $marker = "$OmsSourcesDir/.$name.refused"
+            if (Test-Path -LiteralPath "$dir/.git") {
+                $origin = (Invoke-SourceGit -C $dir config --get remote.origin.url).Output.Trim()
+                if ($origin -cne $url) {
+                    $new = "$dir.oms-new"
+                    if (Test-Path -LiteralPath $new) { Remove-Item -LiteralPath $new -Recurse -Force }
+                    # '--' quoted: PowerShell drops a bare -- when it binds a
+                    # function's arguments, and it is what keeps an address
+                    # from ever reading as an option.
+                    $result = Invoke-SourceGit clone --quiet '--' $url $new
+                    if ($result.Code -eq 0) {
+                        Remove-Item -LiteralPath $dir -Recurse -Force
+                        Move-Item -LiteralPath $new -Destination $dir
+                        Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                        Write-Host "  $name skills: now from $url"
+                    } else {
+                        if (Test-Path -LiteralPath $new) { Remove-Item -LiteralPath $new -Recurse -Force }
+                        Write-Err "  $name skills: could not be downloaded from their new address, $url; the copy from $origin stays."
+                        Add-SourceNotice "**The $name skills could not move to their new repository.** The copy from the old one stays loaded. Running the installer in a terminal shows why."
+                    }
+                }
+                # Refused on an earlier refresh, and this is not the refresh's
+                # own run: try now (install.sh says why).
+                if ((Test-Path -LiteralPath $marker) -and -not $env:OMS_SOURCES_PULLED) {
+                    if ((Invoke-SourceGit -C $dir pull --ff-only).Code -eq 0) {
+                        Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                        Write-Host "  $name skills: access to $url works again."
+                    }
+                }
+            } elseif (Test-Path -LiteralPath $dir) {
+                Write-Err "  skipped the $name skills: $dir is not a download this installer made, so it was left alone."
+                Add-SourceNotice "**The $name skills are not installed:** $dir is in the way. Move it aside and run the installer again."
+                continue
+            } else {
+                $result = Invoke-SourceGit clone --quiet '--' $url $dir
+                if ($result.Code -eq 0) {
+                    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                    Write-Host "  $name skills: downloaded from $url"
+                } else {
+                    if ($result.Output -match '@@REFUSED@@') {
+                        Write-Err "  skipped the $name skills: access to $url was refused."
+                        Add-SourceNotice "**The $name skills are not installed:** access to their repository was refused. If you should have them, ask whoever manages access to $url."
+                    } else {
+                        Write-Err "  skipped the $name skills: $url could not be downloaded:"
+                        foreach ($line in ($result.Output -split "`n")) { Write-Err "    $line" }
+                        Add-SourceNotice "**The $name skills are not installed:** their repository could not be downloaded. Running the installer in a terminal shows why."
+                    }
+                    continue
+                }
+            }
+            $OmsSourcesListed += $name
+            if (Test-Path -LiteralPath $marker) {
+                $refusedOn = (Read-TextFile $marker).Trim()
+                Write-Err "  $name skills: not linked, because access to $url was refused on $refusedOn."
+                Add-SourceNotice "**Access to the $name skills was refused** on $refusedOn, so they were removed from this machine's agents. If you should still have them, ask whoever manages access to $url. Once access is back, the next daily update restores them, or running the installer in a terminal does so at once."
+                continue
+            }
+            $OmsActiveSources += $name
+        }
+    }
+}
+Write-TextFile "$OMS_DIR/sources.list" (($OmsSourcesListed | ForEach-Object { "$_`n" }) -join '')
 # 1. Skills into the user scope, as links, so the daily pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
 function New-SkillLink($LinkPath, $TargetPath) {
@@ -2155,24 +2588,60 @@ function New-SkillLink($LinkPath, $TargetPath) {
 function Install-Skills($SkillsDir, $Label) {
     New-Item -ItemType Directory -Path $SkillsDir -Force | Out-Null
     # Sweep OMS-owned garbage first: a link into this tree that no longer
-    # resolves is a skill OMS retired upstream and the pull removed. Anything
-    # not pointing into $SRC is the user's and stays.
+    # resolves is a skill OMS retired upstream and the pull removed, and a link
+    # into an extra source is also swept when that source is no longer linked
+    # here. Anything not pointing into $SRC or a source is the user's and stays.
     foreach ($entry in Get-ChildItem -LiteralPath $SkillsDir -Force -ErrorAction SilentlyContinue) {
         if (-not $entry.LinkType) { continue }
         $target = @($entry.Target)[0]
-        if ($target -and $target.StartsWith($SRC) -and -not (Test-Path -LiteralPath $target)) {
-            $entry.Delete()
-            Write-Host "  removed retired skill $($entry.Name)"
+        if (-not $target) { continue }
+        $inSrc = Test-PathUnder $target $SRC
+        $inSources = Test-PathUnder $target $OmsSourcesDir
+        # One folder inside the other: the longer prefix owns the link
+        # (install.sh says why).
+        if ($inSrc -and $inSources) {
+            if ([System.IO.Path]::GetFullPath($SRC).Length -gt [System.IO.Path]::GetFullPath($OmsSourcesDir).Length) {
+                $inSources = $false
+            } else {
+                $inSrc = $false
+            }
+        }
+        if ($inSrc) {
+            if (-not (Test-Path -LiteralPath $target)) {
+                $entry.Delete()
+                Write-Host "  removed retired skill $($entry.Name)"
+            }
+        } elseif ($inSources) {
+            $from = Get-SourceName $target
+            if (-not (Test-Path -LiteralPath $target)) {
+                $entry.Delete()
+                Write-Host "  removed retired skill $($entry.Name)"
+            } elseif ($OmsActiveSources -cnotcontains $from) {
+                $entry.Delete()
+                Write-Host "  removed $($entry.Name): the $from skills are no longer installed here"
+            }
         }
     }
     $n = 0@@LINK_INIT@@
-    foreach ($dir in Get-ChildItem -LiteralPath "$SRC/skills" -Directory -ErrorAction SilentlyContinue) {
+    # The bundle's skills first, then each active source's in the order the
+    # sources were named. The first to offer a name keeps it.
+    $seen = @{}
+    $skillDirs = @(Get-ChildItem -LiteralPath "$SRC/skills" -Directory -ErrorAction SilentlyContinue)
+    foreach ($source in $OmsActiveSources) {
+        $skillDirs += @(Get-ChildItem -LiteralPath "$OmsSourcesDir/$source/skills" -Directory -ErrorAction SilentlyContinue)
+    }
+    foreach ($dir in $skillDirs) {
         $link = "$SkillsDir/$($dir.Name)"
+        if ($seen.ContainsKey($dir.Name)) {
+            Write-Host "  skip $($dir.FullName): an earlier source already provides skills/$($dir.Name)"
+            continue
+        }
 @@SKIP_SKILL@@        if ((Test-Path -LiteralPath $link) -and -not (Get-Item -LiteralPath $link -Force).LinkType) {
             Write-Host "  skip skills/$($dir.Name): you already have a directory with this name"
             continue
         }
         New-SkillLink $link $dir.FullName
+        $seen[$dir.Name] = $true
         $n++
     }
 @@LINK_REPORT@@
@@ -2279,6 +2748,43 @@ $refresh = @"
 `$src = '$SRC'
 `$status = '$OMS_DIR/status.md'
 `$utf8 = New-Object System.Text.UTF8Encoding(`$false)
+# Extra skill sources first (installer section 0d), so a refusal is on disk
+# before the installer reads it. Refused access is a revocation: its marker
+# makes the installer unlink that source's skills. Anything else, a network
+# failure above all, is staleness and unlinks nothing.
+`$sourcesDir = '$OmsSourcesDir'
+`$sourcesNotice = '$OMS_DIR/.sources-notice'
+`$pullNotice = '$OMS_DIR/.sources-pull-notice'
+`$listFile = '$OMS_DIR/sources.list'
+`$changed = `$false
+# git translates its own lines; the refusal patterns are its English ones.
+`$env:LC_ALL = 'C'
+# The installer this runs is told the sources were just pulled.
+`$env:OMS_SOURCES_PULLED = '1'
+[System.IO.File]::WriteAllText(`$pullNotice, "", `$utf8)
+if (Test-Path -LiteralPath `$listFile) {
+    foreach (`$name in [System.IO.File]::ReadAllLines(`$listFile)) {
+        if (`$name -cnotmatch '^[a-z0-9][a-z0-9-]{0,63}`$') { continue }
+        `$dir = "`$sourcesDir/`$name"
+        if (-not (Test-Path -LiteralPath "`$dir/.git")) { continue }
+        `$marker = "`$sourcesDir/.`$name.refused"
+        `$env:GIT_TERMINAL_PROMPT = '0'
+        Push-Location -LiteralPath `$dir
+        `$out = (& git pull --ff-only 2>&1 | ForEach-Object { "`$_" }) -join "``n"
+        `$code = `$LASTEXITCODE
+        Pop-Location
+        if (`$code -eq 0) {
+            if (Test-Path -LiteralPath `$marker) { Remove-Item -LiteralPath `$marker -Force; `$changed = `$true }
+        } elseif (`$out -match '@@REFUSED@@') {
+            if (-not (Test-Path -LiteralPath `$marker)) {
+                [System.IO.File]::WriteAllText(`$marker, (Get-Date -Format yyyy-MM-dd) + "``n", `$utf8)
+                `$changed = `$true
+            }
+        } else {
+            [System.IO.File]::AppendAllText(`$pullNotice, "**The `$name skills on this machine are out of date.** Their daily update failed on `$(Get-Date -Format yyyy-MM-dd), so the previous version is still loaded. The most likely cause is no network connection.``n", `$utf8)
+        }
+    }
+}
 Set-Location -LiteralPath `$src
 & git pull --ff-only 2>&1 | Out-Null
 if (`$LASTEXITCODE -eq 0) {
@@ -2297,6 +2803,17 @@ if (`$LASTEXITCODE -eq 0) {
     [System.IO.File]::WriteAllText(`$status, "**The organisational skills on this machine are out of date.**``n" +
         "The daily update failed on `$(Get-Date -Format yyyy-MM-dd). The most likely cause is an expired access token.``n" +
         "Tell the user their OMS skills are stale, that the most likely cause is an expired access token, and that the install line in the bundle's README.md is what re-clones it once they have access again.``n", `$utf8)
+    # The bundle could not be pulled, but a source whose access changed must
+    # still gain or lose its links today: that is the retraction it exists for.
+    if (`$changed) {
+        & powershell -ExecutionPolicy Bypass -File "`$src/install.ps1" 2>&1 | Out-Null
+    }
+}
+foreach (`$notice in @(`$sourcesNotice, `$pullNotice)) {
+    if (Test-Path -LiteralPath `$notice) {
+        `$text = [System.IO.File]::ReadAllText(`$notice)
+        if (`$text) { [System.IO.File]::AppendAllText(`$status, `$text, `$utf8) }
+    }
 }
 "@
 Write-TextFile "$OMS_DIR/oms-refresh.ps1" $refresh
@@ -2600,6 +3117,10 @@ def render_install_ps1(mcp_url: str | None,
             .replace("@@DETECTION@@", _ps_detection_blocks())
             .replace("@@INSTALL@@", _ps_install_blocks())
             .replace("@@MCP@@", mcp)
+            .replace("@@SELECT_SOURCES@@", fragments.select_sources)
+            .replace("@@REFUSED@@", SOURCE_REFUSAL_PATTERN)
+            .replace("@@SOURCE_NAME@@", SOURCE_NAME_PATTERN)
+            .replace("@@SOURCE_URL@@", SOURCE_URL_PATTERN)
             .replace("@@BEFORE_LINKS@@", fragments.before_links)
             .replace("@@LINK_INIT@@", fragments.link_initialiser)
             .replace("@@SKIP_SKILL@@", fragments.skip_skill)
@@ -3189,13 +3710,27 @@ def _cell(text: str) -> str:
 
 
 def render_tier2_manifest(constraints: list[Constraint], entries: list[ManifestEntry],
-                          mcp_endpoint: str | None = None) -> str:
+                          mcp_endpoint: str | None = None, *,
+                          include_constraints: bool = True) -> str:
     """The Tier 2 manifest (spec §9.2): constraints inlined, a dispatch table,
     and a version map. Hosts without native skill selection read this instead
-    of a bundled tree and fetch bodies over MCP on demand."""
-    lines = _constraint_block(constraints)
+    of a bundled tree and fetch bodies over MCP on demand.
+
+    `include_constraints=False` renders the fragment a skills-only destination
+    carries: the same dispatch table and version map for its own skills, and
+    no constraint block, because the constraints are published once, with the
+    main bundle, and a second copy is one that can disagree with it."""
+    if include_constraints:
+        lines = _constraint_block(constraints)
+        lines.append("")
+    else:
+        lines = [
+            "This repository holds skills only. The constraints every agent "
+            "follows are published with the main bundle's manifest.",
+            "",
+        ]
     lines += [
-        "", "# Fetching Skills", "",
+        "# Fetching Skills", "",
         "Skill bodies are NOT bundled with this file. Before doing work that "
         "matches a trigger below, fetch that skill over MCP and follow it.",
         "",

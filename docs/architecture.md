@@ -42,6 +42,20 @@ renders the portable tree and preserves owned reference and script bytes.
 Local publication and an explicitly requested Git publication share that
 renderer. Git credentials come from the operator's Git environment.
 
+An extension can publish one workspace to several destinations.
+`Publisher.publish` takes a skill selection, a skills-only flag for a
+destination that carries skills and nothing else, and extra root files that
+are ledgered and pruned like the publisher's own. The gate is scoped to the
+selected skills, while the stored publish block still stops every
+destination. Each destination keeps its own ownership record, so two
+destinations never prune each other. A checkout of a different repository is
+refused rather than pushed through. Both installers can link skills from
+extra git sources that an extension names through the `select_sources`
+fragment. The refresh pulls each source before the bundle. A pull the host
+refuses for access unlinks that source until a pull works again, and any
+other failure is reported as staleness. Community publishes one destination
+and names no extra sources.
+
 The private product consumes this exact public wheel and the two public npm
 packages. Its composition supplies private model processing, identity,
 organisation policy and managed publication through public interfaces. Public
