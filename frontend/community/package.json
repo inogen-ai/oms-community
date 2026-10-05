@@ -1,6 +1,6 @@
 {
   "name": "@inogen/oms-community",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "scripts": {
     "dev": "NEXT_PUBLIC_OMS_API_URL=http://127.0.0.1:4317 next dev --hostname 127.0.0.1 --port 4318",
