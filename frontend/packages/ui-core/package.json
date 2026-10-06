@@ -1,6 +1,6 @@
 {
   "name": "@inogen/oms-ui-core",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "license": "SUL-1.0",
   "description": "Edition-neutral OMS interface primitives",
   "type": "module",
