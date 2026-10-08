@@ -19,9 +19,9 @@ from typing import Literal
 
 # How a harness takes the organisational instructions.
 #   import - a reference to the bundle file; the harness resolves it at load
-#            time, so the daily pull updates the content with no rewrite here.
+#            time, so the scheduled pull updates the content with no rewrite here.
 #            Claude Code's `@path` syntax, and nothing else supports it.
-#   copy   - the content itself, between markers. Refreshed by the daily
+#   copy   - the content itself, between markers. Refreshed by the scheduled
 #            re-run of the installer rather than by the harness.
 #   manual - the harness has no global instructions file. The installer stages
 #            the text and tells the human where to paste it.

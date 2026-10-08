@@ -998,7 +998,7 @@ def test_the_powershell_installer_reports_what_it_could_not_update() -> None:
     assert before.endswith("else { $OmsModeChosen }")
     assert '$OmsInstalledModeFile = "$OMS_DIR/contribution-mode-installed"' in body
     given = body.index('Write-TextFile $OmsInstalledModeFile "$OmsContributionMode`n"')
-    assert body.index("# 4. Daily refresh") < given
+    assert body.index("# 4. Scheduled refresh") < given
     assert given < body.index('Write-Host "Contribution mode: $OmsContributionMode"')
     # A tool skipped before any write is named as well.
     assert 'Add-NotUpdated "Windsurf"' in body

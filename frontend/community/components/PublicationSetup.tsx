@@ -42,7 +42,7 @@ export function PublicationInstall({ settings, published = false }: { settings: 
     <CommandBlock key={install} label="Install command" command={install} />
     {git && <p className="muted">Already cloned this repository? Run its existing <code>install.sh</code> instead of cloning it again. The clone command stops if its destination already exists.</p>}
     <details><summary>Automatic updates and agent setup</summary>
-      <p>{git ? "The installer schedules a daily Git pull and refresh. For an immediate update, run sh ~/.oms/oms-refresh.sh." : "The installer checks for completed local publications every minute, updating skill links and copied instructions automatically. Git is not required."}</p>
+      <p>{git ? "The installer schedules a Git pull and refresh every three hours. For an immediate update, run sh ~/.oms/oms-refresh.sh." : "The installer checks for completed local publications every minute, updating skill links and copied instructions automatically. Git is not required."}</p>
       <p className="muted">Check the installer’s final message to confirm scheduling succeeded. Restart or reload an agent session if it has already cached its guidance. Cursor's global User Rules still require pasting the staged text shown by the installer.</p>
     </details>
   </section>;
