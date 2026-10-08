@@ -1,5 +1,5 @@
 from oms.sources.models import PlanFlag
-from merge_cases import merge_case, part
+from tests.sources.merge_cases import merge_case, part
 
 
 def test_unambiguous_section_edit_preserves_part_identity():

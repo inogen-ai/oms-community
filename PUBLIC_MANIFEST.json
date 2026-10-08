@@ -1526,7 +1526,7 @@
     },
     "tests/sources/test_canonical_ref_lifecycle.py": {
       "mode": 420,
-      "sha256": "fff3f2295ca7ee81a09e8b788f3c2ce2a315a198264de4e5cb266c782c8b5d1e"
+      "sha256": "c1b6cbc76f72a772094996ccb66e7bd02e11cb7034e8f31822a3ef665a9618fe"
     },
     "tests/sources/test_capabilities.py": {
       "mode": 420,
@@ -1570,7 +1570,7 @@
     },
     "tests/sources/test_git_reader.py": {
       "mode": 420,
-      "sha256": "ecd60bed55c1e8c70a59c7992393f8f6e4c058994de91b199b0a346b59590d42"
+      "sha256": "ded218bdc189e3f380e2f251fe38c9c96a4a02b6114126d4284a9bf29a0143fb"
     },
     "tests/sources/test_identity_migration.py": {
       "mode": 420,
@@ -1614,19 +1614,19 @@
     },
     "tests/sources/test_merge_fields.py": {
       "mode": 420,
-      "sha256": "d32b532d894a354a4bab1282614648340295320dd9468543c3f59696fb83c090"
+      "sha256": "daca0af57b77ece832425160c88924ce4294f9c882e79eb827a5b4721d2657a1"
     },
     "tests/sources/test_merge_files.py": {
       "mode": 420,
-      "sha256": "f90ffe003731708c841a317cb574298eb5faf821f2dd58a82087f8d702ade68b"
+      "sha256": "f917eb51e6dc7726fbaf13db36466645fe3b7c53bb42888d7134e902a55a65e6"
     },
     "tests/sources/test_merge_prose.py": {
       "mode": 420,
-      "sha256": "3dc46f6133f2abdeeb8d5e1947373e40ce140972cada4e52fdcf1237b968a937"
+      "sha256": "9511b83250c1a7ff1ff521a6f2b663f20deacda2f17f154801fb7f75e749a144"
     },
     "tests/sources/test_merge_rules.py": {
       "mode": 420,
-      "sha256": "bacb9f88c8d25fab8fbd89b8fd6dd3db602dfefbbb0f0b0d0faa45aa0d4eca04"
+      "sha256": "ff4a7ed94ae24c12b17524a40a24fd7239b60c4d079ae71b92bf648891b2b2a4"
     },
     "tests/sources/test_metadata_query_cost.py": {
       "mode": 420,
@@ -1686,7 +1686,7 @@
     },
     "tests/sources/test_safety.py": {
       "mode": 420,
-      "sha256": "e71640341c6daa16a8129e0dc3a47a08ff486262859d53d2f1021917afa4fb2f"
+      "sha256": "493f6f2dfb418eadf8d14a5e4e925834444de47ed1c8ce8eb1dafab90b3e5eb4"
     },
     "tests/sources/test_source_configuration.py": {
       "mode": 420,

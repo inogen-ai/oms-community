@@ -5,7 +5,7 @@ from oms.domain.models import Skill
 from oms.sources.git_reader import GitReader
 from oms.sources.models import CreateSourceRequest, DiscoveryRequest, InstallRequest, InstallSelection, LinkRequest, RefRequest
 from oms.sources.settings import SourceSettings
-from fixture_git import FixtureGitTransport
+from tests.sources.fixture_git import FixtureGitTransport
 
 
 @pytest.fixture

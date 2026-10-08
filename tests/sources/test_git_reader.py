@@ -9,7 +9,7 @@ from oms.sources.git_reader import GitReader, GitTransport, AcquisitionError
 from oms.sources.limits import AcquisitionLimits, BudgetExceeded
 from oms.sources.models import DiscoveryRequest, PackageRequest, RefRequest
 from oms.sources.settings import SourceSettings
-from fixture_git import FixtureGitTransport
+from tests.sources.fixture_git import FixtureGitTransport
 
 
 @pytest.fixture(params=[False, True], ids=['unfiltered', 'filtered'])

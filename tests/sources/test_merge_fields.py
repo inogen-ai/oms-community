@@ -4,7 +4,7 @@ import pytest
 
 from oms.sources.compare import compare_unit, same_value
 from oms.sources.models import PlanFlag
-from merge_cases import absent, known, unknown, merge_case, part
+from tests.sources.merge_cases import absent, known, unknown, merge_case, part
 
 
 @pytest.mark.parametrize('base,local,incoming,owned,action,reason', [

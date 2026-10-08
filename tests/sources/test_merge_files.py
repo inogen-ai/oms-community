@@ -1,7 +1,7 @@
 import pytest
 
 from oms.sources.models import PlanFlag
-from merge_cases import merge_case, file, part
+from tests.sources.merge_cases import merge_case, file, part
 
 
 def test_declared_field_and_licence_file_have_different_gates():
@@ -60,7 +60,7 @@ def test_current_document_executable_mode_requires_no_invented_raw_file():
 
 
 def test_document_mode_has_an_apply_unit_without_copying_raw_markdown():
-    from merge_cases import part
+    from tests.sources.merge_cases import part
     case = merge_case(part('field:document_mode', 0o100644), manifest=(file('SKILL.md'),))
     incoming = case.incoming.model_copy(update={
         'effective_projection': (part('field:document_mode', 0o100755),),

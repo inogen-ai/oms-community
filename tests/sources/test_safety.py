@@ -2,7 +2,7 @@ from dataclasses import replace
 
 from oms.sources.models import CheckResult, PlanFlag
 from oms.sources.safety import SourceSafety, eligibility
-from merge_cases import merge_case, part
+from tests.sources.merge_cases import merge_case, part
 
 
 def test_changed_authorial_text_is_screened_and_held():
@@ -26,7 +26,7 @@ def test_merged_text_has_the_same_safety_boundary():
 
 
 def test_automatic_and_bulk_eligibility_have_distinct_script_gates():
-    from merge_cases import file
+    from tests.sources.merge_cases import file
     case = merge_case(manifest=(file('scripts/tool.sh'),))
     plan = case.change_file('scripts/tool.sh', b'new')
     assert eligibility(plan, mode='automatic', automatic_enabled=True, edition='paid').state == 'passed'
@@ -69,7 +69,7 @@ def test_tainted_lineage_cannot_be_cleared_by_unchanged_text_or_apply():
 
 
 def test_file_without_bound_screen_result_cannot_claim_cleanliness():
-    from merge_cases import file
+    from tests.sources.merge_cases import file
     case = merge_case(manifest=(file('notes.txt'),))
     plan = case.plan(incoming=case.incoming.model_copy(update={'manifest': (file('notes.txt', b'new'),)}))
     assert PlanFlag.REQUIRED_CHECK_UNAVAILABLE in plan.flags
@@ -77,7 +77,7 @@ def test_file_without_bound_screen_result_cannot_claim_cleanliness():
 
 def test_file_screen_result_is_bound_to_exact_candidate_digest():
     from oms.sources.safety import FileCheck
-    from merge_cases import file
+    from tests.sources.merge_cases import file
     case = merge_case(manifest=(file('notes.txt'),))
     old = case.incoming.manifest[0]
     policy = replace(case.policy, file_checks=(FileCheck('file:notes.txt', old.digest, CheckResult(state='passed', code='checked')),))

@@ -1,6 +1,6 @@
 from oms.sources.models import GraphMapping, PlanFlag
 from oms.domain.identity import SkillRef
-from merge_cases import merge_case, part
+from tests.sources.merge_cases import merge_case, part
 import pytest
 
 
