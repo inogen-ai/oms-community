@@ -250,7 +250,7 @@ commands or its credential manager if needed. A separate reader token only needs
 
 The wizard supplies a repository-specific clone destination and stops before
 installation if cloning fails. If you already have a checkout, use its existing
-`install.sh`. Git installations refresh daily; run `sh ~/.oms/oms-refresh.sh`
+`install.sh`. Git installations refresh every three hours; run `sh ~/.oms/oms-refresh.sh`
 for an immediate update.
 
 ### Where agents send corrections back

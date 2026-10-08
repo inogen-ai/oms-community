@@ -46,7 +46,7 @@
     },
     "README.md": {
       "mode": 420,
-      "sha256": "c1f4e57f7de0b6b5f73f0a46fa1eae33da7cfe40524447874a44075bd12b5da3"
+      "sha256": "1ef6c57c688f5c56e803503f222b89271ae70a718970b32e409f6939ae81237f"
     },
     "SECURITY.md": {
       "mode": 420,
@@ -902,7 +902,7 @@
     },
     "src/oms/publish/harnesses.py": {
       "mode": 420,
-      "sha256": "b6693fd0af8861283dfce78aff27807ac943f6dc06c684cf3242c570057c54e3"
+      "sha256": "12b12b52e52c330e48a1fde467021c38a77c315aed600c6f07282a95070d82fa"
     },
     "src/oms/publish/parts.py": {
       "mode": 420,
@@ -914,7 +914,7 @@
     },
     "src/oms/publish/render.py": {
       "mode": 420,
-      "sha256": "7d4ebb4b551b36d4158851d238b4947978e69705afca172df458f7b1a9e47c2f"
+      "sha256": "2484cdf4dcf7ebac1f3b5bc76ff425e727c091b325ac6197184fc7406d15ad9a"
     },
     "src/oms/publish/urls.py": {
       "mode": 420,
@@ -1058,7 +1058,7 @@
     },
     "tests/community/test_install_contribution_mode.py": {
       "mode": 420,
-      "sha256": "1b05acf1ce3c3c04680a1bf0372a2ed7b26116e56e008fe92ed1ef071c669b5a"
+      "sha256": "9592fffff7e89033f38d5d41800abd491881f9476c6ad5dbfc0479da761e6e85"
     },
     "tests/community/test_install_sources.py": {
       "mode": 420,
@@ -1099,6 +1099,10 @@
     "tests/community/test_recent_skill_changes.py": {
       "mode": 420,
       "sha256": "13b8b18f10266d908707e75960c61d35c10845b5d6fda76b64b5f4751ad3af31"
+    },
+    "tests/community/test_refresh_schedule.py": {
+      "mode": 420,
+      "sha256": "e611b3318243f2b246e210bce9517baadd91f9cb308b427de1bc20a60422b48b"
     },
     "tests/community/test_repository_views.py": {
       "mode": 420,

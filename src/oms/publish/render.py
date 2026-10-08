@@ -555,7 +555,7 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
                         mode: ContributionMode = "automatic") -> list[str]:
     """The standing, always-loaded instruction telling an agent how to post a
     learning back to OMS (spec §6.1). Rendered only when an ingest endpoint is
-    configured. It rides the daily pull, so contribution needs no per-agent
+    configured. It rides the scheduled pull, so contribution needs no per-agent
     setup.
 
     Four variants. `mode` decides who shares a correction: "automatic" has
@@ -1882,7 +1882,7 @@ if [ -n "$OMS_SOURCES" ]; then
       if [ -f "$oms_marker" ]; then
         oms_refused_on="$(cat "$oms_marker" 2>/dev/null || true)"
         echo "  $oms_name skills: not linked, because access to $oms_url was refused on $oms_refused_on." >&2
-        oms_source_notice "**Access to the $oms_name skills was refused** on $oms_refused_on, so they were removed from this machine's agents. If you should still have them, ask whoever manages access to $oms_url. Once access is back, the next daily update restores them, or running the installer in a terminal does so at once."
+        oms_source_notice "**Access to the $oms_name skills was refused** on $oms_refused_on, so they were removed from this machine's agents. If you should still have them, ask whoever manages access to $oms_url. Once access is back, the next scheduled update restores them, or running the installer in a terminal does so at once."
         continue
       fi
       OMS_ACTIVE_SOURCES="$OMS_ACTIVE_SOURCES $oms_name"
@@ -1907,7 +1907,7 @@ oms_skill_dirs() {{
   done
   return 0
 }}
-# 1. Skills into the user scope. Symlinks, so the daily pull updates them in
+# 1. Skills into the user scope. Symlinks, so the scheduled pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
 #    First sweep OMS-owned garbage: a symlink pointing into this tree that no
 #    longer resolves is a skill OMS retired (pruned upstream, landed via the
@@ -1979,12 +1979,12 @@ OMS_SKILL_DIRS
 
 # 2. Instructions, in whichever form the harness reads.
 #
-#    import - a reference to the bundle file. The daily pull then refreshes the
+#    import - a reference to the bundle file. The scheduled pull then refreshes the
 #             content without this file ever changing again. Claude Code's
 #             `@path` syntax, and nothing else supports it: emitted anywhere
 #             else it is a literal line starting with @, and no constraints
 #             load at all.
-#    copy   - the content itself. Kept current by the daily re-run of this
+#    copy   - the content itself. Kept current by the scheduled re-run of this
 #             installer rather than by the harness, and pointed at the status
 #             file rather than importing it.
 #
@@ -2094,7 +2094,7 @@ stage_manual_rules() {{
 #
 #     So nothing is registered here any more. This strips ours and leaves
 #     the user's own hooks alone, which is how a machine that installed the
-#     hook stops running it: on its next daily refresh, with nothing to do
+#     hook stops running it: on its next scheduled refresh, with nothing to do
 #     by hand. The block goes entirely once no installed machine carries one.
 #
 #     Failure is reported and stepped over, never fatal. A malformed
@@ -2169,7 +2169,7 @@ OMS_HOOK_PY
   fi
 fi
 
-# 4. Daily refresh. Pulls, then re-runs this (idempotent) installer so new
+# 4. Scheduled refresh. Pulls, then re-runs this (idempotent) installer so new
 #    skills get linked and retired ones unlinked without any user action, and
 #    records a staleness notice when the pull fails instead of swallowing it.
 #    The work lives in a generated script rather than inline in the crontab
@@ -2235,7 +2235,7 @@ if [ -f "$OMS_DIR/sources.list" ]; then
     elif oms_refused "\\$out"; then
       if [ ! -f "\\$marker" ]; then date +%Y-%m-%d > "\\$marker"; sources_changed=1; fi
     else
-      printf '%s\\n' "**The \\$name skills on this machine are out of date.** Their daily update failed on \\$(date +%Y-%m-%d), so the previous version is still loaded. The most likely cause is no network connection." >> "\\$PULL_NOTICE"
+      printf '%s\\n' "**The \\$name skills on this machine are out of date.** Their scheduled update failed on \\$(date +%Y-%m-%d), so the previous version is still loaded. The most likely cause is no network connection." >> "\\$PULL_NOTICE"
     fi
   done < "$OMS_DIR/sources.list"
 fi
@@ -2255,7 +2255,7 @@ if cd "\\$SRC" && git pull --ff-only >/dev/null 2>&1; then
   fi
 else
   printf '%s\\n' "**The organisational skills on this machine are out of date.**" > "\\$STATUS"
-  printf '%s\\n' "The daily update failed on \\$(date +%Y-%m-%d). The most likely cause is an expired access token." >> "\\$STATUS"
+  printf '%s\\n' "The scheduled update failed on \\$(date +%Y-%m-%d). The most likely cause is an expired access token." >> "\\$STATUS"
   printf '%s\\n' "Tell the user their OMS skills are stale, that the most likely cause is an expired access token, and that the install line in the bundle's README.md is what re-clones it once they have access again." >> "\\$STATUS"
   # The bundle could not be pulled, but a source whose access changed must
   # still gain or lose its links today: that is the retraction it exists for.
@@ -2270,7 +2270,7 @@ chmod +x "$OMS_DIR/.oms-refresh.sh.tmp"
 mv "$OMS_DIR/.oms-refresh.sh.tmp" "$OMS_DIR/oms-refresh.sh"
 
 # Scheduling is the conditional half: only a clone has anything to pull, and
-# only a machine with crontab can be given a nightly slot. Every branch that
+# only a machine with crontab can be given a schedule. Every branch that
 # does not schedule says so and names the manual alternative, because a bundle
 # that silently never refreshes is the failure this whole file exists to avoid.
 if [ -n "$INSTALL_REVISION" ] && [ ! -e "$SRC/.git" ]; then
@@ -2279,7 +2279,7 @@ fi
 local_plist="$HOME/Library/LaunchAgents/ai.inogen.oms.local-refresh.plist"
 if [ -e "$SRC/.git" ] && [ -f "$local_plist" ]; then
   # Changing from local publication to Git must retire the minute-based job
-  # before the shared refresh script becomes a daily Git updater.
+  # before the shared refresh script becomes a scheduled Git updater.
   if command -v launchctl >/dev/null 2>&1; then
     launchctl bootout "gui/$(id -u)" "$local_plist" >/dev/null 2>&1 || true
   fi
@@ -2323,14 +2323,18 @@ PLIST
     printf '%s\\n' "Automatic local OMS refresh is not scheduled. Run the bundle installer in a terminal to enable it." > "$OMS_DIR/status.md"
   fi
 elif [ ! -d "$SRC/.git" ]; then
-  echo "  no daily refresh: this tree is not a git clone, so there is nothing to pull."
+  echo "  no scheduled refresh: this tree is not a git clone, so there is nothing to pull."
   echo "  To update, copy in a newer bundle and re-run install.sh. From a clone,"
   echo "  'sh $OMS_DIR/oms-refresh.sh' would do it for you."
 elif ! command -v crontab >/dev/null 2>&1; then
-  echo "  no daily refresh: this machine has no crontab command."
+  echo "  no scheduled refresh: this machine has no crontab command."
   echo "  Update by hand any time with: sh '$OMS_DIR/oms-refresh.sh'"
 else
-  LINE="@daily sh '$OMS_DIR/oms-refresh.sh' >/dev/null 2>&1 # oms-daily-pull"
+  # Every three hours, not @daily: cron never runs a job it missed, so a
+  # laptop asleep at midnight skipped the day's only pull. The marker keeps
+  # its old name because it is how an existing entry is found and replaced,
+  # which is also how a machine on the old schedule moves to this one.
+  LINE="0 */3 * * * sh '$OMS_DIR/oms-refresh.sh' >/dev/null 2>&1 # oms-daily-pull"
   # The `|| true` is load-bearing under `set -e`: grep exits 1 when it selects
   # nothing, which is the normal case on a machine whose only crontab entry is
   # ours (or which has no crontab at all). Without it the subshell dies before
@@ -2343,9 +2347,9 @@ else
   # no "Done." line AFTER every piece of real work had already succeeded. An
   # `if` condition is exempt from errexit, so the refusal is reported instead.
   if (crontab -l 2>/dev/null | grep -v -e "# oms-daily-pull" -e '# oms-local-refresh' || true; echo "$LINE") | crontab -; then
-    echo "  daily refresh scheduled"
+    echo "  refresh scheduled every three hours"
   else
-    echo "  no daily refresh: crontab refused to install the entry."
+    echo "  no scheduled refresh: crontab refused to install the entry."
     echo "  On macOS this usually means the terminal needs Full Disk Access"
     echo "  (System Settings > Privacy & Security > Full Disk Access)."
     echo "  Update by hand any time with: sh '$OMS_DIR/oms-refresh.sh'"
@@ -2971,7 +2975,7 @@ if ($OmsSources.Count -gt 0) {
             if (Test-Path -LiteralPath $marker) {
                 $refusedOn = (Read-TextFile $marker).Trim()
                 Write-Err "  $name skills: not linked, because access to $url was refused on $refusedOn."
-                Add-SourceNotice "**Access to the $name skills was refused** on $refusedOn, so they were removed from this machine's agents. If you should still have them, ask whoever manages access to $url. Once access is back, the next daily update restores them, or running the installer in a terminal does so at once."
+                Add-SourceNotice "**Access to the $name skills was refused** on $refusedOn, so they were removed from this machine's agents. If you should still have them, ask whoever manages access to $url. Once access is back, the next scheduled update restores them, or running the installer in a terminal does so at once."
                 continue
             }
             $OmsActiveSources += $name
@@ -2979,7 +2983,7 @@ if ($OmsSources.Count -gt 0) {
     }
 }
 Write-TextFile "$OMS_DIR/sources.list" (($OmsSourcesListed | ForEach-Object { "$_`n" }) -join '')
-# 1. Skills into the user scope, as links, so the daily pull updates them in
+# 1. Skills into the user scope, as links, so the scheduled pull updates them in
 #    place. A real directory with the same name belongs to the user: skip it.
 function New-SkillLink($LinkPath, $TargetPath) {
     if (Test-Path -LiteralPath $LinkPath) {
@@ -3058,11 +3062,11 @@ function Install-Skills($SkillsDir, $Label) {
 
 # 2. Instructions, in whichever form the harness reads.
 #
-#    import - a reference to the bundle file, so the daily pull refreshes the
+#    import - a reference to the bundle file, so the scheduled pull refreshes the
 #             content without this file changing again. Claude Code's `@path`
 #             syntax, and nothing else supports it: emitted anywhere else it is
 #             a literal line starting with @, and no constraints load at all.
-#    copy   - the content itself, kept current by the daily re-run.
+#    copy   - the content itself, kept current by the scheduled re-run.
 #
 #    Everything outside the markers is the user's and is preserved verbatim.
 function Remove-OmsBlock($Text) {
@@ -3146,7 +3150,7 @@ function Set-ManualRules($Label, $File) {
 
 @@INSTALL@@
 @@MCP@@
-# 4. Daily refresh. Pulls, then re-runs this (idempotent) installer so new
+# 4. Scheduled refresh. Pulls, then re-runs this (idempotent) installer so new
 #    skills get linked and retired ones unlinked without any user action, and
 #    records a staleness notice when the pull fails instead of swallowing it.
 #    Written unconditionally: a machine with no scheduler, or a tree that is
@@ -3191,7 +3195,7 @@ if (Test-Path -LiteralPath `$listFile) {
                 `$changed = `$true
             }
         } else {
-            [System.IO.File]::AppendAllText(`$pullNotice, "**The `$name skills on this machine are out of date.** Their daily update failed on `$(Get-Date -Format yyyy-MM-dd), so the previous version is still loaded. The most likely cause is no network connection.``n", `$utf8)
+            [System.IO.File]::AppendAllText(`$pullNotice, "**The `$name skills on this machine are out of date.** Their scheduled update failed on `$(Get-Date -Format yyyy-MM-dd), so the previous version is still loaded. The most likely cause is no network connection.``n", `$utf8)
         }
     }
 }
@@ -3211,7 +3215,7 @@ if (`$LASTEXITCODE -eq 0) {
     }
 } else {
     [System.IO.File]::WriteAllText(`$status, "**The organisational skills on this machine are out of date.**``n" +
-        "The daily update failed on `$(Get-Date -Format yyyy-MM-dd). The most likely cause is an expired access token.``n" +
+        "The scheduled update failed on `$(Get-Date -Format yyyy-MM-dd). The most likely cause is an expired access token.``n" +
         "Tell the user their OMS skills are stale, that the most likely cause is an expired access token, and that the install line in the bundle's README.md is what re-clones it once they have access again.``n", `$utf8)
     # The bundle could not be pulled, but a source whose access changed must
     # still gain or lose its links today: that is the retraction it exists for.
@@ -3229,16 +3233,16 @@ foreach (`$notice in @(`$sourcesNotice, `$pullNotice)) {
 Write-TextFile "$OMS_DIR/oms-refresh.ps1" $refresh
 
 # Scheduling is the conditional half: only a clone has anything to pull, and
-# only a machine with the ScheduledTasks module can be given a nightly slot.
+# only a machine with the ScheduledTasks module can be given a schedule.
 # Every branch that does not schedule says so and names the manual alternative,
 # because a bundle that silently never refreshes is the failure this whole file
 # exists to avoid.
 if (-not (Test-Path -LiteralPath "$SRC/.git")) {
-    Write-Host "  no daily refresh: this tree is not a git clone, so there is nothing to pull."
+    Write-Host "  no scheduled refresh: this tree is not a git clone, so there is nothing to pull."
     Write-Host "  To update, copy in a newer bundle and re-run install.ps1. From a clone,"
     Write-Host "  '$OMS_DIR/oms-refresh.ps1' would do it for you."
 } elseif (-not (Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue)) {
-    Write-Host "  no daily refresh: this PowerShell has no scheduled-task support."
+    Write-Host "  no scheduled refresh: this PowerShell has no scheduled-task support."
     Write-Host "  Update by hand any time with: $OMS_DIR/oms-refresh.ps1"
 } else {
     # Unregistered first, then registered: -Force alone updates a task whose
@@ -3247,15 +3251,22 @@ if (-not (Test-Path -LiteralPath "$SRC/.git")) {
         Unregister-ScheduledTask -TaskName 'OMS daily refresh' -Confirm:$false -ErrorAction SilentlyContinue
         $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
             -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$OMS_DIR/oms-refresh.ps1`""
+        # Every three hours, as install.sh's cron entry: a daily trigger that
+        # repeats across its own day. An open-ended repetition would need a
+        # duration of TimeSpan.MaxValue, which newer Windows refuses as out of
+        # range. The task keeps its old name because it is how an existing
+        # task is found and replaced.
         $trigger = New-ScheduledTaskTrigger -Daily -At 9am
+        $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At 9am `
+            -RepetitionInterval (New-TimeSpan -Hours 3) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
         # Interactive token, not SYSTEM: the task writes into this user's
         # profile and pulls with this user's git credentials, neither of which
         # SYSTEM has.
         Register-ScheduledTask -TaskName 'OMS daily refresh' -Action $action `
             -Trigger $trigger -Description 'Pulls the OMS skills bundle and re-runs its installer.' | Out-Null
-        Write-Host "  daily refresh scheduled"
+        Write-Host "  refresh scheduled every three hours"
     } catch {
-        Write-Host "  no daily refresh: registering the scheduled task failed."
+        Write-Host "  no scheduled refresh: registering the scheduled task failed."
         Write-Host "  $($_.Exception.Message)"
         Write-Host "  Update by hand any time with: $OMS_DIR/oms-refresh.ps1"
     }
@@ -3560,7 +3571,7 @@ def render_install_ps1(mcp_url: str | None,
 #: The location is not cosmetic and choosing it for them is the point. Every
 #: skill is symlinked into this tree and the refresh script bakes its path, so
 #: the clone is permanent: cloned into Downloads and tidied away a fortnight
-#: later, every link dangles and the daily pull dies, with no error anywhere -
+#: later, every link dangles and the scheduled pull dies, with no error anywhere -
 #: the agent simply stops seeing any skills. `~/.oms` is already OMS's own
 #: directory, created unconditionally by the installer for the credentials and
 #: the staleness file, so the bundle sits beside them rather than wherever the
@@ -3609,7 +3620,7 @@ def _getting_started(repo: str | None) -> list[str]:
         "```", "",
         f"**Clone it somewhere permanent, and {BUNDLE_DIR} is the suggestion.** "
         "Every skill is linked into this tree rather than copied out of it, and "
-        "the daily refresh pulls into the same path, so moving or deleting the "
+        "the scheduled refresh pulls into the same path, so moving or deleting the "
         "clone later breaks both - and breaks them silently, leaving an agent "
         "that simply sees no skills.", "",
     ]
@@ -3645,7 +3656,7 @@ def render_readme(mcp_url: str | None, distribution_repo: str | None = None, *,
         "unsigned, and the default policy refuses those.", "",
         "This finds the agent tools on your machine and links the skills and "
         "instructions into each one's user scope, registers the OMS "
-        "contribution tool for every project, and schedules a daily pull. Safe "
+        "contribution tool for every project, and schedules a pull every three hours. Safe "
         "to re-run; it never touches content you own, and it creates nothing "
         "for a tool you do not have.", "",
         # Only where the bundle takes contributions: a read-only one has no
@@ -3721,7 +3732,7 @@ def render_readme(mcp_url: str | None, distribution_repo: str | None = None, *,
             "If you installed an older bundle you may still have an "
             "`oms_session_hook` entry under `hooks.UserPromptSubmit` in "
             "`~/.claude/settings.json`. The installer removes it for you on "
-            "the next daily refresh; you can also delete it by hand.",
+            "the next scheduled refresh; you can also delete it by hand.",
         ]
         lines += troubleshooting
     return "\n".join(lines) + "\n"
