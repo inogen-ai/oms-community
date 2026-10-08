@@ -252,7 +252,7 @@ test("the source workspace remains readable with keyboard focus on desktop and m
     await decision.focus(); await expect(decision).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.locator(".oms-source-card").scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `/home/herman/hermdev/InoGen/oms_helpfolder/github-skill-feature-evidence/task-23/sources-${width}.png` });
+    await page.screenshot({ path: `test-results/sources-${width}.png` });
   }
 });
 
