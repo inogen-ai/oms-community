@@ -4,7 +4,7 @@ import path from "node:path";
 const config: NextConfig = {
   output: "export",
   trailingSlash: true,
-  generateBuildId: async () => process.env.OMS_BUILD_ID || "oms-community-1.4.1",
+  generateBuildId: async () => process.env.OMS_BUILD_ID || "oms-community-1.4.2",
   transpilePackages: ["@inogen/oms-client", "@inogen/oms-ui-core"],
   devIndicators: false,
   poweredByHeader: false,
