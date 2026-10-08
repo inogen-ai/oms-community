@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import type { Skill, SkillDeletion, DocumentPart } from "@inogen/oms-client";
 import SkillDetail from "./SkillDetail";
@@ -15,7 +16,7 @@ const PAGE_SIZE = 24;
 const hasDraft = (draft?: SkillDraft) => Boolean(draft?.details || Object.keys(draft?.sections ?? {}).length);
 
 export default function Skills() {
-  const { api } = useWorkspace();
+  const { api, capabilities } = useWorkspace();
   const resource = useResource(() => api.skills(), [api]);
   const [selected, setSelected] = useState<string | null>(null);
   const [deleted, setDeleted] = useState<SkillDeletion | null>(null);
@@ -63,7 +64,7 @@ export default function Skills() {
     return <Button variant="secondary" disabled={action.busy} aria-label={`${muted ? "Unmute" : "Mute"} ${skill.name}`} onClick={() => void action.run(() => api.updateSkill(skill.id, { publish_enabled: muted }), muted ? "Skill included in the next publication." : "Skill muted. Publish to remove it from your agents.", resource.refresh)}>{muted ? <Volume2 size={14} /> : <VolumeX size={14} />}{muted ? "Unmute" : "Mute"}</Button>;
   }
   return <><div hidden={Boolean(selected)}>
-    <PageHeading title="Your skills library"><div className="actions"><Button variant="secondary" onClick={() => { setCreating(!creating); setImporting(false); }} aria-expanded={creating}><Plus size={15} aria-hidden="true" />Create skill</Button><Button onClick={() => { setImporting(!importing); setCreating(false); }} aria-expanded={importing} aria-controls="library-import"><Upload size={15} aria-hidden="true" />Upload skills</Button></div></PageHeading><Feedback action={action} />
+    <PageHeading title="Your skills library"><div className="actions">{capabilities.github_skill_sources && <Link href="/sources">Manage sources</Link>}<Button variant="secondary" onClick={() => { setCreating(!creating); setImporting(false); }} aria-expanded={creating}><Plus size={15} aria-hidden="true" />Create skill</Button><Button onClick={() => { setImporting(!importing); setCreating(false); }} aria-expanded={importing} aria-controls="library-import"><Upload size={15} aria-hidden="true" />Upload skills</Button></div></PageHeading><Feedback action={action} />
     {deleted && <Notice kind="success">“{deleted.name}” deleted. <a href="/publish/">Publish updates</a> to remove it from your agents.</Notice>}
     <div hidden={!importing}><Panel title="Upload skills" id="library-import"><SkillImport onImported={() => { setDeleted(null); resource.refresh(); }} /></Panel></div>
     {creating && <Panel title="Create a skill"><form onSubmit={create} className="form-grid"><label>Name<input name="name" required maxLength={128} value={createDraft.name} disabled={action.busy} onChange={(event) => setCreateDraft({ ...createDraft, name: event.target.value })} autoFocus /></label><label>Description<textarea name="description" rows={2} value={createDraft.description} disabled={action.busy} onChange={(event) => setCreateDraft({ ...createDraft, description: event.target.value })} /></label><label>Domain<input name="domain" value={createDraft.domain} disabled={action.busy} onChange={(event) => setCreateDraft({ ...createDraft, domain: event.target.value })} required /></label><div className="actions"><Button type="submit" disabled={action.busy}>Save new skill</Button><Button variant="secondary" onClick={() => setCreating(false)}>Close form</Button></div></form></Panel>}

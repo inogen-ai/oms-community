@@ -41,7 +41,7 @@ def api(request, tmp_path):
         driver = request.getfixturevalue("critic_neo4j_driver")
         with driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n").consume()
-        services = build_community(CoreSettings(data_dir=data, tenant_id="acme"), driver)
+        services = build_community(CoreSettings(data_dir=data, tenant_id="acme", github_skill_sources=False), driver)
     with TestClient(create_app(services), base_url="http://127.0.0.1:4317") as client:
         yield Api(services, client, data)
 
@@ -72,7 +72,7 @@ def _edit(api, skill, section, text):
 def _pending_prose(api):
     _upload(api)
     skill, = api.services.store.skills_for_tenant("acme")
-    section, = [section for section in api.services.store.sections_for_skill(skill.id)
+    section, = [section for section in api.services.store.sections_for_skill(skill.id, tenant_id="acme")
                 if section.heading == "Process"]
     _edit(api, skill.id, section.id, LOCAL)
     _upload(api, UPSTREAM)
@@ -81,7 +81,7 @@ def _pending_prose(api):
     item, = [item for item in response.json() if item["kind"] == "block_revision"]
     assert item["proposed_body"].strip() == UPSTREAM
     assert item["skill_id"] == skill.id
-    assert api.services.store.blocks_for_section(section.id)[0].body == LOCAL
+    assert api.services.store.blocks_for_section(section.id, tenant_id="acme")[0].body == LOCAL
     return skill.id, section.id, item
 
 
@@ -93,10 +93,10 @@ def _decide(api, item_id, action="accept", **extra):
 def _state(api, skill, section, item_id):
     store = api.services.store
     return {
-        "blocks": [asdict(block) for block in store.blocks_for_section(section)],
+        "blocks": [asdict(block) for block in store.blocks_for_section(section, tenant_id="acme")],
         "item": asdict(api.services.queue.get(item_id)),
         "versions": [asdict(version) for version in store.skill_versions("acme", skill)],
-        "rules": [asdict(rule) for rule in store.rules_for_skill(skill)],
+        "rules": [asdict(rule) for rule in store.rules_for_skill(skill, tenant_id="acme")],
     }
 
 
@@ -117,8 +117,8 @@ def test_operator_source_merge_is_explicit_versioned_and_published_once(api, rep
     decision = api.services.queue.get(item["id"])
     assert decision.resolved and decision.decided_by and decision.decided_at
     expected = replacement or UPSTREAM
-    assert api.services.store.blocks_for_section(section)[0].body.strip() == expected
-    assert api.services.store.get_content_block(item["subject_id"]).body == LOCAL
+    assert api.services.store.blocks_for_section(section, tenant_id="acme")[0].body.strip() == expected
+    assert api.services.store.get_content_block(item["subject_id"], tenant_id="acme").body == LOCAL
     assert len(api.services.store.skill_versions("acme", skill)) == versions_before + 1
     replay = _decide(api, item["id"], **({} if replacement is None else {"body": replacement}))
     assert replay.status_code == 200 and replay.json() == response.json()
@@ -136,7 +136,7 @@ def test_rejection_keeps_operator_text_and_records_a_terminal_choice(api):
     versions_before = api.services.store.skill_versions("acme", skill)
     response = _decide(api, item["id"], "reject")
     assert response.status_code == 200, response.text
-    assert api.services.store.blocks_for_section(section)[0].body == LOCAL
+    assert api.services.store.blocks_for_section(section, tenant_id="acme")[0].body == LOCAL
     assert api.services.store.skill_versions("acme", skill) == versions_before
     assert api.services.queue.get(item["id"]).resolved
     assert _decide(api, item["id"], "reject").status_code == 200
@@ -152,7 +152,7 @@ def test_source_retry_never_erases_an_existing_review_decision(api, action, body
     assert asdict(api.services.queue.get(item["id"])) == decided, (
         "re-import rewrote the original review's decision or attribution")
     assert any(row.id == item["id"] for row in api.services.queue.history("acme"))
-    assert api.services.store.blocks_for_section(section)[0].body.strip() == (body or LOCAL)
+    assert api.services.store.blocks_for_section(section, tenant_id="acme")[0].body.strip() == (body or LOCAL)
     assert api.client.get("/api/import-review").json() == [], "an unchanged source must not reopen review"
     changed_source = "Keep expense records in the shared regional finance archive."
     _upload(api, changed_source)
@@ -160,7 +160,7 @@ def test_source_retry_never_erases_an_existing_review_decision(api, action, body
                   if row["kind"] == "block_revision"]
     assert next_item["id"] != item["id"]
     assert next_item["proposed_body"].strip() == changed_source
-    assert next_item["subject_id"] == api.services.store.blocks_for_section(section)[0].id
+    assert next_item["subject_id"] == api.services.store.blocks_for_section(section, tenant_id="acme")[0].id
     assert asdict(api.services.queue.get(item["id"])) == decided
 
 
@@ -172,14 +172,14 @@ def test_stale_prose_approval_is_refused_without_losing_the_newer_edit(api):
     assert refused.status_code == 409, refused.text
     assert _state(api, skill, section, item["id"]) == before
     assert _decide(api, item["id"], "reject").status_code == 200
-    assert api.services.store.blocks_for_section(section)[0].body == MERGED
+    assert api.services.store.blocks_for_section(section, tenant_id="acme")[0].body == MERGED
 
 
 @pytest.mark.parametrize("action", ["accept", "reject"])
 def test_import_removal_requires_an_explicit_review_and_preserves_lineage(api, action):
     _upload(api)
     skill, = api.services.store.skills_for_tenant("acme")
-    original, = api.services.store.rules_for_skill(skill.id)
+    original, = api.services.store.rules_for_skill(skill.id, tenant_id="acme")
     _upload(api, rule="Verify claim totals before approval.")
     item, = [item for item in api.client.get("/api/import-review").json()
              if item["kind"] == "removal"]
@@ -198,7 +198,7 @@ def test_import_removal_requires_an_explicit_review_and_preserves_lineage(api, a
 def test_section_reclassification_cannot_silently_apply_a_rejected_rule_removal(api):
     _upload(api, rules_heading="Instructions")
     skill, = api.services.store.skills_for_tenant("acme")
-    original, = api.services.store.rules_for_skill(skill.id)
+    original, = api.services.store.rules_for_skill(skill.id, tenant_id="acme")
     _upload(api, rule="Verify claim totals before approval.", rules_heading="Instructions")
     item, = [item for item in api.client.get("/api/import-review").json()
              if item["kind"] == "removal"]
@@ -225,7 +225,7 @@ def test_repeating_source_after_rejected_removal_keeps_the_resolved_audit(api):
 def test_concurrent_imports_serialize_and_retries_preserve_the_review_decision(api, monkeypatch):
     _upload(api)
     skill, = api.services.store.skills_for_tenant("acme")
-    section, = [row for row in api.services.store.sections_for_skill(skill.id) if row.heading == "Process"]
+    section, = [row for row in api.services.store.sections_for_skill(skill.id, tenant_id="acme") if row.heading == "Process"]
     _edit(api, skill.id, section.id, LOCAL)
     queue_type = type(api.services.queue)
     method = "enqueue_once" if hasattr(queue_type, "enqueue_once") else "enqueue"
@@ -341,7 +341,7 @@ def test_concurrent_import_review_decisions_commit_one_content_change(api, confl
         results = list(pool.map(decide, range(4)))
     assert len([result for result in results if result == "conflict"]) == (2 if conflicting else 0)
     assert len(api.services.store.skill_versions("acme", skill)) == baseline + 1
-    assert len(api.services.store.blocks_for_section(section)) == 1
+    assert len(api.services.store.blocks_for_section(section, tenant_id="acme")) == 1
     assert api.services.queue.get(item["id"]).resolved
 
 
@@ -480,7 +480,7 @@ def test_identical_reimport_preserves_distinct_manual_reinforcement_counts(api):
     _upload(api)
     store = api.services.store
     skill, = store.skills_for_tenant("acme")
-    imported, = store.rules_for_skill(skill.id)
+    imported, = store.rules_for_skill(skill.id, tenant_id="acme")
     assert imported.corroboration_count == 1
     for transaction in ("reimport-reinforcement-a", "reimport-reinforcement-b"):
         assert _manual_rule_decision(api, transaction, skill.id, imported.body,
@@ -519,7 +519,7 @@ def test_reimport_preserves_inherited_count_and_separates_another_source_skill(a
     _upload(api)
     store = api.services.store
     skill, = store.skills_for_tenant("acme")
-    imported, = store.rules_for_skill(skill.id)
+    imported, = store.rules_for_skill(skill.id, tenant_id="acme")
     # Enterprise supersession/merge can carry counters without copying every
     # predecessor's lineage. Import must preserve this legitimate baseline.
     imported.corroboration_count = 7
@@ -539,7 +539,7 @@ def test_reimport_preserves_inherited_count_and_separates_another_source_skill(a
         assert len(_observed_import_sources(store, imported.id)) == 1
         assert len(store.lineage(imported.id)) == 1
         other, = [s for s in store.skills_for_tenant("acme") if s.id != skill.id]
-        other_rule, = store.rules_for_skill(other.id)
+        other_rule, = store.rules_for_skill(other.id, tenant_id="acme")
         assert other_rule.id != imported.id and other_rule.corroboration_count == 1
 
 
@@ -578,7 +578,7 @@ def test_import_observation_waits_for_an_inflight_manual_reinforcement(api, monk
     _upload(api)
     store = api.services.store
     skill, = store.skills_for_tenant("acme")
-    imported, = store.rules_for_skill(skill.id)
+    imported, = store.rules_for_skill(skill.id, tenant_id="acme")
     captured = api.client.post("/api/ingest", headers=ORIGIN, json={
         "transaction_id": "manual-observation-race", "correction": imported.body,
         "skill_hint": skill.id, "source_ref": "session:manual-observation-race",
@@ -654,7 +654,7 @@ def test_concurrent_first_imports_cannot_reset_an_already_observed_rule(api, mon
             first.result(timeout=15)
             second.result(timeout=15)
     skill, = store.skills_for_tenant("acme")
-    rule, = store.rules_for_skill(skill.id)
+    rule, = store.rules_for_skill(skill.id, tenant_id="acme")
     assert len(_observed_import_sources(store, rule.id)) == 1
     assert len(store.lineage(rule.id)) == 1
     assert rule.corroboration_count == 1, "the stale initial insert erased an observed source"

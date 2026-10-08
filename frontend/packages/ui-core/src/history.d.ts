@@ -3,6 +3,7 @@ export interface HistoryEntry {
   id: string; at?: string; cause: string; actor_person_id?: string | null;
   detail?: string | null; revision?: string; added?: number; removed?: number;
   changed_kinds?: Record<string, number>;
+  source_operation_id?: string | null; source_origin_id?: string | null; source_revision?: string | null;
 }
 export const IMPORT_CAUSE: string;
 export function historySentence(entry: HistoryEntry, people?: Map<string, string>, baseline?: boolean): string;

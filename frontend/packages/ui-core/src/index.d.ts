@@ -45,3 +45,8 @@ export interface ManualItem {
 export function ManualReviewCard(props: { item: ManualItem; skills: { id: string; name: string }[]; onDecision: (decision: ManualDecision) => Promise<unknown>; createSkillHref?: string; draft?: ManualReviewDraft; onDraftChange?: (draft: ManualReviewDraft) => void; loadDocument?: (skillId: string) => Promise<ManualDocument> }): ReactNode;
 
 export { collectionPage, CollectionPagination, CollectionViewToggle, CollectionList, CollectionMultiSelect } from "./collection.js";
+export * from "./source-discovery.js";
+export * from "./source-card.js";
+export * from "./source-files.js";
+export { SourceStatus, SourceUndo, sourceBulkExclusions } from "./source-status.js";
+export type { SourceRefDisplay, SourceOperationDisplay, SourceUndoGuard } from "./source-status.js";

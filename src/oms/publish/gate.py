@@ -45,13 +45,13 @@ class _Owners:
             sections: dict[str, str] = {}
             blocks: dict[str, str] = {}
             for skill_id in skills:
-                for rule in self._store.rules_for_skill(skill_id):
+                for rule in self._store.rules_for_skill(skill_id, tenant_id=self._tenant_id):
                     rules.setdefault(rule.id, set()).add(skill_id)
-                for section in self._store.sections_for_skill(skill_id):
+                for section in self._store.sections_for_skill(skill_id, tenant_id=self._tenant_id):
                     sections[section.id] = skill_id
-                    for rule in self._store.rules_for_section(section.id):
+                    for rule in self._store.rules_for_section(section.id, tenant_id=self._tenant_id):
                         rules.setdefault(rule.id, set()).add(skill_id)
-                    for block in self._store.blocks_for_section(section.id):
+                    for block in self._store.blocks_for_section(section.id, tenant_id=self._tenant_id):
                         blocks[block.id] = skill_id
             self._index = (skills, rules, sections, blocks)
         return self._index
@@ -88,7 +88,7 @@ def _unwritable_artefacts(store: GraphStore, tenant_id: str,
     for skill in store.skills_for_tenant(tenant_id):
         if select is not None and not select(skill):
             continue
-        for artefact, path in store.artefacts_for_skill(skill.id):
+        for artefact, path in store.artefacts_for_skill(skill.id, tenant_id=tenant_id):
             if blob_store is None or not blob_store.exists(artefact.content_ref):
                 missing.append(f"skills/{skill.id}/{path}")
     return missing

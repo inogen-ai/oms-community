@@ -147,11 +147,12 @@ def test_capabilities_match_community_routes_and_do_not_disclose_private_setting
     assert response.status_code == 200
     capabilities = response.json()
     assert capabilities["edition"] == "community"
-    assert capabilities["api_contract_version"] in ("1.0", "1.1")
-    assert capabilities["schema_version"] == 1
+    assert capabilities["api_contract_version"] == "1.2"
+    assert capabilities["schema_version"] == 2
     assert capabilities["manual_learning"] is True
     assert all(capabilities[name] is False for name in PRIVATE_CAPABILITIES)
-    assert set(capabilities) == {"edition", "api_contract_version", "schema_version", "manual_learning", *PRIVATE_CAPABILITIES}
+    assert capabilities["github_skill_sources"] is False
+    assert set(capabilities) == {"edition", "api_contract_version", "schema_version", "manual_learning", "github_skill_sources", *PRIVATE_CAPABILITIES}
     schema = api.client.get("/openapi.json").json()
     assert "/api/review" in schema["paths"]
     assert "/api/review/{transaction_id}/decision" in schema["paths"]
@@ -374,7 +375,7 @@ def test_foreign_skill_is_absent_from_detail_preview_graph_and_mutation(api):
         assert "Foreign confidential" not in response.text
     response = api.client.patch("/api/skills/private-skill", json={"name": "Changed"}, headers={"Origin": UI_ORIGIN})
     assert response.status_code == 404
-    assert api.services.store.get_skill("private-skill").name == "Private Skill"
+    assert api.services.store.get_skill("private-skill", tenant_id="other").name == "Private Skill"
     assert "private-skill" not in api.client.get("/api/skills").text
     assert "private-rule" not in api.client.get("/api/rules").text
     assert "Foreign confidential" not in api.client.get("/api/graph").text

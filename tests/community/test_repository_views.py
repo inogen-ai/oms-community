@@ -121,7 +121,7 @@ def test_transaction_filter_precedes_limit_and_lineage_is_chronological(reposito
     rule = Rule(id="receipt-rule", body="Keep receipts.", tenant_id="acme")
     rules.upsert_rule(rule)
     for identifier in ("third", "first", "second"):
-        rules.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule.id, to_id=identifier))
+        rules.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule.id, to_id=identifier), tenant_id="acme")
     reader = _only(store, GraphReader)
     assert [row.id for row in reader.lineage(rule.id)] == ["first", "second", "third"]
     assert not hasattr(reader, "run_query")
@@ -160,23 +160,23 @@ def test_custody_supersession_keeps_original_evidence_and_rule_placement(reposit
     new = ContentBlock(id="after", content_ref="sha256-after", kind=SectionKind.PROSE,
                        tenant_id="acme", source_ref="expenses/SKILL.md", body="Updated policy.")
     view.upsert_content_block(old)
-    view.attach_block(old, section.id)
-    view.supersede_block(old.id, new, section.id)
-    assert [(block.id, block.body) for block in view.blocks_for_section(section.id)] == [
+    view.attach_block(old, section.id, tenant_id="acme")
+    view.supersede_block(old.id, new, section.id, tenant_id="acme")
+    assert [(block.id, block.body) for block in view.blocks_for_section(section.id, tenant_id="acme")] == [
         ("after", "Updated policy.")]
-    assert view.get_content_block(old.id).body == "Old policy."
-    assert view.get_content_block(old.id).status is BlockStatus.SUPERSEDED
-    assert view.section_for_block(old.id).id == section.id
+    assert view.get_content_block(old.id, tenant_id="acme").body == "Old policy."
+    assert view.get_content_block(old.id, tenant_id="acme").status is BlockStatus.SUPERSEDED
+    assert view.section_for_block(old.id, tenant_id="acme").id == section.id
     rule = Rule(id="receipt-rule", body="Keep receipts.", tenant_id="acme")
     store.upsert_rule(rule)
     with pytest.raises(SectionMutabilityError):
-        view.attach_rule(rule, section.id, order=7, group="Evidence")
+        view.attach_rule(rule, section.id, order=7, group="Evidence", tenant_id="acme")
     rules_section = Section(id="expense-rules", skill_id="expenses", kind=SectionKind.RULES,
                             heading="Rules", order=2, mutability=Mutability.SYSTEM_AGGREGATED,
                             tenant_id="acme")
     view.upsert_section(rules_section)
-    view.attach_rule(rule, rules_section.id, order=7, group="Evidence")
-    placement = view.rule_placements_for_section(rules_section.id)
+    view.attach_rule(rule, rules_section.id, order=7, group="Evidence", tenant_id="acme")
+    placement = view.rule_placements_for_section(rules_section.id, tenant_id="acme")
     assert [(row.rule_id, row.order, row.group) for row in placement] == [
         (rule.id, 7, "Evidence")]
 
@@ -219,7 +219,7 @@ def test_history_capture_operates_through_only_its_declared_repository():
     _skill(store)
     rule = Rule(id="receipt-rule", body="Keep receipts.", tenant_id="acme")
     store.upsert_rule(rule)
-    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule.id, to_id="expenses"))
+    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule.id, to_id="expenses"), tenant_id="acme")
     history = SkillHistory(store=_only(store, HistoryCaptureRepository), publisher=Publisher(store))
     first = history.capture_required("expenses", "acme", cause=SkillVersionCause.CREATED)
     assert first is not None
@@ -237,7 +237,7 @@ def test_catalogue_operates_through_only_its_declared_repository():
     store = InMemoryGraphStore()
     _skill(store)
     store.upsert_rule(Rule(id="receipt-rule", body="Keep receipts.", tenant_id="acme"))
-    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="receipt-rule", to_id="expenses"))
+    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="receipt-rule", to_id="expenses"), tenant_id="acme")
     catalogue = SkillCatalogue(_only(store, CatalogueRepository), Publisher(store),
                                read_policy=SingleWorkspaceReadPolicy("acme"))
     assert [skill.id for skill in catalogue.list_skills("acme")] == ["expenses"]

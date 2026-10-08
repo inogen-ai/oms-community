@@ -2,16 +2,16 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { communityNavigation } from "@inogen/oms-client";
-import { BrandMark, ProductMark } from "@inogen/oms-ui-core";
+import { BrandMark, ProductMark, Notice } from "@inogen/oms-ui-core";
 import { MobileNavigation } from "@inogen/oms-ui-core/mobile-navigation";
 import logo from "@inogen/oms-ui-core/assets/inogen_logo_darkmode.png";
 import productLogo from "@inogen/oms-ui-core/assets/oms_logo_darkthemev2.png";
-import { BookOpen, FileUp, House, Inbox, ListChecks, LockKeyhole, Network, PanelLeftClose, PanelLeftOpen, Send, Settings } from "lucide-react";
+import { BookOpen, FileUp, GitBranch, House, Inbox, ListChecks, LockKeyhole, Network, PanelLeftClose, PanelLeftOpen, Send, Settings } from "lucide-react";
 import { useWorkspace } from "@/lib/workspace";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import EditionPreview from "./EditionPreview";
 
-const icons = { "/": House, "/skills": BookOpen, "/inbox": Inbox, "/rules": ListChecks, "/import": FileUp, "/publish": Send, "/graph": Network, "/settings": Settings };
+const icons = { "/": House, "/skills": BookOpen, "/sources": GitBranch, "/inbox": Inbox, "/rules": ListChecks, "/import": FileUp, "/publish": Send, "/graph": Network, "/settings": Settings };
 const PAID_PREVIEW = "#people-and-teams-preview";
 const paidLabel = "People and teams, Paid feature preview";
 
@@ -26,7 +26,7 @@ function CommunityNavigationLink({ href, children, ...props }: {
 }
 
 export default function Shell({ children }: { children: ReactNode }) {
-  const { capabilities } = useWorkspace();
+  const { capabilities, sourceWorkspaceNotice } = useWorkspace();
   const [collapsed, setCollapsed] = useState(false);
   const [preview, setPreview] = useState(false);
   const paidControl = useRef<HTMLButtonElement>(null);
@@ -38,6 +38,7 @@ export default function Shell({ children }: { children: ReactNode }) {
   }
   const pathname = usePathname();
   const navigation = communityNavigation(capabilities);
+  if (capabilities.github_skill_sources) navigation.splice(2, 0, { href: "/sources", label: "Sources", key: "sources" });
   const workspaceNavigation = navigation.filter(item => !["graph", "settings"].includes(item.key));
   const manageNavigation = navigation.filter(item => ["graph", "settings"].includes(item.key));
   const current = navigation.find((item) => item.href.replace(/\/$/, "") === pathname.replace(/\/$/, ""));
@@ -71,7 +72,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         navigationLabel="Main navigation" wideQuery="(min-width: 721px)" /></div>
       <div className="sidebar-brand"><BrandMark logoSrc={logo.src} /></div>
     </aside>
-    <div className="content-wrap"><header className="topbar"><span>Workspace <span className="breadcrumb-divider">/</span> <strong>{current?.label || "OMS"}</strong></span><span className="local-badge">Local · Community</span></header><main id="content">{children}</main></div>
+    <div className="content-wrap"><header className="topbar"><span>Workspace <span className="breadcrumb-divider">/</span> <strong>{current?.label || "OMS"}</strong></span><span className="local-badge">Local · Community</span></header><main id="content">{sourceWorkspaceNotice && <Notice>{sourceWorkspaceNotice}</Notice>}{children}</main></div>
     {preview && <EditionPreview onClose={closePreview} />}
   </div>;
 }

@@ -18,7 +18,7 @@ def world(tmp_path):
     services = build_memory(tmp_path / "workspace", "local")
     services.store.upsert_skill(Skill(id="checks", name="Checks", description="Review the publication.", domain="engineering", tenant_id="local"))
     services.store.upsert_rule(Rule(id="check-rule", body="Check the result before publishing.", tenant_id="local"))
-    services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="check-rule", to_id="checks"))
+    services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="check-rule", to_id="checks"), tenant_id="local")
     with TestClient(create_app(services), base_url="http://127.0.0.1:4317") as client:
         yield services, client
 

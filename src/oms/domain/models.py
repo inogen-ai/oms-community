@@ -70,6 +70,8 @@ class Skill:
     # name, which is only unique within its original package.
     import_source_ref: str | None = None
     import_name: str | None = None
+    declared_license: str | None = None
+    document_mode: int | None = None
 
 
 @dataclass
@@ -301,6 +303,7 @@ class Artefact:
     tenant_id: str
     source_ref: str          # path including the artefact dir
     created_at: datetime = field(default_factory=_now)
+    mode: int | None = None
 
 
 @dataclass
@@ -312,6 +315,9 @@ class Publication:
     content_hash: str        # sha256 hex of bytes the publisher wrote
     published_at: datetime
     tenant_id: str
+    mode: int | None = None
+    manifest_json: str | None = None
+    policy_version: str | None = None
 
 
 @dataclass
@@ -407,6 +413,9 @@ class SkillUploadRecord:
     decided_by: str | None = None
     decided_at: datetime | None = None
     reason: str | None = None
+    source_preview_id: str | None = None
+    source_operation_id: str | None = None
+    source_progress_json: str | None = None
 
 @dataclass(frozen=True)
 class QuarantinedPayload:
@@ -493,3 +502,7 @@ class SkillVersion:
     parts_json: str = "[]"
     metadata_json: str = "{}"
     rules_json: str = "[]"
+    files_json: str | None = None
+    source_operation_id: str | None = None
+    source_origin_id: str | None = None
+    source_revision: str | None = None

@@ -20,6 +20,8 @@ def main(argv=None):
     sub.add_parser("review")
     imp = sub.add_parser("import")
     imp.add_argument("path", type=Path)
+    imp.add_argument("--target", action="append", default=[], metavar="[PACKAGE=]SKILL",
+                     help="Explicit existing local stream target; repeat for multiple packages.")
     ingest = sub.add_parser("ingest")
     ingest.add_argument("correction")
     ingest.add_argument("--skill-hint")
@@ -70,8 +72,28 @@ def main(argv=None):
             from oms.web.capabilities import capabilities_for
             result = capabilities_for("community", services, build_routes(services))
         elif args.command == "import":
+            if services.sources is not None:
+                from oms.sources.local_import import import_local_path
+                from oms.sources.errors import SourceError
+                try:
+                    outcome = import_local_path(services.sources, services.importer,
+                        services.sources.policy.context(), args.path, targets=tuple(args.target))
+                except (SourceError, ValueError, OSError) as exc:
+                    print(f"Import refused: {exc}", file=sys.stderr)
+                    return 1
+                print(outcome.model_dump_json(indent=2))
+                return 0 if outcome.state == "complete" else 1
+            if args.target:
+                print("Import refused: source reconciliation is disabled.", file=sys.stderr)
+                return 1
             method = services.importer.import_directory if args.path.is_dir() else services.importer.import_file
-            result = asdict(method(args.path, settings.tenant_id))
+            from oms.import_skills.identity import ImportIdentityConflict
+            from oms.sources.errors import SourceConflict, StaleMutation
+            try:
+                result = asdict(method(args.path, settings.tenant_id))
+            except (ImportIdentityConflict, SourceConflict, StaleMutation) as exc:
+                print(f"Import refused: {exc}", file=sys.stderr)
+                return 1
         elif args.command == "ingest":
             from oms.ingestion.contribution import ContributionRequest, correction_payload
             from oms.domain.types import SourceRuntime

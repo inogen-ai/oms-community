@@ -14,8 +14,8 @@ from fastapi.testclient import TestClient
 import pytest
 
 from oms.community.app import build_community, build_memory
-from oms.domain.models import Edge, Rule, Skill
-from oms.domain.types import EdgeType, SkillVersionCause
+from oms.domain.models import Artefact, Edge, Rule, Skill
+from oms.domain.types import ArtefactKind, EdgeType, SkillVersionCause
 from oms.settings.core import CoreSettings
 from oms.web.api import create_app
 from tests.community.test_critic_workflow import critic_neo4j_driver  # noqa: F401
@@ -43,7 +43,7 @@ def workspace(request, tmp_path):
         driver = request.getfixturevalue("critic_neo4j_driver")
         with driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n").consume()
-        services = build_community(CoreSettings(data_dir=tmp_path / "data", tenant_id="acme"), driver)
+        services = build_community(CoreSettings(data_dir=tmp_path / "data", tenant_id="acme", github_skill_sources=False), driver)
     with TestClient(create_app(services), base_url="http://127.0.0.1:4317") as client:
         yield Workspace(client, services, tmp_path)
 
@@ -120,7 +120,7 @@ def _seed_rule(workspace, rule_id, skill_id, *, tenant="acme"):
     rule = Rule(id=rule_id, body=f"Review the record for {rule_id}.", tenant_id=tenant)
     workspace.services.store.upsert_rule(rule)
     workspace.services.store.attach_edge(Edge(
-        type=EdgeType.BELONGS_TO, from_id=rule.id, to_id=skill_id))
+        type=EdgeType.BELONGS_TO, from_id=rule.id, to_id=skill_id), tenant_id=tenant)
     return rule
 
 
@@ -204,7 +204,7 @@ def test_muting_survives_reload_and_removes_published_skill_and_index_entry(work
     assert not (output / "skills" / skill_id).exists()
     assert "Expense Review" not in (output / "AGENTS.md").read_text()
     assert "Expense Review" not in (output / "CLAUDE.md").read_text()
-    assert workspace.services.store.get_skill(skill_id) is not None, "muting must retain the skill and its history"
+    assert workspace.services.store.get_skill(skill_id, tenant_id="acme") is not None, "muting must retain the skill and its history"
     unmuted = workspace.client.patch(f"/api/skills/{skill_id}", headers=ORIGIN,
         json={"publish_enabled": True})
     assert unmuted.status_code == 200, unmuted.text
@@ -375,6 +375,7 @@ def test_graph_expansion_can_page_past_a_thousand_neighbors_without_leaking_fore
     # Insertion order differs from ID order: paging must remain deterministic.
     for rule_id in sorted(expected, reverse=True):
         _seed_rule(workspace, rule_id, central.id)
+    _seed_skill(workspace, central.id, tenant="other")
     _seed_rule(workspace, "foreign-rule", central.id, tenant="other")
     offset, seen, edges = 0, set(), set()
     for _ in range(12):
@@ -408,9 +409,11 @@ def test_rule_expansion_is_bidirectional_and_tenant_scoped(workspace):
     second = _seed_skill(workspace, "second")
     foreign = _seed_skill(workspace, "foreign", tenant="other")
     rule = _seed_rule(workspace, "shared", first.id)
-    for skill in (second, foreign):
+    workspace.services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO,
+        from_id=rule.id, to_id=second.id), tenant_id="acme")
+    with pytest.raises((ValueError, KeyError)):
         workspace.services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO,
-            from_id=rule.id, to_id=skill.id))
+            from_id=rule.id, to_id=foreign.id), tenant_id="acme")
     response = workspace.client.get(f"/api/graph/nodes/{rule.id}/neighbours")
     assert response.status_code == 200, response.text
     page = response.json()
@@ -420,6 +423,30 @@ def test_rule_expansion_is_bidirectional_and_tenant_scoped(workspace):
         (rule.id, first.id), (rule.id, second.id)}
     response = workspace.client.get(f"/api/graph/nodes/{foreign.id}/neighbours")
     assert response.status_code == 404, response.text
+
+
+def test_graph_routes_open_every_neighbour_of_a_colliding_id(workspace):
+    from urllib.parse import quote
+    store = workspace.services.store
+    licence = Artefact(id="artefact-licence", content_ref="digest", kind=ArtefactKind.OTHER,
+                       name="LICENSE", size=3, tenant_id="acme", source_ref="LICENSE")
+    for skill_id in ("security", "audit"):
+        _seed_skill(workspace, skill_id)
+        store.upsert_artefact(licence, skill_id, "legal/LICENSE", tenant_id="acme")
+        store.upsert_tag("security", "security")
+        store.attach_edge(Edge(type=EdgeType.TAGGED_WITH, from_id=skill_id, to_id="security"), tenant_id="acme")
+    response = workspace.client.get("/api/graph/nodes/security/neighbours")
+    assert response.status_code == 200, response.text
+    page = response.json()
+    assert sorted(node["kind"] for node in page["nodes"]) == ["artefact", "tag"]
+    for node in page["nodes"]:
+        path = "/api/graph/nodes/" + quote(node["id"], safe="")
+        details = workspace.client.get(path)
+        assert details.status_code == 200, details.text
+        assert details.json() == node
+        neighbours = workspace.client.get(path + "/neighbours")
+        assert neighbours.status_code == 200, neighbours.text
+        assert "security" in {other["id"] for other in neighbours.json()["nodes"]}
 
 
 def test_graph_expansion_reaches_source_structure_files_and_correction_evidence(workspace):

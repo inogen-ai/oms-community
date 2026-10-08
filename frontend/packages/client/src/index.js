@@ -1,10 +1,14 @@
 /** Public transport only. No installation secrets or edition-specific endpoints. */
 export class HttpError extends Error {
-  constructor(message, status, code = "request_failed") {
+  constructor(message, status, code = "request_failed", metadata = {}) {
     super(message);
     this.name = "HttpError";
     this.status = status;
     this.code = code;
+    this.retry_after_seconds = Number.isFinite(metadata.retry_after_seconds) && metadata.retry_after_seconds >= 0
+      ? metadata.retry_after_seconds : null;
+    this.operation_id = typeof metadata.operation_id === "string" && metadata.operation_id
+      ? metadata.operation_id : null;
   }
 }
 
@@ -18,8 +22,8 @@ const capabilityNames = [
 export function parseCapabilities(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)
       || !["community", "pro", "enterprise"].includes(value.edition)
-      || !["1.0", "1.1"].includes(value.api_contract_version)
-      || value.schema_version !== 1) {
+      || !((["1.0", "1.1"].includes(value.api_contract_version) && value.schema_version === 1)
+        || (value.api_contract_version === "1.2" && value.schema_version === 2))) {
     throw new Error("This server uses an unsupported OMS API contract. Install matching application and API versions.");
   }
   const parsed = {
@@ -32,6 +36,11 @@ export function parseCapabilities(value) {
     }
     parsed[name] = value[name];
   }
+  const sources = value.github_skill_sources;
+  if (typeof sources !== "boolean" && !(sources === undefined && value.schema_version === 1)) {
+    throw new Error("The server capability document is incomplete: github_skill_sources.");
+  }
+  parsed.github_skill_sources = sources ?? false;
   return Object.freeze(parsed);
 }
 
@@ -46,6 +55,18 @@ export const communityNavigation = (capabilities) => [
   { href: "/settings", label: "Settings", key: "settings" },
 ];
 
+function safeApiPath(path) {
+  if (typeof path !== "string" || !path.startsWith("/api/") || /[\\#\x00-\x20\x7f]/.test(path)) return false;
+  let pathname = path.split("?")[0];
+  for (let pass = 0; pass < 16; pass++) {
+    if (pathname.includes("\\") || pathname.split("/").some(part => part === "." || part === "..")) return false;
+    const decoded = pathname.replace(/%(25|2e|2f|5c)/ig, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    if (decoded === pathname) return true;
+    pathname = decoded;
+  }
+  return false;
+}
+
 export function createClient({ baseUrl = "", fetch: fetcher, requestPolicy = "local" } = {}) {
   if (!["local", "browser"].includes(requestPolicy)) throw new Error("Unknown OMS request policy.");
   const base = baseUrl.replace(/\/+$/, "");
@@ -55,9 +76,9 @@ export function createClient({ baseUrl = "", fetch: fetcher, requestPolicy = "lo
       throw new Error("The OMS API URL must be HTTP or HTTPS without credentials, query or fragment.");
     }
   }
-  async function request(path, init) {
+  async function responseFor(path, init) {
     // Callers cannot turn this shared transport into an arbitrary URL fetch.
-    if (!path.startsWith("/api/") || path.startsWith("//") || path.includes("\\")) {
+    if (!safeApiPath(path)) {
       throw new Error("An OMS API request must use an absolute /api/ path.");
     }
     // Local mode never uses ambient browser credentials. Other applications
@@ -70,13 +91,27 @@ export function createClient({ baseUrl = "", fetch: fetcher, requestPolicy = "lo
       let error;
       try { error = await response.json(); } catch { /* A proxy may return text. */ }
       const detail = typeof error?.detail === "string" ? error.detail : null;
+      const feature = error?.error ?? (typeof error?.detail === "object" ? error.detail : error);
+      const retryHeader = response.headers.get("Retry-After");
+      const retry = retryHeader && /^\d+$/.test(retryHeader) ? Number(retryHeader) : null;
       throw new HttpError(
-        error?.error?.message || detail || response.statusText
+        feature?.message || detail || response.statusText
           || `${init?.method || "GET"} ${base}${path} failed with HTTP ${response.status}`,
-        response.status, error?.error?.code || "request_failed",
+        response.status, feature?.code ?? "request_failed",
+        { operation_id: feature?.operation_id, retry_after_seconds: feature?.retry_after_seconds ?? retry },
       );
     }
+    return response;
+  }
+  async function request(path, init) {
+    const response = await responseFor(path, init);
     return response.status === 204 ? undefined : response.json();
+  }
+  async function requestBytes(path, init) {
+    const response = await responseFor(path, init);
+    return { bytes: new Uint8Array(await response.arrayBuffer()),
+      content_type: response.headers.get("Content-Type"),
+      content_disposition: response.headers.get("Content-Disposition") };
   }
   const id = (value) => encodeURIComponent(value);
   const send = (path, method, body) => request(path, {
@@ -85,7 +120,7 @@ export function createClient({ baseUrl = "", fetch: fetcher, requestPolicy = "lo
     }),
   });
   return {
-    request,
+    request, requestBytes,
     capabilities: async () => parseCapabilities(await request("/api/capabilities")),
     health: () => request("/api/health"),
     contribute: (body) => send("/api/ingest", "POST", body),
@@ -127,3 +162,6 @@ export function createClient({ baseUrl = "", fetch: fetcher, requestPolicy = "lo
     updateSettings: (body) => send("/api/settings", "PATCH", body),
   };
 }
+
+export { createSourcesClient } from "./sources.js";
+export { createSourceRequests, StaleSourceResponseError } from "./source-requests.js";

@@ -27,12 +27,12 @@ def _delete(workspace, skill_id):
 
 def _prose_section(workspace, skill_id):
     store = workspace.services.store
-    return next(section for section in store.sections_for_skill(skill_id)
-                if store.blocks_for_section(section.id))
+    return next(section for section in store.sections_for_skill(skill_id, tenant_id="acme")
+                if store.blocks_for_section(section.id, tenant_id="acme"))
 
 
 def _section_review(workspace, item_id, section, *, tenant="acme"):
-    block = workspace.services.store.blocks_for_section(section.id)[0]
+    block = workspace.services.store.blocks_for_section(section.id, tenant_id=section.tenant_id)[0]
     item = ReviewItem(id=item_id, kind="block_revision", subject_id=block.id,
         other_id=section.id, verdict=Verdict.AMBIGUOUS, tenant_id=tenant,
         reason="Review the changed source wording.", proposed_body="Keep the reviewed source wording.")
@@ -53,36 +53,36 @@ def _rule_examples(store, rule_id):
     # compare its durable content and custody rather than that transient field.
     return {example.id: {key: value for key, value in asdict(example).items()
                          if key != "created_at"}
-            for example in store.examples_for_rule(rule_id)}
+            for example in store.examples_for_rule(rule_id, tenant_id="acme")}
 
 
 def test_deletion_removes_owned_structure_and_all_skill_read_surfaces(workspace):
     skill_id = _import(workspace)
     store = workspace.services.store
     detail = _detail(workspace, skill_id)
-    sections = store.sections_for_skill(skill_id)
+    sections = store.sections_for_skill(skill_id, tenant_id="acme")
     assert sections and detail["artefacts"] and detail["versions"]
-    blocks = [block.id for section in sections for block in store.blocks_for_section(section.id)]
+    blocks = [block.id for section in sections for block in store.blocks_for_section(section.id, tenant_id="acme")]
     store.upsert_example(Example(id="owned-section-example", body="An example owned by this section.",
-        kind=ExampleKind.POSITIVE, tenant_id="acme", parent_section_id=sections[0].id))
+        kind=ExampleKind.POSITIVE, tenant_id="acme", parent_section_id=sections[0].id), tenant_id="acme")
     store.upsert_example(Example(id="owned-skill-example", body="An example owned by this skill.",
-        kind=ExampleKind.POSITIVE, tenant_id="acme", parent_skill_id=skill_id))
-    assert store.examples_for_skill(skill_id)
+        kind=ExampleKind.POSITIVE, tenant_id="acme", parent_skill_id=skill_id), tenant_id="acme")
+    assert store.examples_for_skill(skill_id, tenant_id="acme")
     report = _delete(workspace, skill_id)
     assert report["name"] == detail["name"]
     assert report["rules_detached"] == len(detail["rules"])
-    assert store.get_skill(skill_id) is None
-    assert store.sections_for_skill(skill_id) == []
-    assert store.artefacts_for_skill(skill_id) == []
-    assert store.examples_for_skill(skill_id) == []
+    assert store.get_skill(skill_id, tenant_id="acme") is None
+    assert store.sections_for_skill(skill_id, tenant_id="acme") == []
+    assert store.artefacts_for_skill(skill_id, tenant_id="acme") == []
+    assert store.examples_for_skill(skill_id, tenant_id="acme") == []
     assert store.skill_versions("acme", skill_id) == []
     for section in sections:
-        assert store.get_section(section.id) is None
-        assert store.blocks_for_section(section.id) == []
+        assert store.get_section(section.id, tenant_id="acme") is None
+        assert store.blocks_for_section(section.id, tenant_id="acme") == []
     for block_id in blocks:
-        assert store.get_content_block(block_id) is None
+        assert store.get_content_block(block_id, tenant_id="acme") is None
     for version in detail["versions"]:
-        assert store.get_skill_version(version["id"]) is None
+        assert store.get_skill_version(version["id"], tenant_id="acme") is None
 
     version = detail["versions"][0]["id"]
     for path in [f"/api/skills/{skill_id}", f"/api/skills/{skill_id}/document",
@@ -107,13 +107,13 @@ def test_shared_rules_evidence_and_other_skills_are_preserved(workspace):
     skill_id = _import(workspace)
     services, store = workspace.services, workspace.services.store
     keeper = _seed_skill(workspace, "keeper")
-    shared = store.rules_for_skill(skill_id)[0]
-    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=shared.id, to_id=keeper.id))
+    shared = store.rules_for_skill(skill_id, tenant_id="acme")[0]
+    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=shared.id, to_id=keeper.id), tenant_id="acme")
     sole = _seed_rule(workspace, "sole-rule", skill_id)
     store.upsert_example(Example(id="shared-rule-example", body="Keep the original receipt.",
-        kind=ExampleKind.POSITIVE, tenant_id="acme", parent_rule_id=shared.id))
-    artefact, _ = store.artefacts_for_skill(skill_id)[0]
-    store.upsert_artefact(artefact, keeper.id, "references/shared-resource.md")
+        kind=ExampleKind.POSITIVE, tenant_id="acme", parent_rule_id=shared.id), tenant_id="acme")
+    artefact, _ = store.artefacts_for_skill(skill_id, tenant_id="acme")[0]
+    store.upsert_artefact(artefact, keeper.id, "references/shared-resource.md", tenant_id="acme")
     keeper_before = _detail(workspace, keeper.id)
     rule_before, sole_before = asdict(shared), asdict(sole)
     lineage_before = {txn.id: asdict(txn) for txn in store.lineage(shared.id)}
@@ -125,8 +125,8 @@ def test_shared_rules_evidence_and_other_skills_are_preserved(workspace):
     assert report["rules_detached"] == 2
     assert asdict(store.get_rule(shared.id)) == rule_before
     assert asdict(store.get_rule(sole.id)) == sole_before
-    assert [skill.id for skill in store.skills_for_rule(shared.id)] == [keeper.id]
-    assert store.skills_for_rule(sole.id) == []
+    assert [skill.id for skill in store.skills_for_rule(shared.id, tenant_id="acme")] == [keeper.id]
+    assert store.skills_for_rule(sole.id, tenant_id="acme") == []
     assert {txn.id: asdict(txn) for txn in store.lineage(shared.id)} == lineage_before
     assert {txn_id: services.payloads.get(txn_id) for txn_id in lineage_before} == payloads_before
     assert _rule_examples(store, shared.id) == examples_before
@@ -135,7 +135,7 @@ def test_shared_rules_evidence_and_other_skills_are_preserved(workspace):
     for rule in keeper_before["rules"]:
         rule["skill_ids"] = [sid for sid in rule["skill_ids"] if sid != skill_id]
     assert _detail(workspace, keeper.id) == keeper_before
-    assert store.artefacts_for_skill(keeper.id)[0][0].content_ref == artefact.content_ref
+    assert store.artefacts_for_skill(keeper.id, tenant_id="acme")[0][0].content_ref == artefact.content_ref
     assert services.blobs.get(artefact.content_ref)
     assert {rule["id"] for rule in workspace.client.get("/api/rules").json()} == {shared.id, sole.id}
 
@@ -152,10 +152,10 @@ def test_only_reviews_for_deleted_sections_are_resolved(workspace):
     block = ContentBlock(id="keeper-block", content_ref="sha256-keeper", kind=SectionKind.PROSE,
         tenant_id="acme", body="Keep the other skill's source.", source_ref="skills/keeper/SKILL.md")
     store.upsert_content_block(block)
-    store.attach_block(block, other_section.id)
+    store.attach_block(block, other_section.id, tenant_id="acme")
     kept = _section_review(workspace, "kept-source-review", other_section)
     foreign = _section_review(workspace, "foreign-review", section, tenant="other")
-    rule = store.rules_for_skill(skill_id)[0]
+    rule = store.rules_for_skill(skill_id, tenant_id="acme")[0]
     rule_item = ReviewItem(id="kept-rule-review", kind="removal", subject_id=rule.id,
         other_id=None, verdict=Verdict.AMBIGUOUS, tenant_id="acme", reason="Review this retained rule.")
     queue.enqueue_once(rule_item)
@@ -179,8 +179,8 @@ def test_only_reviews_for_deleted_sections_are_resolved(workspace):
         response = workspace.client.post(f"/api/import-review/{doomed.id}/decision", headers=ORIGIN,
             json={"action": action})
         assert response.status_code == 409, response.text
-    assert store.get_skill(skill_id) is None
-    assert store.get_section(section.id) is None
+    assert store.get_skill(skill_id, tenant_id="acme") is None
+    assert store.get_section(section.id, tenant_id="acme") is None
 
 
 def test_delete_rolls_back_graph_queue_and_publications_on_failure(workspace, monkeypatch):
@@ -242,7 +242,7 @@ def test_recreating_and_reimporting_cannot_inherit_deleted_document_history(work
     assert INTRO in imported["body"] and NEW_INTRO not in imported["body"]
     assert {version["id"] for version in imported["versions"]}.isdisjoint(old_versions)
     assert asdict(workspace.services.store.get_rule(rule_id)) == retained_rule
-    assert [skill.id for skill in workspace.services.store.skills_for_rule(rule_id)] == [skill_id]
+    assert [skill.id for skill in workspace.services.store.skills_for_rule(rule_id, tenant_id="acme")] == [skill_id]
     assert workspace.services.queue.pending("acme") == []
 
 
@@ -273,7 +273,7 @@ def test_delete_refuses_foreign_tenants_and_browser_origins_without_writes(works
     skill_id = _import(workspace)
     foreign = _seed_skill(workspace, "other-workspace-skill", tenant="other")
     local_before = _detail(workspace, skill_id)
-    foreign_before = asdict(workspace.services.store.get_skill(foreign.id))
+    foreign_before = asdict(workspace.services.store.get_skill(foreign.id, tenant_id=foreign.tenant_id))
     for target in (foreign.id, "missing-skill"):
         assert workspace.client.delete(f"/api/skills/{target}", headers=ORIGIN).status_code == 404
     for headers in [{"Origin": "https://untrusted.example"}, {"Origin": "null"},
@@ -287,4 +287,4 @@ def test_delete_refuses_foreign_tenants_and_browser_origins_without_writes(works
         **ORIGIN, "Access-Control-Request-Method": "DELETE"})
     assert preflight.status_code == 200 and "DELETE" in preflight.headers["Access-Control-Allow-Methods"]
     assert _detail(workspace, skill_id) == local_before
-    assert asdict(workspace.services.store.get_skill(foreign.id)) == foreign_before
+    assert asdict(workspace.services.store.get_skill(foreign.id, tenant_id=foreign.tenant_id)) == foreign_before

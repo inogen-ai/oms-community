@@ -213,37 +213,41 @@ class DeterministicScreen:
     """Pattern-based screen. Never raises; unknown shapes score 0.0."""
 
     def screen(self, text: str) -> ScreenResult:
+        try:
+            return self.screen_required(text)
+        except Exception:  # legacy ingestion keeps its non-blocking behavior
+            return CLEAN
+
+    def screen_required(self, text: str) -> ScreenResult:
+        """Run the deterministic check without turning a failed check into clean evidence."""
         if not text or not text.strip():
             return CLEAN
-        try:
-            probed = probe(text)
-            hits = {name for name, (pattern, _) in _CATEGORY_PATTERNS.items()
-                    if pattern.search(probed)}
-            hit_patterns = [pattern for name, (pattern, _) in _CATEGORY_PATTERNS.items()
-                            if name in hits]
-            score = max((weight for name, (_, weight) in _CATEGORY_PATTERNS.items()
-                         if name in hits), default=0.0)
-            if _INVISIBLE.search(text):
-                hits.add("invisible-characters")
-                score = max(score, 0.5)
-            # Several independent shapes in one text is far past coincidence.
-            if len(hits) > 1:
-                score = min(1.0, score + 0.2 * (len(hits) - 1))
-            # Policy framing halves the score: a rule about attacks is not an
-            # attack. Halving rather than clearing keeps a genuinely dangerous
-            # text flagged even when it is dressed as policy, since only a
-            # single weak signal falls below the threshold this way.
-            if score and _policy_framed(probed, hit_patterns):
-                score = round(score / 2, 2)
-                hits = hits | {"policy-framing(suppressed)"}
-            # Located against `text`, not `probed`: see _locate. Skipped
-            # entirely when nothing was found, so a clean text costs no extra
-            # regex pass.
-            spans = _locate(text, hit_patterns) if hits else ()
-            return ScreenResult(score=round(score, 2), categories=frozenset(hits),
-                                spans=spans)
-        except Exception:  # a screen must never cost a correction
-            return CLEAN
+        probed = probe(text)
+        hits = {name for name, (pattern, _) in _CATEGORY_PATTERNS.items()
+                if pattern.search(probed)}
+        hit_patterns = [pattern for name, (pattern, _) in _CATEGORY_PATTERNS.items()
+                        if name in hits]
+        score = max((weight for name, (_, weight) in _CATEGORY_PATTERNS.items()
+                     if name in hits), default=0.0)
+        if _INVISIBLE.search(text):
+            hits.add("invisible-characters")
+            score = max(score, 0.5)
+        # Several independent shapes in one text is far past coincidence.
+        if len(hits) > 1:
+            score = min(1.0, score + 0.2 * (len(hits) - 1))
+        # Policy framing halves the score: a rule about attacks is not an
+        # attack. Halving rather than clearing keeps a genuinely dangerous
+        # text flagged even when it is dressed as policy, since only a
+        # single weak signal falls below the threshold this way.
+        if score and _policy_framed(probed, hit_patterns):
+            score = round(score / 2, 2)
+            hits = hits | {"policy-framing(suppressed)"}
+        # Located against `text`, not `probed`: see _locate. Skipped
+        # entirely when nothing was found, so a clean text costs no extra
+        # regex pass.
+        spans = _locate(text, hit_patterns) if hits else ()
+        return ScreenResult(score=round(score, 2), categories=frozenset(hits),
+                            spans=spans)
 
 
 class NullScreen:

@@ -6,6 +6,8 @@ import { HistorySummary } from "@inogen/oms-ui-core/history";
 import { ArrowLeft, FileText, History, Pencil, Trash2, Volume2, VolumeX } from "lucide-react";
 import { Feedback, ResourceStatus, useAction, useResource, useWorkspace } from "@/lib/workspace";
 import { PageHeading } from "./Shell";
+import SkillSourcePanel from "./SkillSourcePanel";
+import SourceSkillHistory from "./SourceSkillHistory";
 import type { SkillDraft, UpdateDraft } from "./Skills";
 
 const tabs = ["Preview", "Markdown source", "Edit document", "Files", "History"] as const;
@@ -14,15 +16,15 @@ type Tab = typeof tabs[number];
 export default function SkillDetail({ id, domains, draft, onDraftChange, onBack, onDeleted }: {
   id: string; domains: string[]; draft: SkillDraft; onDraftChange: UpdateDraft; onBack: () => void; onDeleted: (result: SkillDeletion) => void;
 }) {
-  const { api } = useWorkspace();
-  const resource = useResource(() => api.skill(id), [api, id]);
+  const { api, sourceRevision } = useWorkspace();
+  const resource = useResource(() => api.skill(id), [api, id, sourceRevision]);
   return <><Button variant="secondary" onClick={onBack}><ArrowLeft size={15} />All skills</Button><ResourceStatus resource={resource} />{resource.data?.id === id && <SkillEditor skill={resource.data} domains={domains} refresh={resource.refresh} draft={draft} onDraftChange={onDraftChange} onDeleted={onDeleted} />}</>;
 }
 
 function SkillEditor({ skill, domains, draft, onDraftChange, refresh, onDeleted }: {
   skill: Skill; domains: string[]; draft: SkillDraft; onDraftChange: UpdateDraft; refresh: () => void; onDeleted: (result: SkillDeletion) => void;
 }) {
-  const { api } = useWorkspace();
+  const { api, capabilities } = useWorkspace();
   const [tab, setTab] = useState<Tab>("Preview");
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -52,6 +54,7 @@ function SkillEditor({ skill, domains, draft, onDraftChange, refresh, onDeleted 
       <label>Domain<input required maxLength={200} list={domainId} value={details.domain} disabled={action.busy} onChange={event => onDraftChange(current => ({ ...current, details: { ...details, domain: event.target.value } }))} /><datalist id={domainId}>{domains.map(domain => <option key={domain} value={domain} />)}</datalist></label><p className="muted">Choose an existing domain or type a new one. Imports without an explicit domain use “general”.</p>
       <div className="actions"><Button type="submit" disabled={action.busy}>Save details</Button><Button variant="secondary" disabled={action.busy} onClick={() => { onDraftChange(current => ({ ...current, details: undefined })); setEditing(false); }}>Discard detail edits</Button></div>
     </form></Panel>}
+    {capabilities.github_skill_sources && <details className="compact"><summary>Source tracking</summary><SkillSourcePanel skill={skill} /></details>}
     <div className="document-tabs" role="tablist" aria-label="Skill views">{tabs.map((name, index) => <button key={name} id={`${tabId}-${index}`} role="tab" aria-selected={tab === name} aria-controls={`${tabId}-panel`} tabIndex={tab === name ? 0 : -1} onClick={() => setTab(name)} onKeyDown={event => {
       let next = index;
       if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
@@ -66,7 +69,7 @@ function SkillEditor({ skill, domains, draft, onDraftChange, refresh, onDeleted 
       {tab === "Markdown source" && <Panel title="Markdown source"><pre className="document">{skill.body || "No guidance yet."}</pre></Panel>}
       {tab === "Edit document" && <DocumentEditor skill={skill} draft={draft} onDraftChange={onDraftChange} refresh={refresh} />}
       {tab === "Files" && <SkillFiles skill={skill} />}
-      {tab === "History" && <SkillHistory skillId={skill.id} dirty={dirty} onRestored={refresh} />}
+      {tab === "History" && <><SkillHistory skillId={skill.id} dirty={dirty} onRestored={refresh} />{capabilities.github_skill_sources && <SourceSkillHistory skillId={skill.id} dirty={dirty} />}</>}
     </section>
   </>;
 }
@@ -114,8 +117,8 @@ function FileContent({ skillId, path }: { skillId: string; path: string }) {
 }
 
 function SkillHistory({ skillId, dirty, onRestored }: { skillId: string; dirty: boolean; onRestored: () => void }) {
-  const { api } = useWorkspace();
-  const versions = useResource(() => api.versions(skillId), [api, skillId]);
+  const { api, sourceRevision } = useWorkspace();
+  const versions = useResource(() => api.versions(skillId), [api, skillId, sourceRevision]);
   const [selected, setSelected] = useState({ id: "", request: 0 });
   const [view, setView] = useState<VersionComparisonView>("overview");
   return <div className="history-workspace"><Panel title="Saved versions"><ResourceStatus resource={versions} /><p className="muted">Choose a version to compare with the current document. Restore only the changes you want.</p><ol className="version-picker">{versions.data?.map(version => <li key={version.id}><button data-version-id={version.id} aria-pressed={selected.id === version.id} onClick={() => setSelected(current => ({ id: version.id, request: current.request + 1 }))}><History size={15} /><HistorySummary entry={version} people={new Map([["local-operator", "Local operator"]])} /></button></li>)}</ol>{versions.data?.length === 0 && <EmptyState title="No saved versions yet" />}</Panel>{selected.id ? <HistoryComparison key={`${selected.id}:${selected.request}`} skillId={skillId} versionId={selected.id} dirty={dirty} view={view} onViewChange={setView} onRestored={() => { versions.refresh(); onRestored(); }} /> : <Panel><EmptyState title="Choose a saved version">Compare wording, review changes, and bring back selected sections or rules.</EmptyState></Panel>}</div>;

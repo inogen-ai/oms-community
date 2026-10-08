@@ -28,19 +28,27 @@ rather than from an operator's own checkout:
 from __future__ import annotations
 
 import shutil
+import os
+import re
+import stat
+import time
+import unicodedata
 import uuid
 import zipfile
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from oms.domain.ids import normalise as _normalise
 from oms.domain.repo import ReservedSkillId
-from oms.import_skills.importer import ImportReport, SkillImporter
+from oms.import_skills.importer import ImportReport, ImportState, PreparedImport, SkillImporter
 from oms.import_skills.identity import ImportIdentityConflict
 from oms.import_skills.parser import ParsedSkill
 from oms.ingestion.schema import ExecutionContext
 from oms.ports.graph_store import GraphStore
+from oms.sources.errors import SourceConflict, StaleMutation
+from oms.sources.models import LocalPackage
 
 # The longest filename kept, and what an unusable one becomes. Both are about
 # display rather than safety - the name is never joined onto a path, only
@@ -49,6 +57,9 @@ from oms.ports.graph_store import GraphStore
 # nothing downstream can read.
 _MAX_FILENAME = 200
 _FALLBACK_FILENAME = "upload.zip"
+# What `stage` writes under the staging root: the extracted tree, its retained
+# manifest, and a manifest's temporary file. Anything else there is left alone.
+_STAGED_ENTRY = re.compile(r"(upload-[0-9a-f]{32})(?:\.json)?|\.source-stage-.+")
 
 
 def clean_filename(raw: str) -> str:
@@ -111,6 +122,9 @@ class UploadLimits:
     max_total_bytes: int = 100_000_000        # 100MB extracted, so a zip bomb stops here
     max_file_bytes: int = 10_000_000          # 10MB per file
     max_files: int = 2_000
+    # A preview nobody applied or discarded within this long is swept, so an
+    # abandoned upload costs disk for a day rather than for ever.
+    max_staged_seconds: int = 86_400
 
 
 @dataclass
@@ -128,6 +142,7 @@ class SkillDiff:
     # reviewer is not told the description will change when it will not.
     kept_curated: list[str] = field(default_factory=list)
     source_ref: str = ""
+    domain: str = "general"
 
 
 @dataclass
@@ -145,6 +160,10 @@ class StagedUpload:
     # discards this object.
     filename: str = "upload.zip"
     identities: dict[str, str] = field(default_factory=dict)
+    source_packages: tuple[LocalPackage, ...] = ()
+    # Missing metadata belongs to a pre-purpose manifest and must be re-previewed.
+    purpose: Literal["direct", "queue"] | None = None
+    queue_upload_id: str | None = None
 
 
 def _reject_unsafe_members(archive: zipfile.ZipFile, limits: UploadLimits) -> None:
@@ -160,10 +179,15 @@ def _reject_unsafe_members(archive: zipfile.ZipFile, limits: UploadLimits) -> No
         raise UploadTooLarge(
             f"the archive holds {len(members)} files; the limit is {limits.max_files}")
     total = 0
+    paths = set()
     for member in members:
         if member.is_dir():
             continue
         name = member.filename
+        key = unicodedata.normalize("NFC", name).casefold()
+        if key in paths or "\\" in name or "\x00" in name:
+            raise UnsafeArchive("the archive contains colliding or unsupported paths")
+        paths.add(key)
         if name.startswith("/") or Path(name).is_absolute():
             raise UnsafeArchive(f"{name!r} is an absolute path")
         if ".." in Path(name).parts:
@@ -173,6 +197,8 @@ def _reject_unsafe_members(archive: zipfile.ZipFile, limits: UploadLimits) -> No
         # host that later follows it, that is a read of whatever it names.
         if (member.external_attr >> 16) & 0xF000 == 0xA000:
             raise UnsafeArchive(f"{name!r} is a symbolic link")
+        if stat.S_IFMT(member.external_attr >> 16) not in {0, stat.S_IFREG}:
+            raise UnsafeArchive(f"{name!r} is not a regular file")
         if member.file_size > limits.max_file_bytes:
             raise UploadTooLarge(
                 f"{name!r} is {member.file_size // 1024}KB; the per-file limit is "
@@ -187,18 +213,24 @@ def _reject_unsafe_members(archive: zipfile.ZipFile, limits: UploadLimits) -> No
 class UploadService:
     def __init__(self, *, store: GraphStore, importer: SkillImporter,
                  staging_root: Path, sanitiser=None,
-                 limits: UploadLimits | None = None) -> None:
+                 limits: UploadLimits | None = None, source_service=None) -> None:
         self._store = store
         self._importer = importer
         self._staging_root = Path(staging_root)
         self._sanitiser = sanitiser
         self._limits = limits or UploadLimits()
         self._staged: dict[str, StagedUpload] = {}
+        self._states: dict[str, ImportState] = {}
+        self._source_service = source_service
+
+    def configure_sources(self, service) -> None:
+        self._source_service = service
 
     # -- intake ---------------------------------------------------------------
 
     def stage(self, archive: bytes, tenant_id: str,
-             filename: str = "upload.zip") -> StagedUpload:
+             filename: str = "upload.zip", *, purpose: Literal["direct", "queue"] = "direct",
+             queue_upload_id: str | None = None) -> StagedUpload:
         """Extract, parse and diff. Writes nothing to the graph.
 
         `filename` is the archive's own name - the multipart upload's
@@ -209,6 +241,9 @@ class UploadService:
         stored, so every caller gets the same safe-to-display value back,
         whatever it sent.
         """
+        if purpose not in {"direct", "queue"} or (purpose == "direct" and queue_upload_id is not None):
+            raise UploadRefused("Invalid upload intake purpose")
+        self._sweep_abandoned()
         filename = clean_filename(filename)
         if len(archive) > self._limits.max_archive_bytes:
             raise UploadTooLarge(
@@ -221,14 +256,35 @@ class UploadService:
         with zf:
             _reject_unsafe_members(zf, self._limits)
             upload_id = f"upload-{uuid.uuid4().hex}"
+            if purpose == "queue" and queue_upload_id is None:
+                queue_upload_id = upload_id
             root = self._staging_root / upload_id
             root.mkdir(parents=True, exist_ok=True)
             try:
                 zf.extractall(root)
+                if os.name != "nt":
+                    for member in zf.infolist():
+                        if not member.is_dir():
+                            (root / member.filename).chmod(0o755 if (member.external_attr >> 16) & 0o111 else 0o644)
             except Exception:
                 shutil.rmtree(root, ignore_errors=True)
                 raise
 
+        if self._source_service is not None:
+            from oms.sources.local_upload import stage_source
+            try:
+                return stage_source(self, root, upload_id, tenant_id, filename,
+                                    purpose=purpose, queue_upload_id=queue_upload_id)
+            except Exception as exc:
+                shutil.rmtree(root, ignore_errors=True)
+                (self._staging_root / (upload_id + ".json")).unlink(missing_ok=True)
+                self._staged.pop(upload_id, None)
+                self._states.pop(upload_id, None)
+                if isinstance(exc, (SourceConflict, ValueError)):
+                    raise UploadRefused(exc.code if isinstance(exc, SourceConflict) else "invalid source package") from exc
+                raise
+
+        state = self._importer.capture_state(tenant_id)
         try:
             parsed = self._importer.prepare_directory(root, tenant_id)
         except (ReservedSkillId, ImportIdentityConflict) as exc:
@@ -252,9 +308,43 @@ class UploadService:
         diffs = [self._diff(skill, tenant_id, warnings) for skill in parsed.skills]
         staged = StagedUpload(id=upload_id, tenant_id=tenant_id, root=root,
                               skills=diffs, warnings=warnings, filename=filename,
+                              purpose=purpose, queue_upload_id=queue_upload_id,
                               identities={skill.source_path or skill.source_ref: skill.id for skill in parsed.skills})
         self._staged[upload_id] = staged
+        self._states[upload_id] = state
         return staged
+
+    def _sweep_abandoned(self) -> None:
+        """Remove previews older than the age limit, whoever staged them.
+
+        A preview is abandoned when nobody applies or discards it, and a
+        browser that closes leaves exactly that. An upload is judged by its
+        newest entry, and its manifest goes before its tree, so a half-swept
+        upload reads as gone rather than as a manifest naming no files.
+        """
+        cutoff = time.time() - self._limits.max_staged_seconds
+        groups: dict[str, list[Path]] = {}
+        try:
+            entries = list(self._staging_root.iterdir())
+        except FileNotFoundError:
+            return
+        for entry in entries:
+            match = _STAGED_ENTRY.fullmatch(entry.name)
+            if match is not None:
+                groups.setdefault(match.group(1) or entry.name, []).append(entry)
+        for upload_id, paths in groups.items():
+            try:
+                if max(path.lstat().st_mtime for path in paths) > cutoff:
+                    continue
+            except FileNotFoundError:
+                continue
+            self._staged.pop(upload_id, None)
+            self._states.pop(upload_id, None)
+            for path in sorted(paths, key=lambda path: path.is_dir() and not path.is_symlink()):
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
 
     # -- the dry run ----------------------------------------------------------
 
@@ -267,7 +357,7 @@ class UploadService:
         restating the rule is what keeps the preview from disagreeing with the
         apply.
         """
-        existing_skill = self._store.get_skill(skill.id)
+        existing_skill = self._store.get_skill(skill.id, tenant_id=tenant_id)
         in_tenant = existing_skill is not None and existing_skill.tenant_id == tenant_id
         diff = SkillDiff(skill_id=skill.id, name=skill.name, is_new=not in_tenant,
                          source_ref=skill.source_ref)
@@ -275,7 +365,7 @@ class UploadService:
             diff.kept_curated = sorted(existing_skill.curated)
 
         known = {(_normalise(r.body), r.polarity)
-                 for r in (self._store.rules_for_skill(skill.id) if in_tenant else [])}
+                 for r in (self._store.rules_for_skill(skill.id, tenant_id=tenant_id) if in_tenant else [])}
         for rule in skill.rules:
             if not rule.body.strip():
                 continue
@@ -287,7 +377,7 @@ class UploadService:
                 known.add(key)
 
         sections = {s.heading: s for s in
-                    (self._store.sections_for_skill(skill.id) if in_tenant else [])}
+                    (self._store.sections_for_skill(skill.id, tenant_id=tenant_id) if in_tenant else [])}
         for parsed_section in skill.sections:
             if not parsed_section.body.strip():
                 continue
@@ -295,7 +385,7 @@ class UploadService:
             if section is None:
                 diff.sections_added.append(parsed_section.heading)
                 continue
-            active = self._store.blocks_for_section(section.id)
+            active = self._store.blocks_for_section(section.id, tenant_id=tenant_id)
             current = active[0].body if active else ""
             if current != parsed_section.body:
                 diff.sections_changed.append((parsed_section.heading, parsed_section.body))
@@ -341,9 +431,27 @@ class UploadService:
 
     def get(self, upload_id: str, tenant_id: str) -> StagedUpload:
         staged = self._staged.get(upload_id)
+        if staged is None and self._source_service is not None:
+            from oms.sources.local_upload import restore_stage
+            staged = restore_stage(self, upload_id, tenant_id)
         if staged is None or staged.tenant_id != tenant_id:
             raise UploadNotFound(f"no staged upload {upload_id!r}")
+        self._touch(staged)
         return staged
+
+    def _touch(self, staged: StagedUpload) -> None:
+        """Mark a preview in use, so the sweep judges it from its last read.
+
+        A queue reviewer can hold a preview open for longer than the age
+        limit; which previews a pending queue item still names is not known
+        here, so every read counts as use.
+        """
+        now = time.time()
+        for path in (self._staging_root / (staged.id + ".json"), staged.root):
+            try:
+                os.utime(path, (now, now), follow_symlinks=False)
+            except FileNotFoundError:
+                pass
 
     def apply(self, upload_id: str, tenant_id: str) -> ImportReport:
         """Run the real importer over the staged tree, then discard it.
@@ -353,14 +461,24 @@ class UploadService:
         underneath it and the diff the administrator approved would no longer
         be the diff they get.
         """
-        staged = self.get(upload_id, tenant_id)
+        if self._source_service is not None:
+            raise UploadRefused("Choose the local stream explicitly before applying this package")
+        self.get(upload_id, tenant_id)
         try:
-            return self._importer.import_directory(
-                staged.root, tenant_id=tenant_id, expected_identities=staged.identities)
-        except ImportIdentityConflict as exc:
+            return self._importer.apply_prepared(self.prepare_apply(upload_id, tenant_id))
+        except (ImportIdentityConflict, SourceConflict, StaleMutation) as exc:
             raise UploadRefused(str(exc)) from exc
         finally:
             self.discard(upload_id, tenant_id)
+
+    def prepare_apply(self, upload_id: str, tenant_id: str) -> PreparedImport:
+        """Run checks outside the caller's transaction and retain the preview fence."""
+        if self._source_service is not None:
+            raise UploadRefused("Source reconciliation is required for this package")
+        staged = self.get(upload_id, tenant_id)
+        return self._importer.prepare_import_directory(staged.root, tenant_id,
+            filename=staged.filename, expected_identities=staged.identities,
+            state=self._states[upload_id])
 
     def discard(self, upload_id: str, tenant_id: str) -> None:
         """Remove a staged upload and its files.
@@ -370,6 +488,7 @@ class UploadService:
         "that upload is gone" is information, and swallowing it would let a
         second browser tab believe it had discarded something it had not.
         """
+        self.get(upload_id, tenant_id)
         staged = self._staged.pop(upload_id, None)
         if staged is None:
             raise UploadNotFound(f"no staged upload {upload_id!r}")
@@ -377,6 +496,9 @@ class UploadService:
             # Put it back: this caller has no business removing it.
             self._staged[upload_id] = staged
             raise UploadNotFound(f"no staged upload {upload_id!r}")
+        self._states.pop(upload_id, None)
+        if self._source_service is not None:
+            (self._staging_root / (upload_id + ".json")).unlink(missing_ok=True)
         shutil.rmtree(staged.root, ignore_errors=True)
 
 
