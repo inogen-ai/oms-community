@@ -346,7 +346,7 @@
     },
     "frontend/community/package.json": {
       "mode": 420,
-      "sha256": "afeea9a30eb6094537d245bcf5c53b032914e8326650df6663d16f748e6a2a4e"
+      "sha256": "870d4f58782f72beb291dee3d51c73d49920bac31c569fb1274b3d7e9798571f"
     },
     "frontend/community/playwright.config.ts": {
       "mode": 420,
@@ -374,7 +374,7 @@
     },
     "frontend/community/test/source-components.test.mjs": {
       "mode": 420,
-      "sha256": "df6aa919154f42363ee2c848204639080bb7f75e81850d422ce63e53aed5ec67"
+      "sha256": "a9619db75c8b0691c77f216e0551231d874f47cffa9aaed303396b9c8793e17e"
     },
     "frontend/community/tsconfig.json": {
       "mode": 420,

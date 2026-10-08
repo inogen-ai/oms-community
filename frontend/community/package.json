@@ -7,7 +7,7 @@
     "build": "next build --webpack",
     "start": "node scripts/serve.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test ../packages/client/test/*.test.mjs test/*.test.mjs",
+    "test": "node --preserve-symlinks --test ../packages/client/test/*.test.mjs test/*.test.mjs",
     "e2e": "playwright test",
     "e2e:real": "playwright test --config playwright.real.config.ts"
   },
