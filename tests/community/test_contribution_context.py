@@ -266,7 +266,7 @@ def test_graph_reads_never_carry_the_session_context(store):
         session_summary="Ship the release.", project_name="Release",
         reuse_case="Future release builds", learning_evidence="The wheel was missing a file."))
     store.upsert_rule(Rule(id="rule-1", body="Build the wheel before tagging.", tenant_id="acme"))
-    store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id="rule-1", to_id="context-1"))
+    store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id="rule-1", to_id="context-1"), tenant_id="acme")
     node = store.graph_node("context-1", "acme")
     (neighbour,) = [found for found in store.graph_neighbours("rule-1", "acme")["nodes"]
                     if found["id"] == "context-1"]

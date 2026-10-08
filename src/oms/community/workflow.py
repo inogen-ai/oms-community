@@ -180,7 +180,7 @@ class ManualReviewService:
             rule = store.get_rule(rule_id)
             if rule.status is not RuleStatus.ACTIVE or rule.plane is not Plane.DATA:
                 raise ManualDecisionError("Only active guidance can be amended.")
-            affected.update(skill.id for skill in store.skills_for_rule(rule_id)
+            affected.update(skill.id for skill in store.skills_for_rule(rule_id, tenant_id=txn.tenant_id)
                             if skill.tenant_id == tenant_id)
         if affected != set(amendment.affected_skill_ids):
             raise DecisionConflict("The affected skills changed. Reload and review all affected skills before applying.")
@@ -203,7 +203,7 @@ class ManualReviewService:
                     store.upsert_rule(rule)
                 else:
                     service.edit_rule(skill_id, rule_id, tenant_id, part.text, actor=actor)
-                store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule_id, to_id=txn.id))
+                store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule_id, to_id=txn.id), tenant_id=txn.tenant_id)
             else:
                 service.revise_block(skill_id, part.anchor[6:], tenant_id, part.text,
                                      actor=actor, transaction_id=txn.id)
@@ -245,7 +245,7 @@ class ManualReviewService:
         matcher = matcher or LocalMatcher(skills, rules)
         exact_matches, similar_matches = matcher.rules_for(body)
         for match in similar_matches:
-            match["skill_ids"] = sorted(skill.id for skill in store.skills_for_rule(match["id"])
+            match["skill_ids"] = sorted(skill.id for skill in store.skills_for_rule(match["id"], tenant_id=txn.tenant_id)
                                         if skill.tenant_id == txn.tenant_id)
         return {"transaction_id": txn.id, "txn_id": txn.id, "text": body,
                 "state": effective_state(txn, store), "skill_hint": txn.skill_hint,
@@ -325,7 +325,7 @@ class ManualReviewService:
                     raise ManualDecisionError("a nonempty rule and at least one selected skill are required")
                 self._safe_wording(body, txn)
                 for skill_id in skill_ids:
-                    skill = store.get_skill(skill_id)
+                    skill = store.get_skill(skill_id, tenant_id=tenant_id)
                     if skill is None or skill.tenant_id != tenant_id:
                         raise ManualDecisionError("selected skill not found in this workspace")
                 if decision.action == "create":
@@ -333,7 +333,7 @@ class ManualReviewService:
                         document, _ = self._publisher(store).outline_skill(placement.skill_id, tenant_id)
                         if document_revision(document) != placement.revision:
                             raise DecisionConflict("This document has changed. Reload it before placing the new rule.")
-                        if placement.section_id not in {section["id"] for section in insertion_sections(store, placement.skill_id)}:
+                        if placement.section_id not in {section["id"] for section in insertion_sections(store, placement.skill_id, tenant_id=tenant_id)}:
                             raise ManualDecisionError("Choose a rule section in the selected skill.")
                     rule_id = f"rule-{txn.id}"
                     if store.get_rule(rule_id) is not None:
@@ -353,12 +353,12 @@ class ManualReviewService:
                     rule_id = rule.id
                     rule.corroboration_count += 1
                 store.upsert_rule(rule)
-                store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule_id, to_id=txn.id))
+                store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule_id, to_id=txn.id), tenant_id=tenant_id)
                 for skill_id in skill_ids:
-                    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id=skill_id))
+                    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id=skill_id), tenant_id=tenant_id)
                 for placement in decision.placements:
                     insert_rule(store, rule, placement)
-                skill_ids = sorted({s.id for s in store.skills_for_rule(rule_id)})
+                skill_ids = sorted({s.id for s in store.skills_for_rule(rule_id, tenant_id=tenant_id)})
             if decision.action == "reject":
                 store.mark_compile_failed(txn.id, "rejected by local operator", fault=False)
             txn.workflow_state = "rejected" if decision.action == "reject" else "applied"

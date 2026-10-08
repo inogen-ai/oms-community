@@ -38,7 +38,7 @@ def create_app(services, settings=None, *, route_bundles=None, advertised_capabi
         raise ValueError("Community routes and their capability declarations must match the core contract")
     capabilities = capabilities_for("community", services, bundles, advertised=advertised_capabilities)
     if any(value for name, value in capabilities.items() if name not in
-           ("edition", "api_contract_version", "schema_version", "manual_learning")):
+           ("edition", "api_contract_version", "schema_version", "manual_learning", "github_skill_sources")):
         raise ValueError("this composition does not implement the advertised capability")
 
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -110,8 +110,8 @@ def create_app(services, settings=None, *, route_bundles=None, advertised_capabi
 
     app.add_middleware(CORSMiddleware, allow_origins=list(settings.allowed_origins),
                        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
-                       allow_headers=["Content-Type", "MCP-Protocol-Version", "MCP-Session-Id"],
-                       expose_headers=["MCP-Session-Id"])
+                       allow_headers=["Content-Type", "MCP-Protocol-Version", "MCP-Session-Id", "Idempotency-Key", "X-Source-Workspace"],
+                       expose_headers=["MCP-Session-Id", "Retry-After", "Content-Disposition"])
 
     async def invalid(request, exc):
         status = 409 if isinstance(exc, (DecisionConflict, SkillExists)) else 422

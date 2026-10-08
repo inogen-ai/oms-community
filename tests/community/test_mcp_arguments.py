@@ -65,7 +65,7 @@ def services(tmp_path: Path) -> CoreServices:
                                    domain="engineering", tenant_id="acme"))
     built.store.upsert_rule(Rule(id="check-rule", body="Check the result before publishing.",
                                  tenant_id="acme"))
-    built.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="check-rule", to_id="checks"))
+    built.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="check-rule", to_id="checks"), tenant_id="acme")
     return built
 
 

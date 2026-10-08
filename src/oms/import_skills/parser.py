@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -148,6 +150,15 @@ class ParsedArtefact:
     kind: ArtefactKind
     body: bytes
     source_ref: str
+    mode: int | None = None
+
+
+@dataclass(frozen=True)
+class ParsedFile:
+    path: str
+    digest: str
+    size: int
+    mode: int | None
 
 
 @dataclass
@@ -165,6 +176,11 @@ class ParsedSkill:
     frontmatter_body: str = ""
     import_name: str | None = None
     source_path: str | None = None
+    declared_license: str | None = None
+    source_digest: str | None = None
+    source_mode: int | None = None
+    package_manifest: list[ParsedFile] = field(default_factory=list)
+    manifest_complete: bool = False
 
 
 @dataclass
@@ -787,8 +803,31 @@ def parse_skill_file(
         id=name, name=title, description=" ".join(fields.get("description", "").split()),
         domain=domain, tags=tags, rules=rules, source_ref=source_ref,
         examples=orphan_examples, sections=sections, frontmatter_body=_extract_frontmatter_block(text),
-        source_path=source_ref,
+        source_path=source_ref, declared_license=declared_license(text),
+        source_digest=hashlib.sha256(text.encode("utf-8")).hexdigest(),
     )
+
+
+def declared_license(text: str) -> str | None:
+    """Retain a supported YAML string scalar exactly; absence is checked separately."""
+    raw = _extract_frontmatter_block(text)
+    try:
+        document = yaml.compose(raw, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(document, yaml.MappingNode):
+        return None
+    values = [value for key, value in document.value
+              if isinstance(key, yaml.ScalarNode) and key.value == "license"]
+    if len(values) == 1 and isinstance(values[0], yaml.ScalarNode) and values[0].tag == "tag:yaml.org,2002:str":
+        return values[0].value
+    return None
+
+
+def _file_mode(path: Path) -> int | None:
+    if os.name == "nt" or path.is_symlink():
+        return None
+    return 0o100755 if path.stat().st_mode & 0o111 else 0o100644
 
 
 def _extract_domain(name: str, vocab: TenantVocabulary | None, fields: dict[str, str]) -> str:
@@ -874,6 +913,9 @@ def parse_directory(
     root: Path,
     vocabulary: TenantVocabulary | None = None,
     classifier: SectionClassifier | None = None,
+    *,
+    selected_roots: tuple[str, ...] | None = None,
+    extract_constraints: bool = True,
 ) -> ParsedImport:
     """Walk a skill tree using the tenant vocabulary for layout discovery.
 
@@ -894,7 +936,7 @@ def parse_directory(
 
     # Constraints from any file matching vocabulary.constraint_file_names.
     constraint_names = set(vocabulary.body.get("constraint_file_names", ["CLAUDE.md"]))
-    for path in sorted(root.rglob("*")):
+    for path in sorted(root.rglob("*")) if extract_constraints else ():
         if not path.is_file() or _under_debris(path, root):
             continue
         if path.name in constraint_names:
@@ -910,6 +952,10 @@ def parse_directory(
     for pattern in entry_patterns:
         skill_files.extend(root.rglob(pattern))
     skill_files = sorted({f for f in skill_files if not _under_debris(f, root)})
+    package_roots = {path.parent for path in skill_files}
+    if selected_roots is not None:
+        selected = _selected_package_roots(root, selected_roots, package_roots)
+        skill_files = [path for path in skill_files if path.parent in selected]
 
     artefact_dirs: dict[str, list[str]] = vocabulary.body.get("artefact_dirs", {})
     # Reverse-lookup: dir_name -> ArtefactKind.
@@ -921,14 +967,26 @@ def parse_directory(
 
     for skill_md in skill_files:
         source_ref = skill_md.relative_to(root).as_posix()
+        primary_bytes = skill_md.read_bytes()
         skill = parse_skill_file(
-            skill_md.read_text(encoding="utf-8"),
+            primary_bytes.decode("utf-8"),
             source_ref=source_ref, vocabulary=vocabulary, classifier=classifier,
         )
         if skill is None:
             continue
 
         skill_root = skill_md.parent
+        nested_roots = {path for path in package_roots if skill_root in path.parents}
+        skill.source_digest = hashlib.sha256(primary_bytes).hexdigest()
+        skill.source_mode = _file_mode(skill_md)
+        package_files = [path for path in sorted(skill_root.rglob("*"))
+                         if path.is_file() and not _under_debris(path, skill_root)
+                         and not any(nested in path.parents for nested in nested_roots)]
+        skill.manifest_complete = not any(path.is_symlink() for path in package_files)
+        for path in package_files:
+            body = primary_bytes if path == skill_md else path.read_bytes()
+            skill.package_manifest.append(ParsedFile(path=path.relative_to(skill_root).as_posix(),
+                digest=hashlib.sha256(body).hexdigest(), size=len(body), mode=_file_mode(path)))
 
         # Only the publisher-owned overflow file round-trips back into
         # reference_only rules; it is a flat rule list by construction, so
@@ -937,12 +995,12 @@ def parse_directory(
         # copy below - shredding one into rules destroys its structure and
         # floods the graph with phrase-bank fragments.
         overflow_md = skill_root / REFERENCES_FILE
-        if overflow_md.is_file():
+        if overflow_md.is_file() and not any(path in overflow_md.parents for path in nested_roots):
             skill.rules.extend(parse_references(overflow_md.read_text(encoding="utf-8")))
 
         # Layout discovery for artefacts.
         for sub in sorted(skill_root.iterdir()):
-            if is_os_debris(sub.name):
+            if is_os_debris(sub.name) or sub in nested_roots:
                 continue
             if sub.is_file():
                 if sub == skill_md:
@@ -954,11 +1012,13 @@ def parse_directory(
                     kind=kind,
                     body=sub.read_bytes(),
                     source_ref=sub.relative_to(root).as_posix(),
+                    mode=_file_mode(sub),
                 ))
             elif sub.is_dir():
                 kind = dir_to_kind.get(sub.name, ArtefactKind.OTHER)
                 for f in sorted(sub.rglob("*")):
-                    if not f.is_file() or _under_debris(f, skill_root):
+                    if (not f.is_file() or _under_debris(f, skill_root)
+                            or any(path in f.parents for path in nested_roots)):
                         continue
                     rel_path = f.relative_to(skill_root).as_posix()
                     # Publisher-owned: regenerated from overflow rules at
@@ -971,8 +1031,26 @@ def parse_directory(
                         kind=kind,
                         body=f.read_bytes(),
                         source_ref=f.relative_to(root).as_posix(),
+                        mode=_file_mode(f),
                     ))
 
         result.skills.append(skill)
 
     return result
+
+
+def _selected_package_roots(root: Path, selections: tuple[str, ...],
+                            available: set[Path]) -> set[Path]:
+    selected: set[Path] = set()
+    for value in selections:
+        if (value.startswith("/") or "\\" in value or "\x00" in value
+                or (value and any(part in {"", ".", ".."} for part in value.split("/")))):
+            raise ValueError("Selected package must be a safe relative directory")
+        path = root / value
+        if path not in available or path in selected:
+            raise ValueError("Selected package is missing or repeated")
+        if any(parent.is_symlink() for parent in (path, *path.parents)
+               if parent == root or root in parent.parents):
+            raise ValueError("Selected package cannot follow a symbolic link")
+        selected.add(path)
+    return selected

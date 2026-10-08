@@ -3,12 +3,14 @@ import { useState } from "react";
 import Link from "next/link";
 import { Badge, Button, Notice, Panel } from "@inogen/oms-ui-core";
 import { Feedback, useAction, useWorkspace } from "@/lib/workspace";
+import SourceReview from "./SourceReview";
 import { importDecisionLabels, type ImportReviewItem } from "@/lib/local-review";
 
 export default function ImportReview({ item, onDecided }: { item: ImportReviewItem; onDecided: () => void }) {
-  const { api } = useWorkspace();
+  const { api, capabilities } = useWorkspace();
   const action = useAction();
   const [body, setBody] = useState(item.proposed_body ?? "");
+  if (item.kind === "skill_update") return capabilities.github_skill_sources ? <SourceReview id={item.subject_id} /> : <Notice>Source updates are unavailable on this server.</Notice>;
   const labels = importDecisionLabels[item.kind];
   if (!labels) return <Notice>A newer kind of import decision needs a matching application version.</Notice>;
   const editable = item.kind === "block_revision";

@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -6,8 +7,11 @@ from neo4j.graph import Node
 
 from oms.adapters.neo4j import schema
 from oms.adapters.neo4j.fulltext import fulltext_terms
+from oms.domain.identity import SkillRef
+from oms.domain.custody import effective_example_parent
+from oms.domain.relationships import EDGE_LABELS
 from oms.domain.models import (
-    Rule, Skill, Transaction, Edge, Learning, Constraint, Example,
+    Rule, Skill, Transaction, Edge, Learning, Constraint, Example, Tag,
     Section, ContentBlock, Artefact, Publication, PublishBlock, QuarantinedPayload,
     RulePage, RulePlacement, TenantVocabulary, UsageEvent, SkillVersion, SkillChange,
 )
@@ -58,19 +62,24 @@ class Neo4jGraphStore:
         self._write_rule(rule, create_only=True)
 
     def _write_rule(self, rule: Rule, *, create_only: bool) -> None:
-        assignment = "ON CREATE SET" if create_only else "SET"
+        assignment = ("ON CREATE SET" if create_only else
+                      "ON CREATE SET n.tenant_id=$tenant_id WITH n "
+                      "WHERE n.tenant_id=$tenant_id SET")
         with self._driver.session() as session:
-            session.run(
+            row = session.run(
                 "MERGE (n:Rule {id: $id}) "
                 f"{assignment} n:Entity, n.body=$body, n.tenant_id=$tenant_id, n.status=$status, "
                 "n.corroboration_count=$cc, n.reference_only=$ref, n.polarity=$pol, "
-                "n.plane=$plane, n.created_at=$created_at",
+                "n.plane=$plane, n.created_at=$created_at "
+                "WITH n WHERE n.tenant_id=$tenant_id RETURN n.id AS id",
                 id=rule.id, body=rule.body, tenant_id=rule.tenant_id,
                 status=rule.status.value, cc=rule.corroboration_count,
                 ref=rule.reference_only, pol=rule.polarity.value,
                 plane=rule.plane.value,
                 created_at=rule.created_at,
-            )
+            ).single()
+            if row is None:
+                raise ValueError("Rule ID belongs to another tenant")
 
     def get_rule(self, rule_id: str) -> Rule | None:
         with self._driver.session() as session:
@@ -89,8 +98,9 @@ class Neo4jGraphStore:
 
     def upsert_transaction(self, transaction: Transaction) -> None:
         with self._driver.session() as session:
-            session.run(
-                "MERGE (n:Transaction {id:$id}) "
+            row = session.run(
+                "MERGE (n:Transaction {id:$id}) ON CREATE SET n.tenant_id=$tenant_id "
+                "WITH n WHERE n.tenant_id=$tenant_id "
                 "SET n:Entity, n.signal_type=$st, n.source_runtime=$sr, "
                 "n.sanitised_payload_ref=$ref, n.timestamp=$ts, n.tenant_id=$tenant_id, "
                 "n.source_ref=$source_ref, n.skill_hint=$skill_hint, "
@@ -102,7 +112,8 @@ class Neo4jGraphStore:
                 "n.session_summary=$session_summary, n.project_name=$project_name, "
                 "n.reuse_case=$reuse_case, n.learning_evidence=$learning_evidence, "
                 "n.workflow_state=$workflow_state, n.workflow_decision=$workflow_decision, "
-                "n.workflow_rule_id=$workflow_rule_id, n.workflow_safety_digest=$workflow_safety_digest",
+                "n.workflow_rule_id=$workflow_rule_id, n.workflow_safety_digest=$workflow_safety_digest "
+                "RETURN n.id AS id",
                 id=transaction.id, st=transaction.signal_type.value,
                 sr=transaction.source_runtime.value, ref=transaction.sanitised_payload_ref,
                 ts=transaction.timestamp, tenant_id=transaction.tenant_id,
@@ -128,7 +139,9 @@ class Neo4jGraphStore:
                 workflow_decision=transaction.workflow_decision,
                 workflow_rule_id=transaction.workflow_rule_id,
                 workflow_safety_digest=transaction.workflow_safety_digest,
-            )
+            ).single()
+            if row is None:
+                raise ValueError("Transaction ID belongs to another tenant")
 
     def workflow_state_for(self, transaction_id: str) -> str:
         with self._driver.session() as session:
@@ -190,11 +203,12 @@ class Neo4jGraphStore:
     def upsert_skill(self, skill: Skill) -> None:
         with self._driver.session() as session:
             session.run(
-                "MERGE (n:Skill {id:$id}) "
+                "MERGE (n:Skill {storage_key:$storage_key}) SET n.id=$id "
                 "SET n:Entity, n.name=$name, n.description=$desc, n.domain=$domain, "
                 "n.tenant_id=$tenant_id, n.status=$status, n.curated=$curated, "
                 "n.origin=$origin, n.repo=$repo, n.publish_enabled=$publish_enabled, "
-                "n.import_source_ref=$import_source_ref, n.import_name=$import_name",
+                "n.import_source_ref=$import_source_ref, n.import_name=$import_name, "
+                "n.declared_license=$declared_license, n.document_mode=$document_mode",
                 id=skill.id, name=skill.name, desc=skill.description,
                 domain=skill.domain, tenant_id=skill.tenant_id,
                 status=skill.status.value, origin=skill.origin.value,
@@ -205,53 +219,41 @@ class Neo4jGraphStore:
                 publish_enabled=skill.publish_enabled,
                 import_source_ref=skill.import_source_ref,
                 import_name=skill.import_name,
-            )
+                declared_license=skill.declared_license, document_mode=skill.document_mode,
+             storage_key=SkillRef(skill.tenant_id, skill.id).storage_key, scope_tenant=skill.tenant_id)
 
-    def get_skill(self, skill_id: str) -> Skill | None:
+    def get_skill(self, skill_id: str, *, tenant_id: str) -> Skill | None:
         with self._driver.session() as session:
-            rec = session.run("MATCH (n:Skill {id:$id}) RETURN n", id=skill_id).single()
+            rec = session.run("MATCH (n:Skill {id:$id, tenant_id:$scope_tenant}) RETURN n", id=skill_id, scope_tenant=tenant_id).single()
             if rec is None:
                 return None
             return self._skill_from_node(rec["n"])
 
-    def delete_skill(self, skill_id: str) -> None:
-        # The skill's own custody structure goes with it. `DETACH DELETE` on the
-        # Skill alone dropped the HAS_SECTION edges and left the Section,
-        # ContentBlock and Example nodes behind, still carrying their text and
-        # still naming the skill in `skill_id`.
-        #
-        # That is worse than untidy, because `upsert_section` MERGEs on the
-        # section id: re-importing a package with the same skill id reattaches
-        # to the orphaned sections and silently re-adopts their blocks. Deleted
-        # prose would come back, from a skill an administrator believed gone,
-        # without appearing in any diff.
-        #
-        # Rules are deliberately NOT deleted - they survive unanchored, because
-        # provenance outlives the folder (SkillAdminService.delete_skill says
-        # so, and reports the count). Only what the skill itself owned goes.
-        #
-        # Skill versions go too, and for the same reattachment reason as
-        # sections: skill ids are a deterministic slug of the name
-        # (_skill_slug), so deleting a skill and later creating one with the
-        # same name inherits the same id. A version left behind would hand the
-        # new skill the deleted skill's whole history - parts_json and
-        # rules_json included - and a later restore would write back prose an
-        # administrator deleted. The AdminEvent stream keeps the fact of the
-        # deletion, as it does today.
+    def delete_skill(self, skill_id: str, *, tenant_id: str) -> None:
+        """Remove this skill's custody while preserving nodes with other owners."""
+        def write(tx):
+            params = {"skill": skill_id, "tenant": tenant_id}
+            tx.run("MATCH (sk:Skill {id:$skill,tenant_id:$tenant})-[:HAS_SECTION]->"
+                   "(s:Section {tenant_id:$tenant})-[:CONTAINS_BLOCK]->(b:ContentBlock {tenant_id:$tenant}) "
+                   "WHERE NOT EXISTS { MATCH (other:Section)-[:CONTAINS_BLOCK]->(b) "
+                   "WHERE other.skill_id <> $skill OR other.tenant_id <> $tenant } "
+                   "DETACH DELETE b", **params).consume()
+            tx.run("MATCH (sk:Skill {id:$skill,tenant_id:$tenant}) "
+                   "OPTIONAL MATCH (sk)-[:HAS_SECTION]->(s:Section {tenant_id:$tenant}) "
+                   "WITH sk,collect(s) AS sections WITH sections+[sk] AS owners UNWIND owners AS owner "
+                   "MATCH (owner)-[:HAS_EXAMPLE]->(e:Example {tenant_id:$tenant}) "
+                   "WHERE NOT EXISTS { MATCH (other)-[:HAS_EXAMPLE]->(e) WHERE NOT other IN owners } "
+                   "DETACH DELETE e", **params).consume()
+            tx.run("MATCH (sk:Skill {id:$skill,tenant_id:$tenant})-[:HAS_ARTEFACT]->"
+                   "(a:Artefact {tenant_id:$tenant}) "
+                   "WHERE NOT EXISTS { MATCH (other:Skill)-->(a) WHERE other <> sk } "
+                   "DETACH DELETE a", **params).consume()
+            tx.run("MATCH (v:SkillVersion {skill_id:$skill,tenant_id:$tenant}) DETACH DELETE v", **params).consume()
+            tx.run("MATCH (sk:Skill {id:$skill,tenant_id:$tenant}) "
+                   "OPTIONAL MATCH (sk)-[:HAS_SECTION]->(s:Section {tenant_id:$tenant}) "
+                   "DETACH DELETE sk,s", **params).consume()
         with self._driver.session() as session:
-            session.run(
-                "MATCH (sk:Skill {id:$id}) "
-                "OPTIONAL MATCH (sk)-[:HAS_SECTION]->(sec:Section) "
-                "OPTIONAL MATCH (sec)-[:CONTAINS_BLOCK]->(b:ContentBlock) "
-                # Examples attach three ways (upsert_example): to a section, to
-                # a rule, or straight to the skill when they arrived before any
-                # section. The first and third belong to this skill and go; the
-                # rule-attached ones stay, because their rule stays.
-                "OPTIONAL MATCH (sec)-[:HAS_EXAMPLE]->(se:Example) "
-                "OPTIONAL MATCH (sk)-[:HAS_EXAMPLE]->(ke:Example) "
-                "OPTIONAL MATCH (sk)-[:HAS_VERSION]->(v:SkillVersion) "
-                "DETACH DELETE sk, sec, b, se, ke, v",
-                id=skill_id)
+            session.execute_write(write)
 
     def _skill_from_node(self, n) -> Skill:
         # Skills predating the status property (null) read as active, and those
@@ -268,102 +270,127 @@ class Neo4jGraphStore:
                      # existed carries no property and None is the honest
                      # reading of an old row.
                      repo=n.get("repo"), publish_enabled=n.get("publish_enabled") is not False,
-                     import_source_ref=n.get("import_source_ref"), import_name=n.get("import_name"))
+                     import_source_ref=n.get("import_source_ref"), import_name=n.get("import_name"),
+                     declared_license=n.get("declared_license"), document_mode=n.get("document_mode"))
+
+    # Rank 0 is the node an explorer key names: any core node by its id except
+    # tags and file occurrences, which have qualified keys (graph_view.graph_key).
+    # Rank 1 accepts the plain ids those two were opened by before.
+    _GRAPH_ROOTS = (
+        "CALL { MATCH (n {id:$id}) WHERE n.tenant_id=$tenant AND NOT n:Tag AND NOT n:Artefact "
+        "AND any(label IN labels(n) WHERE label IN $labels) RETURN n, 0 AS rank "
+        "UNION MATCH (n:Tag {id:$tag}) WHERE EXISTS { MATCH (n)--(owner {tenant_id:$tenant}) } RETURN n, 0 AS rank "
+        "UNION MATCH (n:Artefact {storage_key:$occurrence}) WHERE n.tenant_id=$tenant RETURN n, 0 AS rank "
+        "UNION MATCH (n {id:$id}) WHERE (n:Artefact AND n.tenant_id=$tenant) "
+        "OR (n:Tag AND EXISTS { MATCH (n)--(owner {tenant_id:$tenant}) }) RETURN n, 1 AS rank } "
+        "RETURN elementId(n) AS element, properties(n) AS props, labels(n) AS kinds, rank ORDER BY rank LIMIT 2")
+
+    @classmethod
+    def _graph_root(cls, tx, node_id, tenant_id):
+        """The one node an explorer key names, or None when absent or ambiguous."""
+        from oms.adapters.graph_view import GRAPH_LABELS, parse_graph_key
+        qualified = parse_graph_key(node_id) or ("", ())
+        tag = qualified[1][0] if qualified[0] == "Tag" else None
+        occurrence = json.dumps([tenant_id, *qualified[1]], ensure_ascii=False, separators=(",", ":")) \
+            if qualified[0] == "Artefact" else None
+        rows = list(tx.run(cls._GRAPH_ROOTS, id=node_id, tag=tag, occurrence=occurrence,
+                           tenant=tenant_id, labels=list(GRAPH_LABELS)))
+        if not rows or (len(rows) > 1 and rows[1]["rank"] == rows[0]["rank"]):
+            return None
+        return rows[0]
+
+    @staticmethod
+    def _graph_record(row):
+        from oms.adapters.graph_view import GRAPH_LABELS, graph_record
+        return graph_record(row["props"], next(k for k in GRAPH_LABELS if k in row["kinds"]))
 
     def graph_node(self, node_id, tenant_id):
-        from oms.adapters.graph_view import GRAPH_LABELS, graph_record
         with self._driver.session() as session:
-            row = session.run(
-                "MATCH (n {id:$id}) WHERE any(label IN labels(n) WHERE label IN $labels) "
-                "AND (n.tenant_id=$tenant OR (n:Tag AND EXISTS { MATCH (n)--(owner {tenant_id:$tenant}) })) "
-                "RETURN properties(n) AS props, labels(n) AS kinds LIMIT 1",
-                id=node_id, tenant=tenant_id, labels=list(GRAPH_LABELS)).single()
-            if row is None:
-                return None
-            return graph_record(row["props"], next(k for k in GRAPH_LABELS if k in row["kinds"]))
+            root = session.execute_read(self._graph_root, node_id, tenant_id)
+            return None if root is None else self._graph_record(root)
 
     def graph_neighbours(self, node_id, tenant_id, *, offset=0, limit=100):
-        from oms.adapters.graph_view import GRAPH_LABELS, graph_record
-        match = ("MATCH (n {id:$id})-[r]-(other) "
-            "WHERE (n.tenant_id=$tenant OR (n:Tag AND EXISTS { MATCH (n)--(:Entity {tenant_id:$tenant}) })) "
+        from oms.adapters.graph_view import GRAPH_LABELS, graph_key
+        match = ("MATCH (n)-[r]-(other) WHERE elementId(n)=$element "
             "AND any(label IN labels(other) WHERE label IN $labels) "
             "AND (other.tenant_id=$tenant OR (other:Tag AND other.tenant_id IS NULL)) ")
         with self._driver.session() as session:
             # Count and page within one read transaction so the cursor describes
             # one consistent neighbourhood, independent of graph search limits.
+            # Relationships are read between nodes, not ids, so nodes sharing
+            # an id never lend each other their neighbours.
             def read(tx):
-                total = tx.run(match + "RETURN count(DISTINCT other) AS total", id=node_id,
-                    tenant=tenant_id, labels=list(GRAPH_LABELS)).single()["total"]
-                rows = list(tx.run(match +
-                    "WITH other, collect(DISTINCT {source:startNode(r).id, target:endNode(r).id, type:type(r)}) AS edges "
-                    "ORDER BY other.id SKIP $offset LIMIT $limit "
-                    "RETURN properties(other) AS props, labels(other) AS kinds, edges",
-                    id=node_id, tenant=tenant_id, labels=list(GRAPH_LABELS), offset=offset, limit=limit))
-                return {"nodes": [graph_record(row["props"], next(k for k in GRAPH_LABELS if k in row["kinds"])) for row in rows],
-                        "edges": [edge for row in rows for edge in row["edges"]], "total": total,
-                        "next_offset": offset + limit if offset + limit < total else None}
+                root = self._graph_root(tx, node_id, tenant_id)
+                if root is None:
+                    return {"nodes": [], "edges": [], "total": 0, "next_offset": None}
+                anchor = self._graph_record(root)["id"]
+                params = {"element": root["element"], "tenant": tenant_id, "labels": list(GRAPH_LABELS)}
+                # Pages follow the explorer key, as the memory adapter's do; the key's
+                # escaping is computed here, so only the chosen page reads its properties.
+                keys = list(tx.run(match + "RETURN DISTINCT elementId(other) AS element, "
+                    "other {.id, .owner_skill_id, .occurrence_path} AS props, labels(other) AS kinds", **params))
+                def order(row):
+                    label = next(k for k in GRAPH_LABELS if k in row["kinds"])
+                    return graph_key(row["props"], label), label, row["element"]
+                total = len(keys)
+                page = [row["element"] for row in sorted(keys, key=order)[offset:offset + limit]]
+                found = {row["element"]: row for row in tx.run(match + "AND elementId(other) IN $page "
+                    "WITH other, collect(DISTINCT {outgoing:startNode(r)=n, type:type(r)}) AS edges "
+                    "RETURN elementId(other) AS element, properties(other) AS props, labels(other) AS kinds, edges",
+                    page=page, **params)}
+                rows = [found[element] for element in page]
+                nodes = [self._graph_record(row) for row in rows]
+                return {"nodes": nodes,
+                        "edges": [{"source": anchor if edge["outgoing"] else node["id"],
+                                   "target": node["id"] if edge["outgoing"] else anchor, "type": edge["type"]}
+                                  for node, row in zip(nodes, rows) for edge in row["edges"]],
+                        "total": total, "next_offset": offset + limit if offset + limit < total else None}
             return session.execute_read(read)
 
     def upsert_tag(self, tag_id: str, name: str) -> None:
         with self._driver.session() as session:
             session.run("MERGE (n:Tag {id:$id}) SET n:Entity, n.name=$name", id=tag_id, name=name)
 
-    def attach_edge(self, edge: Edge) -> None:
-        """Create or update one edge between two nodes that already exist.
-
-        Warns when it did nothing, and that warning is the whole point of this
-        docstring. A Cypher MATCH that finds no rows is not an error: the MERGE
-        simply never runs and the driver returns a healthy summary. So an edge
-        onto a node missing the `:Entity` label - every node written before
-        that label was introduced (see `schema.ENTITY_ID_INDEX`, which
-        documents a backfill nobody had run) - is silently not created.
-
-        A warning rather than a raise, deliberately. Bulk import attaches
-        thousands of edges in a loop, and turning a data-integrity problem into
-        a mid-import crash trades a quiet bug for a loud outage. The counter is
-        what makes it actionable: `relationships_created` is 0 for a no-op and
-        also 0 for an edge that already existed, so the endpoints are checked
-        instead - that distinguishes "nothing to do" from "nothing found".
-        """
-        # edge.type is a controlled EdgeType enum, safe to interpolate as the relationship type.
-        query = (
-            "MATCH (a:Entity {id:$from_id}), (b:Entity {id:$to_id}) "
-            f"MERGE (a)-[rel:{edge.type.value}]->(b) "
-            "SET rel += $props "
-            "RETURN 1 AS attached"
-        )
+    def tag_name(self, tag_id: str) -> str | None:
         with self._driver.session() as session:
-            attached = session.run(
-                query, from_id=edge.from_id, to_id=edge.to_id,
-                props=edge.properties).single()
-            if attached is not None:
+            row = session.run("MATCH (n:Tag {id:$id}) RETURN n.name AS name", id=tag_id).single()
+            return row["name"] if row else None
+
+    def attach_edge(self, edge: Edge, *, tenant_id: str) -> None:
+        def write(tx):
+            endpoints = self._edge_endpoints(tx, edge, tenant_id)
+            if endpoints is None:
+                raise KeyError("Relationship endpoints are missing or outside the tenant")
+            tx.run("MATCH (a),(b) WHERE elementId(a)=$start AND elementId(b)=$end "
+                   f"MERGE (a)-[r:{edge.type.value}]->(b) SET r += $props",
+                   start=endpoints[0], end=endpoints[1], props=edge.properties).consume()
+        with self._driver.session() as session:
+            session.execute_write(write)
+
+    @staticmethod
+    def _edge_endpoints(tx, edge: Edge, tenant_id: str):
+        rows = list(tx.run(
+            "MATCH (a:Entity {id:$start}),(b:Entity {id:$end}) "
+            "WHERE (a.tenant_id=$tenant OR (a:Tag AND a.tenant_id IS NULL)) "
+            "AND (b.tenant_id=$tenant OR (b:Tag AND b.tenant_id IS NULL)) "
+            "AND any(pair IN $pairs WHERE pair[0] IN labels(a) AND pair[1] IN labels(b)) "
+            "RETURN DISTINCT elementId(a) AS start,elementId(b) AS end",
+            start=edge.from_id, end=edge.to_id, tenant=tenant_id,
+            pairs=[list(pair) for pair in EDGE_LABELS[edge.type]]))
+        if len(rows) > 1:
+            raise ValueError("Relationship endpoints are ambiguous")
+        return (rows[0]["start"], rows[0]["end"]) if rows else None
+
+    def detach_edge(self, edge: Edge, *, tenant_id: str) -> None:
+        def write(tx):
+            endpoints = self._edge_endpoints(tx, edge, tenant_id)
+            if endpoints is None:
                 return
-            missing = session.run(
-                "OPTIONAL MATCH (a:Entity {id:$from_id}) "
-                "OPTIONAL MATCH (b:Entity {id:$to_id}) "
-                "RETURN a IS NULL AS from_missing, b IS NULL AS to_missing",
-                from_id=edge.from_id, to_id=edge.to_id).single()
-        ends = []
-        if missing is None or missing["from_missing"]:
-            ends.append(f"from {edge.from_id!r}")
-        if missing is None or missing["to_missing"]:
-            ends.append(f"to {edge.to_id!r}")
-        logger.warning(
-            "%s edge NOT created: no :Entity node for %s. The edge was dropped "
-            "silently; run scripts/migrate_entity_label.py if these nodes "
-            "predate the label.",
-            edge.type.value, " and ".join(ends) or "an unknown endpoint")
-
-    def detach_edge(self, edge: Edge) -> None:
-        # Type interpolation is safe as in attach_edge (controlled EdgeType enum).
-        # Deletes every matching relationship; a no-op when none match.
-        query = (
-            "MATCH (a:Entity {id:$from_id})"
-            f"-[rel:{edge.type.value}]->"
-            "(b {id:$to_id}) DELETE rel"
-        )
+            tx.run("MATCH (a)-[r:" + edge.type.value + "]->(b) "
+                   "WHERE elementId(a)=$start AND elementId(b)=$end DELETE r",
+                   start=endpoints[0], end=endpoints[1]).consume()
         with self._driver.session() as session:
-            session.run(query, from_id=edge.from_id, to_id=edge.to_id)
+            session.execute_write(write)
 
     def superseders_of(self, rule_id: str) -> list[str]:
         with self._driver.session(default_access_mode="READ") as session:
@@ -394,41 +421,48 @@ class Neo4jGraphStore:
             )
             return [self._skill_from_node(r["n"]) for r in recs]
 
-    def tags_for_skill(self, skill_id: str) -> list[str]:
+    def tag_records_for_skill(self, skill_id: str, *, tenant_id: str) -> list[Tag]:
+        with self._driver.session() as session:
+            rows = session.run("MATCH (:Skill {id:$id,tenant_id:$tenant})-[:TAGGED_WITH]->(tag:Tag) "
+                               "RETURN DISTINCT tag.id AS id, tag.name AS name ORDER BY id",
+                               id=skill_id, tenant=tenant_id)
+            return [Tag(id=row["id"], name=row["name"]) for row in rows]
+
+    def tags_for_skill(self, skill_id: str, *, tenant_id: str) -> list[str]:
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (:Skill {id:$sid})-[:TAGGED_WITH]->(t:Tag) "
+                "MATCH (:Skill {id:$sid, tenant_id:$scope_tenant})-[:TAGGED_WITH]->(t:Tag) "
                 "RETURN DISTINCT t.name AS name ORDER BY name",
                 sid=skill_id,
-            )
+             scope_tenant=tenant_id)
             return [r["name"] for r in recs]
 
-    def rules_for_skill(self, skill_id: str) -> list[Rule]:
+    def rules_for_skill(self, skill_id: str, *, tenant_id: str) -> list[Rule]:
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (n:Rule)-[:BELONGS_TO]->(:Skill {id:$sid}) RETURN n",
+                "MATCH (n:Rule {tenant_id:$scope_tenant})-[:BELONGS_TO]->(:Skill {id:$sid, tenant_id:$scope_tenant}) RETURN n ORDER BY n.id",
                 sid=skill_id,
-            )
+             scope_tenant=tenant_id)
             return [self._rule_from_node(r["n"]) for r in recs]
 
-    def skills_for_rule(self, rule_id: str) -> list[Skill]:
+    def skills_for_rule(self, rule_id: str, *, tenant_id: str) -> list[Skill]:
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (:Rule {id:$rid})-[:BELONGS_TO]->(s:Skill) "
+                "MATCH (:Rule {id:$rid, tenant_id:$scope_tenant})-[:BELONGS_TO]->(s:Skill {tenant_id:$scope_tenant}) "
                 "RETURN DISTINCT s ORDER BY s.id",
                 rid=rule_id,
-            )
+             scope_tenant=tenant_id)
             return [self._skill_from_node(r["s"]) for r in recs]
 
-    def skills_by_rule(self, rule_ids: list[str]) -> dict[str, list[Skill]]:
+    def skills_by_rule(self, rule_ids: list[str], *, tenant_id: str) -> dict[str, list[Skill]]:
         if not rule_ids:
             return {}
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (r:Rule)-[:BELONGS_TO]->(s:Skill) WHERE r.id IN $ids "
+                "MATCH (r:Rule {tenant_id:$scope_tenant})-[:BELONGS_TO]->(s:Skill {tenant_id:$scope_tenant}) WHERE r.id IN $ids "
                 "RETURN r.id AS rid, s ORDER BY r.id, s.id",
                 ids=list(rule_ids),
-            )
+             scope_tenant=tenant_id)
             out: dict[str, list[Skill]] = {}
             for rec in recs:
                 out.setdefault(rec["rid"], []).append(self._skill_from_node(rec["s"]))
@@ -446,7 +480,7 @@ class Neo4jGraphStore:
             )
             return [self._transaction_from_node(rec["t"]) for rec in recs]
 
-    def rule_context(self, rule_ids: list[str]) -> dict[str, RuleContext]:
+    def rule_context(self, rule_ids: list[str], *, tenant_id: str) -> dict[str, RuleContext]:
         if not rule_ids:
             return {}
         with self._driver.session() as session:
@@ -455,11 +489,11 @@ class Neo4jGraphStore:
                 # with no skill, or none whose lineage names a person, still
                 # comes back - absent means "no such rule", which is a
                 # different answer the caller is entitled to.
-                "MATCH (r:Rule) WHERE r.id IN $ids "
-                "OPTIONAL MATCH (r)-[:BELONGS_TO]->(s:Skill) "
+                "MATCH (r:Rule {tenant_id:$scope_tenant}) WHERE r.id IN $ids "
+                "OPTIONAL MATCH (r)-[:BELONGS_TO]->(s:Skill {tenant_id:$scope_tenant}) "
                 "WITH r, collect(DISTINCT s.name) AS names, "
                 "     collect(DISTINCT s.domain) AS domains "
-                "OPTIONAL MATCH (r)-[:DERIVED_FROM]->(t:Transaction) "
+                "OPTIONAL MATCH (r)-[:DERIVED_FROM]->(t:Transaction {tenant_id:$scope_tenant}) "
                 "WHERE t.person_id IS NOT NULL "
                 # The correction it was BORN from, not the latest one to
                 # corroborate it: oldest wins.
@@ -467,7 +501,7 @@ class Neo4jGraphStore:
                 "WITH r, names, domains, collect(t.person_id)[0] AS contributor "
                 "RETURN r.id AS rid, names, domains, contributor",
                 ids=list(rule_ids),
-            )
+             scope_tenant=tenant_id)
             return {
                 rec["rid"]: RuleContext(
                     rule_id=rec["rid"],
@@ -542,25 +576,25 @@ class Neo4jGraphStore:
         where = ("n.tenant_id = $tid "
                  "AND ($status IS NULL OR n.status = $status) "
                  "AND ($q IS NULL OR toLower(n.body) CONTAINS toLower($q)) "
-                 "AND ($skill IS NULL OR (n)-[:BELONGS_TO]->(:Skill {id: $skill}))")
+                 "AND ($skill IS NULL OR (n)-[:BELONGS_TO]->(:Skill {id: $skill, tenant_id:$scope_tenant}))")
         params = {"tid": tenant_id,
                   "status": None if status is None else status.value,
                   "q": (query or None), "skill": skill_id,
                   "limit": limit, "offset": offset}
         with self._driver.session() as session:
             total = session.run(
-                f"MATCH (n:Rule) WHERE {where} RETURN count(n) AS n", **params
-            ).single()["n"]
+                f"MATCH (n:Rule {{tenant_id:$scope_tenant}}) WHERE {where} RETURN count(n) AS n", **params
+            , scope_tenant=tenant_id).single()["n"]
             recs = session.run(
                 # The id is the final sort key and it is load-bearing: 5,393 of
                 # acme's rules were written by one bulk import and share a
                 # created_at to the second, so created_at alone is not a total
                 # order and a page boundary would repeat or skip rows.
-                f"MATCH (n:Rule) WHERE {where} "
+                f"MATCH (n:Rule {{tenant_id:$scope_tenant}}) WHERE {where} "
                 "RETURN n ORDER BY n.created_at DESC, n.id "
                 "SKIP $offset LIMIT $limit",
                 **params,
-            )
+             scope_tenant=tenant_id)
             items = [self._rule_from_node(r["n"]) for r in recs]
         return RulePage(items=items, total=total, offset=offset, limit=limit)
 
@@ -693,71 +727,67 @@ class Neo4jGraphStore:
                 id=constraint_id, status=status.value,
             )
 
-    def upsert_example(self, example: Example) -> None:
-        def _tx(tx):
-            tx.run(
-                "MERGE (n:Example {id:$id}) "
-                "SET n:Entity, n.body=$body, n.kind=$kind, n.tenant_id=$tid, "
-                "n.parent_rule_id=$prid, n.parent_skill_id=$psid, "
-                "n.parent_section_id=$pseid, n.name=$name, n.original_label=$lbl, "
-                "n.source_ref=$src, n.order=$order",
-                id=example.id, body=example.body, kind=example.kind.value,
-                tid=example.tenant_id,
-                prid=example.parent_rule_id, psid=example.parent_skill_id,
-                pseid=example.parent_section_id,
-                name=example.name, lbl=example.original_label,
-                src=example.source_ref, order=example.order,
-            )
-            # Attach to the appropriate parent. Section attachment is the default;
-            # rule/skill attachment are the override / orphan cases.
-            if example.parent_section_id is not None:
-                tx.run(
-                    "MATCH (e:Example {id:$id}), (s:Section {id:$sid}) "
-                    "MERGE (s)-[:HAS_EXAMPLE]->(e)",
-                    id=example.id, sid=example.parent_section_id,
-                )
-            elif example.parent_rule_id is not None:
-                tx.run(
-                    "MATCH (e:Example {id:$id}), (r:Rule {id:$rid}) "
-                    "MERGE (r)-[:HAS_EXAMPLE]->(e) "
-                    "MERGE (e)-[:ILLUSTRATES]->(r)",
-                    id=example.id, rid=example.parent_rule_id,
-                )
-            elif example.parent_skill_id is not None:
-                tx.run(
-                    "MATCH (e:Example {id:$id}), (s:Skill {id:$sid}) "
-                    "MERGE (s)-[:HAS_EXAMPLE]->(e) "
-                    "MERGE (e)-[:ILLUSTRATES]->(s)",
-                    id=example.id, sid=example.parent_skill_id,
-                )
-
+    def upsert_example(self, example: Example, *, tenant_id: str) -> None:
+        if example.tenant_id != tenant_id:
+            raise ValueError("Example tenant differs from its owner")
+        parents = [effective_example_parent(example)]
+        key = SkillRef(tenant_id, example.id).storage_key
+        def write(tx):
+            if parents:
+                label, parent_id = parents[0]
+                self._require_node(tx, label, parent_id, tenant_id)
+            tx.run("MERGE (e:Example {storage_key:$key}) "
+                   "SET e:Entity,e.id=$id,e.tenant_id=$tenant,e.body=$body,e.kind=$kind,"
+                   "e.parent_section_id=$section,e.parent_rule_id=$rule,e.parent_skill_id=$skill,"
+                   "e.name=$name,e.original_label=$original,e.source_ref=$source,e.order=$order,"
+                   "e.created_at=coalesce(e.created_at,$created) "
+                   "WITH e OPTIONAL MATCH (e)-[old:HAS_EXAMPLE|ILLUSTRATES]-() DELETE old",
+                   key=key,id=example.id,tenant=tenant_id,body=example.body,kind=example.kind.value,
+                   section=example.parent_section_id,rule=example.parent_rule_id,skill=example.parent_skill_id,
+                   name=example.name,original=example.original_label,source=example.source_ref,
+                   order=example.order,created=example.created_at).consume()
+            if parents:
+                tx.run(f"MATCH (p:{label} {{id:$parent,tenant_id:$tenant}}),"
+                       "(e:Example {storage_key:$key}) MERGE (p)-[:HAS_EXAMPLE]->(e) "
+                       + ("MERGE (e)-[:ILLUSTRATES]->(p)" if label != "Section" else ""),
+                       parent=parent_id,tenant=tenant_id,key=key).consume()
         with self._driver.session() as session:
-            session.execute_write(_tx)
+            session.execute_write(write)
 
-    def attach_example(self, example: Example) -> None:
-        """Attach an example to its parent. Same as upsert_example today; kept as a
-        distinct method on the protocol so callers can express intent."""
-        self.upsert_example(example)
+    @staticmethod
+    def _require_node(tx, label: str, identifier: str, tenant_id: str) -> None:
+        row = tx.run(f"MATCH (n:{label} {{id:$id,tenant_id:$tenant}}) RETURN count(n) AS n",
+                     id=identifier,tenant=tenant_id).single()
+        if row["n"] != 1:
+            raise KeyError("Owned endpoint is absent or ambiguous")
 
-    def examples_for_rule(self, rule_id: str) -> list[Example]:
+    def attach_example(self, example: Example, *, tenant_id: str) -> None:
+        self.upsert_example(example, tenant_id=tenant_id)
+
+    def get_example(self, example_id: str, *, tenant_id: str) -> Example | None:
+        with self._driver.session() as session:
+            row = session.run("MATCH (e:Example {id:$id,tenant_id:$tenant}) RETURN e", id=example_id, tenant=tenant_id).single()
+            return self._example_from_node(row["e"]) if row else None
+
+    def examples_for_rule(self, rule_id: str, *, tenant_id: str) -> list[Example]:
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (e:Example)-[:ILLUSTRATES]->(:Rule {id:$rid}) RETURN e", rid=rule_id
-            )
+                "MATCH (e:Example {tenant_id:$scope_tenant})-[:ILLUSTRATES]->(:Rule {id:$rid, tenant_id:$scope_tenant}) RETURN e ORDER BY e.order IS NULL,e.order,e.id", rid=rule_id
+            , scope_tenant=tenant_id)
             return [self._example_from_node(r["e"]) for r in recs]
 
-    def examples_for_skill(self, skill_id: str) -> list[Example]:
+    def examples_for_skill(self, skill_id: str, *, tenant_id: str) -> list[Example]:
         # Examples are stored once, under their section; skill-level retrieval
         # traverses section membership. Directly attached examples (ILLUSTRATES)
         # are kept for rows written before single-parent storage.
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (e:Example)-[:ILLUSTRATES]->(:Skill {id:$sid}) RETURN e "
+                "CALL { MATCH (e:Example {tenant_id:$scope_tenant})-[:ILLUSTRATES]->(:Skill {id:$sid, tenant_id:$scope_tenant}) RETURN e "
                 "UNION "
-                "MATCH (:Skill {id:$sid})-[:HAS_SECTION]->(:Section)-[:HAS_EXAMPLE]->(e:Example) "
-                "RETURN e",
+                "MATCH (:Skill {id:$sid, tenant_id:$scope_tenant})-[:HAS_SECTION]->(:Section {tenant_id:$scope_tenant})-[:HAS_EXAMPLE]->(e:Example {tenant_id:$scope_tenant}) "
+                "RETURN e } RETURN e ORDER BY e.order IS NULL,e.order,e.id",
                 sid=skill_id,
-            )
+             scope_tenant=tenant_id)
             return [self._example_from_node(r["e"]) for r in recs]
 
     def _example_from_node(self, n) -> Example:
@@ -771,6 +801,7 @@ class Neo4jGraphStore:
             parent_skill_id=n.get("parent_skill_id"),
             source_ref=n.get("source_ref"),
             order=n.get("order"),
+            created_at=n["created_at"].to_native() if n.get("created_at") else _now(),
         )
 
     def skills_for_tenant(self, tenant_id: str) -> list[Skill]:
@@ -1036,36 +1067,43 @@ class Neo4jGraphStore:
     # -- Skill-package custody operations ----------------------------------
 
     def upsert_section(self, section: Section) -> None:
-        with self._driver.session() as session:
-            session.run(
-                "MERGE (s:Section {id:$id}) "
+        def write(tx):
+            self._require_node(tx, "Skill", section.skill_id, section.tenant_id)
+            owner = tx.run("MATCH (s:Section {storage_key:$key}) RETURN s.skill_id AS owner",
+                           key=SkillRef(section.tenant_id, section.id).storage_key).single()
+            if owner is not None and owner["owner"] != section.skill_id:
+                raise ValueError("Section identity belongs to another skill")
+            tx.run(
+                "MERGE (s:Section {storage_key:$storage_key}) SET s.id=$id "
                 "SET s:Entity, s.skill_id=$skill_id, s.kind=$kind, s.heading=$heading, "
                 "s.order=$order, s.mutability=$mut, s.tenant_id=$tid, "
                 "s.created_at = coalesce(s.created_at, $created_at) "
                 "WITH s "
-                "MATCH (sk:Skill {id:$skill_id}) "
+                "MATCH (sk:Skill {id:$skill_id, tenant_id:$scope_tenant}) "
                 "MERGE (sk)-[r:HAS_SECTION]->(s) "
                 "SET r.order=$order",
                 id=section.id, skill_id=section.skill_id, kind=section.kind.value,
                 heading=section.heading, order=section.order,
                 mut=section.mutability.value, tid=section.tenant_id,
                 created_at=section.created_at,
-            )
-
-    def get_section(self, section_id: str) -> Section | None:
+             storage_key=SkillRef(section.tenant_id, section.id).storage_key, scope_tenant=section.tenant_id)
         with self._driver.session() as session:
-            rec = session.run("MATCH (s:Section {id:$id}) RETURN s", id=section_id).single()
+            session.execute_write(write)
+
+    def get_section(self, section_id: str, *, tenant_id: str) -> Section | None:
+        with self._driver.session() as session:
+            rec = session.run("MATCH (s:Section {id:$id, tenant_id:$scope_tenant}) RETURN s", id=section_id, scope_tenant=tenant_id).single()
         if rec is None:
             return None
         return self._section_from_node(rec["s"])
 
-    def sections_for_skill(self, skill_id: str) -> list[Section]:
+    def sections_for_skill(self, skill_id: str, *, tenant_id: str) -> list[Section]:
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (sk:Skill {id:$sid})-[:HAS_SECTION]->(s:Section) "
-                "RETURN s ORDER BY s.order",
+                "MATCH (sk:Skill {id:$sid, tenant_id:$scope_tenant})-[:HAS_SECTION]->(s:Section {tenant_id:$scope_tenant}) "
+                "RETURN s ORDER BY s.order, s.id",
                 sid=skill_id,
-            )
+             scope_tenant=tenant_id)
             return [self._section_from_node(r["s"]) for r in recs]
 
     def _section_from_node(self, n) -> Section:
@@ -1078,8 +1116,10 @@ class Neo4jGraphStore:
         )
 
     def attach_rule(self, rule: Rule, section_id: str,
-                    order: int | None = None, group: str | None = None) -> None:
-        sec = self.get_section(section_id)
+                    order: int | None = None, group: str | None = None, *, tenant_id: str) -> None:
+        if rule.tenant_id != tenant_id:
+            raise ValueError("Rule tenant differs from section owner")
+        sec = self.get_section(section_id, tenant_id=tenant_id)
         if sec is None:
             raise KeyError(section_id)
         if sec.mutability is not Mutability.SYSTEM_AGGREGATED:
@@ -1088,28 +1128,54 @@ class Neo4jGraphStore:
             )
         with self._driver.session() as session:
             session.run(
-                "MATCH (s:Section {id:$sid}), (r:Rule {id:$rid}) "
+                "MATCH (s:Section {id:$sid, tenant_id:$scope_tenant}), (r:Rule {id:$rid, tenant_id:$scope_tenant}) "
                 "MERGE (s)-[rel:CONTAINS_RULE]->(r) "
                 "SET rel.order = $order, rel.group = $group",
                 sid=section_id, rid=rule.id, order=order, group=group,
-            )
+             scope_tenant=tenant_id)
 
-    def inherit_placements(self, retired_rule_id: str, successor: Rule) -> None:
+    def detach_rule(self, rule_id: str, section_id: str, *, tenant_id: str) -> None:
+        with self._driver.session() as session:
+            session.run("MATCH (:Section {id:$section,tenant_id:$tenant})-[r:CONTAINS_RULE]->(:Rule {id:$child,tenant_id:$tenant}) DELETE r", section=section_id, child=rule_id, tenant=tenant_id).consume()
+
+    def detach_block(self, block_id: str, section_id: str, *, tenant_id: str) -> None:
+        with self._driver.session() as session:
+            session.run("MATCH (:Section {id:$section,tenant_id:$tenant})-[r:CONTAINS_BLOCK]->(:ContentBlock {id:$child,tenant_id:$tenant}) DELETE r", section=section_id, child=block_id, tenant=tenant_id).consume()
+
+    def remove_example(self, example_id: str, *, tenant_id: str) -> None:
+        with self._driver.session() as session:
+            row = session.run("MATCH (e:Example {id:$id,tenant_id:$tenant}) OPTIONAL MATCH (p)-[:HAS_EXAMPLE]->(e) RETURN count(p) AS parents", id=example_id, tenant=tenant_id).single()
+            if row and row["parents"] > 1:
+                raise ValueError("Example has ambiguous owners")
+            session.run("MATCH (e:Example {id:$id,tenant_id:$tenant}) DETACH DELETE e", id=example_id, tenant=tenant_id).consume()
+
+    def remove_section(self, section_id: str, *, tenant_id: str) -> None:
+        with self._driver.session() as session:
+            row = session.run("MATCH (s:Section {id:$id,tenant_id:$tenant}) OPTIONAL MATCH (s)-[r]->() RETURN count(r) AS children", id=section_id, tenant=tenant_id).single()
+            if row and row["children"]:
+                raise ValueError("Section still owns content")
+            session.run("MATCH (s:Section {id:$id,tenant_id:$tenant}) DETACH DELETE s", id=section_id, tenant=tenant_id).consume()
+
+    def inherit_placements(self, retired_rule_id: str, successor: Rule, *, tenant_id: str) -> None:
+        if successor.tenant_id != tenant_id:
+            raise ValueError("Successor tenant differs from placement owner")
         # Copy every CONTAINS_RULE membership of the retired rule (with its order
         # and group) onto the successor, so a superseding rule renders in the
         # retired rule's place. CONTAINS_RULE only lives on system-aggregated
         # sections, so no mutability guard is needed.
         with self._driver.session() as session:
             session.run(
-                "MATCH (s:Section)-[old:CONTAINS_RULE]->(:Rule {id:$rid}) "
-                "MATCH (succ:Rule {id:$sid}) "
+                "MATCH (s:Section {tenant_id:$scope_tenant})-[old:CONTAINS_RULE]->(:Rule {id:$rid, tenant_id:$scope_tenant}) "
+                "MATCH (succ:Rule {id:$sid, tenant_id:$scope_tenant}) "
                 "MERGE (s)-[new:CONTAINS_RULE]->(succ) "
                 "SET new.order = old.order, new.group = old.group",
                 rid=retired_rule_id, sid=successor.id,
-            )
+             scope_tenant=tenant_id)
 
-    def attach_block(self, block: ContentBlock, section_id: str) -> None:
-        sec = self.get_section(section_id)
+    def attach_block(self, block: ContentBlock, section_id: str, *, tenant_id: str) -> None:
+        if block.tenant_id != tenant_id:
+            raise ValueError("Block tenant differs from section owner")
+        sec = self.get_section(section_id, tenant_id=tenant_id)
         if sec is None:
             raise KeyError(section_id)
         if sec.mutability is not Mutability.AUTHORIAL_PASSTHROUGH:
@@ -1118,77 +1184,98 @@ class Neo4jGraphStore:
             )
         with self._driver.session() as session:
             session.run(
-                "MATCH (s:Section {id:$sid}), (b:ContentBlock {id:$bid}) "
+                "MATCH (s:Section {id:$sid, tenant_id:$scope_tenant}), (b:ContentBlock {id:$bid, tenant_id:$scope_tenant}) "
                 "MERGE (s)-[:CONTAINS_BLOCK]->(b)",
                 sid=section_id, bid=block.id,
-            )
+             scope_tenant=tenant_id)
 
-    def rules_for_section(self, section_id: str) -> list[Rule]:
+    def rules_for_section(self, section_id: str, *, tenant_id: str) -> list[Rule]:
         # Authorially placed rules first, in source order; unplaced (learned)
         # rules after, by corroboration.
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (s:Section {id:$sid})-[rel:CONTAINS_RULE]->(r:Rule) "
-                "RETURN r ORDER BY coalesce(rel.order, 2147483647), r.corroboration_count DESC",
+                "MATCH (s:Section {id:$sid, tenant_id:$scope_tenant})-[rel:CONTAINS_RULE]->(r:Rule {tenant_id:$scope_tenant}) "
+                "RETURN r ORDER BY rel.order IS NULL, "
+                "CASE WHEN rel.order IS NULL THEN -r.corroboration_count ELSE rel.order END, r.id",
                 sid=section_id,
-            )
+             scope_tenant=tenant_id)
             return [self._rule_from_node(r["r"]) for r in recs]
 
-    def rule_placements_for_section(self, section_id: str) -> list[RulePlacement]:
+    def rule_placements_for_section(self, section_id: str, *, tenant_id: str) -> list[RulePlacement]:
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (s:Section {id:$sid})-[rel:CONTAINS_RULE]->(r:Rule) "
-                "RETURN r.id AS rid, rel.order AS ord, rel.group AS grp",
+                "MATCH (s:Section {id:$sid, tenant_id:$scope_tenant})-[rel:CONTAINS_RULE]->(r:Rule {tenant_id:$scope_tenant}) "
+                "RETURN r.id AS rid, rel.order AS ord, rel.group AS grp "
+                "ORDER BY rel.order IS NULL, rel.order, r.id",
                 sid=section_id,
-            )
+             scope_tenant=tenant_id)
             return [RulePlacement(rule_id=r["rid"], order=r["ord"], group=r["grp"]) for r in recs]
 
-    def blocks_for_section(self, section_id: str) -> list[ContentBlock]:
+    def blocks_for_section(self, section_id: str, *, tenant_id: str, include_inactive: bool = False) -> list[ContentBlock]:
         # Active blocks only; blocks predating the status property (null) read as
         # active for backward compatibility.
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (s:Section {id:$sid})-[:CONTAINS_BLOCK]->(b:ContentBlock) "
-                "WHERE coalesce(b.status, 'active') = 'active' RETURN b",
-                sid=section_id,
-            )
+                "MATCH (s:Section {id:$sid, tenant_id:$scope_tenant})-[:CONTAINS_BLOCK]->(b:ContentBlock {tenant_id:$scope_tenant}) "
+                "WHERE $include_inactive OR coalesce(b.status, 'active') = 'active' RETURN b ORDER BY b.id",
+                sid=section_id, include_inactive=include_inactive,
+             scope_tenant=tenant_id)
             return [self._block_from_node(r["b"]) for r in recs]
 
-    def blocks_revised_for_rule(self, rule_id: str) -> list[ContentBlock]:
+    def blocks_revised_for_rule(self, rule_id: str, *, tenant_id: str) -> list[ContentBlock]:
         # Rule and block share a transaction: the rule DERIVED_FROM it when it
         # was created or corroborated, the block DERIVED_FROM it when a
         # revision rewrote it for that rule. Active blocks only, with the
         # same null-as-active reading as `blocks_for_section`.
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (r:Rule {id:$rid})-[:DERIVED_FROM]->(t:Transaction)"
-                "<-[:DERIVED_FROM]-(b:ContentBlock) "
+                "MATCH (r:Rule {id:$rid, tenant_id:$scope_tenant})-[:DERIVED_FROM]->(t:Transaction {tenant_id:$scope_tenant})"
+                "<-[:DERIVED_FROM]-(b:ContentBlock {tenant_id:$scope_tenant}) "
                 "WHERE coalesce(b.status, 'active') = 'active' "
-                "RETURN DISTINCT b",
+                "RETURN DISTINCT b ORDER BY b.id",
                 rid=rule_id,
-            )
+             scope_tenant=tenant_id)
             return [self._block_from_node(r["b"]) for r in recs]
 
-    def get_content_block(self, block_id: str) -> ContentBlock | None:
+    def get_content_block(self, block_id: str, *, tenant_id: str) -> ContentBlock | None:
         # No status filter, deliberately: a review item can outlive the block it
         # names, and the reviewer needs the text the verdict was about even once
         # a later revision has superseded it.
         with self._driver.session() as session:
-            rec = session.run("MATCH (b:ContentBlock {id:$id}) RETURN b",
-                              id=block_id).single()
+            rec = session.run("MATCH (b:ContentBlock {id:$id, tenant_id:$scope_tenant}) RETURN b",
+                              id=block_id, scope_tenant=tenant_id).single()
         if rec is None:
             return None
         return self._block_from_node(rec["b"])
 
-    def section_for_block(self, block_id: str) -> Section | None:
+    def content_owners(self, rule_ids: list[str], block_ids: list[str], *,
+                       tenant_id: str) -> dict[tuple[str, str], frozenset[str]]:
+        owners = {("rule", rid): set() for rid in rule_ids} | {("block", bid): set() for bid in block_ids}
+        with self._driver.session() as session:
+            for row in session.run(
+                    "UNWIND $rules AS rid MATCH (r:Rule {id:rid, tenant_id:$tenant}) "
+                    "OPTIONAL MATCH (r)-[:BELONGS_TO]->(s:Skill {tenant_id:$tenant}) "
+                    "OPTIONAL MATCH (p:Skill {tenant_id:$tenant})-[:HAS_SECTION]->"
+                    "(:Section {tenant_id:$tenant})-[:CONTAINS_RULE]->(r) "
+                    "RETURN rid, collect(DISTINCT s.id) + collect(DISTINCT p.id) AS skills",
+                    rules=list(rule_ids), tenant=tenant_id):
+                owners["rule", row["rid"]].update(row["skills"])
+            for row in session.run(
+                    "UNWIND $blocks AS bid MATCH (p:Skill {tenant_id:$tenant})-[:HAS_SECTION]->"
+                    "(:Section {tenant_id:$tenant})-[:CONTAINS_BLOCK]->(:ContentBlock {id:bid, tenant_id:$tenant}) "
+                    "RETURN bid, collect(DISTINCT p.id) AS skills", blocks=list(block_ids), tenant=tenant_id):
+                owners["block", row["bid"]].update(row["skills"])
+        return {entity: frozenset(skills) for entity, skills in owners.items()}
+
+    def section_for_block(self, block_id: str, *, tenant_id: str) -> Section | None:
         # The CONTAINS_BLOCK edge run backwards. A superseded block stays
         # attached for history, so this resolves for those too.
         with self._driver.session() as session:
             rec = session.run(
-                "MATCH (s:Section)-[:CONTAINS_BLOCK]->(:ContentBlock {id:$id}) "
-                "RETURN s LIMIT 1",
+                "MATCH (s:Section {tenant_id:$scope_tenant})-[:CONTAINS_BLOCK]->(:ContentBlock {id:$id, tenant_id:$scope_tenant}) "
+                "RETURN s ORDER BY s.id LIMIT 1",
                 id=block_id,
-            ).single()
+             scope_tenant=tenant_id).single()
         if rec is None:
             return None
         return self._section_from_node(rec["s"])
@@ -1199,13 +1286,13 @@ class Neo4jGraphStore:
         # grouped by section; any section with more than one is a violation.
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (s:Section {tenant_id:$tid})-[:CONTAINS_BLOCK]->(b:ContentBlock) "
+                "MATCH (s:Section {tenant_id:$tid})-[:CONTAINS_BLOCK]->(b:ContentBlock {tenant_id:$scope_tenant}) "
                 "WHERE coalesce(b.status, 'active') = 'active' "
                 "WITH s, count(b) AS active_blocks "
                 "WHERE active_blocks > 1 "
                 "RETURN s.id AS sid",
                 tid=tenant_id,
-            )
+             scope_tenant=tenant_id)
             return [r["sid"] for r in recs]
 
     def active_blocks_without_body(self, tenant_id: str) -> list[str]:
@@ -1218,48 +1305,56 @@ class Neo4jGraphStore:
                 "AND coalesce(b.body, '') = '' "
                 "RETURN b.id AS bid",
                 tid=tenant_id,
-            )
+             scope_tenant=tenant_id)
             return [r["bid"] for r in recs]
 
     def supersede_block(
         self, old_block_id: str, new_block: ContentBlock, section_id: str,
-        transaction_id: str | None = None,
-    ) -> None:
+        transaction_id: str | None = None, *, tenant_id: str) -> None:
         # Validate mutability up front (reads), then perform every write in a
         # single transaction: a crash mid-way must not leave the section with
         # two ACTIVE blocks (the custody invariant the publish gate checks).
-        sec = self.get_section(section_id)
+        sec = self.get_section(section_id, tenant_id=tenant_id)
         if sec is None:
             raise KeyError(section_id)
         if sec.mutability is not Mutability.AUTHORIAL_PASSTHROUGH:
             raise SectionMutabilityError(
                 f"section {section_id} is {sec.mutability.value}; cannot attach block"
             )
+        if new_block.tenant_id != tenant_id:
+            raise ValueError("Replacement block tenant differs from section owner")
         new_block.status = BlockStatus.ACTIVE
 
         def _tx(tx):
+            attached = tx.run("MATCH (:Section {id:$section,tenant_id:$tenant})-[:CONTAINS_BLOCK]->"
+                              "(b:ContentBlock {id:$block,tenant_id:$tenant}) RETURN b.id AS id",
+                              section=section_id,block=old_block_id,tenant=tenant_id).single()
+            if attached is None:
+                raise KeyError("Predecessor block is not attached to this section")
+            if transaction_id is not None:
+                self._require_node(tx, "Transaction", transaction_id, tenant_id)
             self._run_upsert_content_block(tx, new_block)
             tx.run(
-                "MATCH (s:Section {id:$sid}), (b:ContentBlock {id:$bid}) "
+                "MATCH (s:Section {id:$sid, tenant_id:$scope_tenant}), (b:ContentBlock {id:$bid, tenant_id:$scope_tenant}) "
                 "MERGE (s)-[:CONTAINS_BLOCK]->(b)",
                 sid=section_id, bid=new_block.id,
-            )
+             scope_tenant=tenant_id)
             # Mark the predecessor superseded; it stays attached for history.
             tx.run(
-                "MATCH (b:ContentBlock {id:$bid}) SET b.status=$status",
+                "MATCH (b:ContentBlock {id:$bid, tenant_id:$scope_tenant}) SET b.status=$status",
                 bid=old_block_id, status=BlockStatus.SUPERSEDED.value,
-            )
+             scope_tenant=tenant_id)
             tx.run(
-                "MATCH (new:ContentBlock {id:$nid}), (old:ContentBlock {id:$oid}) "
+                "MATCH (new:ContentBlock {id:$nid, tenant_id:$scope_tenant}), (old:ContentBlock {id:$oid, tenant_id:$scope_tenant}) "
                 "MERGE (new)-[:SUPERSEDES]->(old)",
                 nid=new_block.id, oid=old_block_id,
-            )
+             scope_tenant=tenant_id)
             if transaction_id is not None:
                 tx.run(
-                    "MATCH (new:ContentBlock {id:$nid}), (t:Transaction {id:$tid}) "
+                    "MATCH (new:ContentBlock {id:$nid, tenant_id:$scope_tenant}), (t:Transaction {id:$tid, tenant_id:$scope_tenant}) "
                     "MERGE (new)-[:DERIVED_FROM]->(t)",
                     nid=new_block.id, tid=transaction_id,
-                )
+                 scope_tenant=tenant_id)
 
         with self._driver.session() as session:
             session.execute_write(_tx)
@@ -1286,7 +1381,7 @@ class Neo4jGraphStore:
     def _run_upsert_content_block(runner, block: ContentBlock) -> None:
         # `runner` is a session or an open transaction; both expose .run.
         runner.run(
-            "MERGE (b:ContentBlock {id:$id}) "
+            "MERGE (b:ContentBlock {storage_key:$storage_key}) SET b.id=$id "
             "SET b:Entity, b.content_ref=$cref, b.kind=$kind, b.tenant_id=$tid, "
             "b.source_ref=$src, b.body=$body, b.status=$status, "
             "b.created_at = coalesce(b.created_at, $created_at)",
@@ -1294,35 +1389,35 @@ class Neo4jGraphStore:
             tid=block.tenant_id, src=block.source_ref, body=block.body,
             status=(block.status or BlockStatus.ACTIVE).value,
             created_at=block.created_at,
-        )
+         storage_key=SkillRef(block.tenant_id, block.id).storage_key, scope_tenant=block.tenant_id)
 
-    def upsert_artefact(self, artefact: Artefact, skill_id: str, path: str) -> None:
+    def upsert_artefact(self, artefact: Artefact, skill_id: str, path: str, *, tenant_id: str) -> None:
+        if artefact.tenant_id != tenant_id:
+            raise ValueError("Artefact tenant differs from its owner")
+        key = json.dumps([tenant_id,skill_id,path], ensure_ascii=False, separators=(",", ":"))
+        def write(tx):
+            self._require_node(tx, "Skill", skill_id, tenant_id)
+            tx.run("MATCH (s:Skill {id:$skill,tenant_id:$tenant}) "
+                   "MERGE (a:Artefact:ArtefactOccurrence {storage_key:$key}) "
+                   "SET a:Entity,a.id=$id,a.content_ref=$ref,a.kind=$kind,a.name=$name,a.size=$size,"
+                   "a.tenant_id=$tenant,a.source_ref=$source,a.owner_skill_id=$skill,a.occurrence_path=$path,"
+                   "a.created_at=coalesce(a.created_at,$created),a.mode=$mode "
+                   "WITH s,a OPTIONAL MATCH (s)-[old:HAS_ARTEFACT {path:$path}]->(other) "
+                   "WHERE other <> a DELETE old WITH DISTINCT s,a "
+                   "MERGE (s)-[r:HAS_ARTEFACT {path:$path}]->(a)",
+                   skill=skill_id,tenant=tenant_id,key=key,id=artefact.id,ref=artefact.content_ref,
+                   kind=artefact.kind.value,name=artefact.name,size=artefact.size,source=artefact.source_ref,
+                   path=path,created=artefact.created_at,mode=artefact.mode).consume()
         with self._driver.session() as session:
-            session.run(
-                "MERGE (a:Artefact {id:$id}) "
-                "SET a:Entity, a.content_ref=$cref, a.kind=$kind, a.name=$name, a.size=$size, "
-                "a.tenant_id=$tid, a.source_ref=$src, "
-                "a.created_at = coalesce(a.created_at, $created_at) "
-                "WITH a "
-                "MATCH (sk:Skill {id:$sid}) "
-                "OPTIONAL MATCH (sk)-[old:HAS_ARTEFACT {path:$path}]->(:Artefact) "
-                "DELETE old "
-                "WITH sk, a "
-                "MERGE (sk)-[r:HAS_ARTEFACT {path:$path}]->(a) "
-                "SET r.path=$path",
-                id=artefact.id, cref=artefact.content_ref, kind=artefact.kind.value,
-                name=artefact.name, size=artefact.size, tid=artefact.tenant_id,
-                src=artefact.source_ref, created_at=artefact.created_at,
-                sid=skill_id, path=path,
-            )
+            session.execute_write(write)
 
-    def artefacts_for_skill(self, skill_id: str) -> list[tuple[Artefact, str]]:
+    def artefacts_for_skill(self, skill_id: str, *, tenant_id: str) -> list[tuple[Artefact, str]]:
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (sk:Skill {id:$sid})-[r:HAS_ARTEFACT]->(a:Artefact) "
-                "RETURN a, r.path AS path",
+                "MATCH (sk:Skill {id:$sid, tenant_id:$scope_tenant})-[r:HAS_ARTEFACT]->(a:Artefact) "
+                "RETURN a, r.path AS path ORDER BY path",
                 sid=skill_id,
-            )
+             scope_tenant=tenant_id)
             return [(self._artefact_from_node(rec["a"]), rec["path"]) for rec in recs]
 
     def _artefact_from_node(self, n) -> Artefact:
@@ -1330,18 +1425,30 @@ class Neo4jGraphStore:
             id=n["id"], content_ref=n["content_ref"], kind=ArtefactKind(n["kind"]),
             name=n["name"], size=n["size"], tenant_id=n["tenant_id"],
             source_ref=n["source_ref"],
+            mode=n.get("mode"),
             created_at=n["created_at"].to_native() if n.get("created_at") else _now(),
         )
+
+    def remove_artefact(self, skill_id: str, path: str, *, tenant_id: str) -> None:
+        key = json.dumps([tenant_id, skill_id, path], ensure_ascii=False, separators=(",", ":"))
+        with self._driver.session() as session:
+            session.run("MATCH (s:Skill {id:$skill,tenant_id:$tenant}) "
+                        "MATCH (a:Artefact {storage_key:$key}) "
+                        "OPTIONAL MATCH (s)-[r:HAS_ARTEFACT|HAS_REFERENCE]->(a) DELETE r "
+                        "WITH DISTINCT a WHERE NOT (a)--() DELETE a",
+                        skill=skill_id, tenant=tenant_id, key=key).consume()
 
     def upsert_publication(self, publication: Publication) -> None:
         with self._driver.session() as session:
             session.run(
                 "MERGE (p:Publication {id:$id}) "
                 "SET p:Entity, p.skill_id=$skill_id, p.source_ref=$src, p.content_hash=$hash, "
-                "p.published_at=$pa, p.tenant_id=$tid",
+                "p.published_at=$pa, p.tenant_id=$tid, p.mode=$mode, "
+                "p.manifest_json=$manifest,p.policy_version=$policy",
                 id=publication.id, skill_id=publication.skill_id,
                 src=publication.source_ref, hash=publication.content_hash,
                 pa=publication.published_at, tid=publication.tenant_id,
+                mode=publication.mode, manifest=publication.manifest_json, policy=publication.policy_version,
             )
 
     def get_publication(self, tenant_id: str, source_ref: str) -> Publication | None:
@@ -1389,13 +1496,14 @@ class Neo4jGraphStore:
         with self._driver.session() as session:
             session.run(
                 "CREATE (v:SkillVersion {"
-                "id: $id, skill_id: $skill_id, tenant_id: $tenant_id, at: $at, "
+                "id: $id, storage_key:$storage_key, skill_id: $skill_id, tenant_id: $tenant_id, at: $at, "
                 "revision: $revision, cause: $cause, actor_person_id: $actor, "
                 "detail: $detail, group_id: $group_id, "
                 "parts_json: $parts_json, metadata_json: $metadata_json, "
-                "rules_json: $rules_json}) "
+                "rules_json: $rules_json, files_json:$files_json, source_operation_id:$source_operation, "
+                "source_origin_id:$source_origin, source_revision:$source_revision}) "
                 "WITH v "
-                "OPTIONAL MATCH (s:Skill {id: $skill_id}) "
+                "OPTIONAL MATCH (s:Skill {id: $skill_id, tenant_id:$scope_tenant}) "
                 "FOREACH (_ IN CASE WHEN s IS NULL THEN [] ELSE [1] END | "
                 "  MERGE (s)-[:HAS_VERSION]->(v))",
                 id=version.id, skill_id=version.skill_id, tenant_id=version.tenant_id,
@@ -1403,10 +1511,12 @@ class Neo4jGraphStore:
                 actor=version.actor_person_id, detail=version.detail,
                 group_id=version.group_id, parts_json=version.parts_json,
                 metadata_json=version.metadata_json, rules_json=version.rules_json,
-            )
+                files_json=version.files_json, source_operation=version.source_operation_id,
+                source_origin=version.source_origin_id, source_revision=version.source_revision,
+             storage_key=SkillRef(version.tenant_id,version.id).storage_key, scope_tenant=version.tenant_id)
 
     def skill_versions(self, tenant_id: str, skill_id: str, limit: int = 50,
-                       before: datetime | None = None) -> list[SkillVersion]:
+                       before: datetime | None = None, *, before_id: str | None = None) -> list[SkillVersion]:
         # `before` is normalised to a plain UTC offset before it goes on the
         # wire, the same as `at` is normalised on the way back in
         # `_skill_version_from_node`: a datetime handed back from an earlier
@@ -1419,18 +1529,19 @@ class Neo4jGraphStore:
         with self._driver.session() as session:
             recs = session.run(
                 "MATCH (v:SkillVersion {tenant_id: $tenant_id, skill_id: $skill_id}) "
-                "WHERE $before IS NULL OR v.at < $before "
-                "RETURN v ORDER BY v.at DESC LIMIT $limit",
+                "WHERE $before IS NULL OR v.at < $before OR (v.at = $before AND v.id < $before_id) "
+                "RETURN v ORDER BY v.at DESC, v.id DESC LIMIT $limit",
                 tenant_id=tenant_id, skill_id=skill_id, limit=limit,
                 before=None if before is None else before.astimezone(timezone.utc),
+                before_id=before_id,
             )
             return [self._skill_version_from_node(r["v"]) for r in recs]
 
-    def get_skill_version(self, version_id: str) -> SkillVersion | None:
+    def get_skill_version(self, version_id: str, *, tenant_id: str) -> SkillVersion | None:
         with self._driver.session() as session:
             rec = session.run(
-                "MATCH (v:SkillVersion {id:$id}) RETURN v", id=version_id,
-            ).single()
+                "MATCH (v:SkillVersion {id:$id,tenant_id:$scope_tenant}) RETURN v", id=version_id,
+             scope_tenant=tenant_id).single()
         if rec is None:
             return None
         return self._skill_version_from_node(rec["v"])
@@ -1466,7 +1577,7 @@ class Neo4jGraphStore:
         with self._driver.session() as session:
             rec = session.run(
                 "MATCH (v:SkillVersion {tenant_id: $tenant_id, skill_id: $skill_id}) "
-                "WITH v ORDER BY v.at DESC "
+                "WITH v ORDER BY v.at DESC, v.id DESC "
                 "WITH collect(v) AS rows "
                 "WITH rows, rows[-1] AS oldest "
                 "UNWIND rows[$keep..] AS doomed "
@@ -1488,6 +1599,8 @@ class Neo4jGraphStore:
             parts_json=n.get("parts_json", "[]"),
             metadata_json=n.get("metadata_json", "{}"),
             rules_json=n.get("rules_json", "[]"),
+            files_json=n.get("files_json"), source_operation_id=n.get("source_operation_id"),
+            source_origin_id=n.get("source_origin_id"), source_revision=n.get("source_revision"),
         )
 
     def record_usage_event(self, event: UsageEvent) -> None:
@@ -1559,6 +1672,7 @@ class Neo4jGraphStore:
             id=n["id"], skill_id=n["skill_id"], source_ref=n["source_ref"],
             content_hash=n["content_hash"],
             published_at=n["published_at"].to_native(), tenant_id=n["tenant_id"],
+            mode=n.get("mode"), manifest_json=n.get("manifest_json"), policy_version=n.get("policy_version"),
         )
 
     def observe_rule_in(self, rule_id: str, transaction_id: str, source_ref: str) -> None:
@@ -1570,6 +1684,10 @@ class Neo4jGraphStore:
         rebuilding the total from edges would discard legitimate evidence.
         """
         def _tx(tx):
+            row = tx.run("MATCH (r:Rule {id:$id}) RETURN r.tenant_id AS tenant", id=rule_id).single()
+            if row is None:
+                raise KeyError(rule_id)
+            self._require_node(tx, "Transaction", transaction_id, row["tenant"])
             tx.run(
                 "MATCH (r:Rule {id:$rid}), (t:Transaction {id:$tid}) "
                 "WHERE r.tenant_id=t.tenant_id "
@@ -1590,13 +1708,13 @@ class Neo4jGraphStore:
         with self._driver.session() as session:
             session.execute_write(_tx)
 
-    def examples_for_section(self, section_id: str) -> list[Example]:
+    def examples_for_section(self, section_id: str, *, tenant_id: str) -> list[Example]:
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (:Section {id:$sid})-[:HAS_EXAMPLE]->(e:Example) "
-                "RETURN e ORDER BY coalesce(e.order, 2147483647)",
+                "MATCH (:Section {id:$sid, tenant_id:$scope_tenant})-[:HAS_EXAMPLE]->(e:Example {tenant_id:$scope_tenant}) "
+                "RETURN e ORDER BY e.order IS NULL,e.order,e.id",
                 sid=section_id,
-            )
+             scope_tenant=tenant_id)
             return [self._example_from_node(r["e"]) for r in recs]
 
     def upsert_cross_skill_edge(
@@ -1606,13 +1724,17 @@ class Neo4jGraphStore:
         # Edge type can't be parameterised in Cypher; build the statement.
         cypher = (
             f"MATCH (a:Rule {{id:$frm}}), (b:Rule {{id:$to}}) "
+            "WHERE a.tenant_id=b.tenant_id "
             f"MERGE (a)-[r:{edge_type.value}]->(b) "
             f"SET r.confidence=$conf"
         )
         if kind is not None:
             cypher += ", r.kind=$kind"
         with self._driver.session() as session:
-            session.run(cypher, frm=from_rule_id, to=to_rule_id, conf=confidence, kind=kind)
+            row = session.run(cypher + " RETURN a.id AS id", frm=from_rule_id, to=to_rule_id,
+                              conf=confidence, kind=kind).single()
+            if row is None:
+                raise ValueError("Cross-skill relationship requires existing same-tenant rules")
 
     def cross_skill_neighbours(self, rule_id: str) -> list[tuple[EdgeType, str, float]]:
         with self._driver.session() as session:

@@ -395,6 +395,9 @@ def _preamble_parts(skill: Skill, description: str) -> list[DocPart]:
             note=None if skill.description else
                  "Derived from the rules below, because this skill has no "
                  "description of its own. Type here to set one."),
+        *([DocPart(anchor="declared-license", kind="frontmatter",
+                   lines=(f"license: {json.dumps(skill.declared_license, ensure_ascii=False)}",))]
+          if skill.declared_license is not None else []),
         DocPart(anchor="frontmatter-end", kind="frontmatter",
                 lines=("---", ""), note="Generated."),
         DocPart(anchor="title", kind="title",

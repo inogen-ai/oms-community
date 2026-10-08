@@ -45,13 +45,13 @@ def recorded_sources(store, queue, skill) -> set[str]:
     if skill.import_source_ref:
         return {skill.import_source_ref}
     sources = set()
-    for rule in store.rules_for_skill(skill.id):
+    for rule in store.rules_for_skill(skill.id, tenant_id=skill.tenant_id):
         sources.update(t.source_ref for t in store.lineage(rule.id)
                        if t.tenant_id == skill.tenant_id
                        and t.signal_type is SignalType.SKILL_IMPORT and t.source_ref)
-    sections = store.sections_for_skill(skill.id)
+    sections = store.sections_for_skill(skill.id, tenant_id=skill.tenant_id)
     for section in sections:
-        for block in store.blocks_for_section(section.id):
+        for block in store.blocks_for_section(section.id, tenant_id=skill.tenant_id):
             source = block.source_ref.partition("#")[0]
             if source.endswith("/SKILL.md") or source == "SKILL.md":
                 sources.add(source)
@@ -78,7 +78,7 @@ def resolve_identities(skills, store, queue, tenant_id):
     for parsed in skills:
         source = canonical_source(parsed.source_ref, parsed.id)
         matches = bindings.get(source, [])
-        existing = store.get_skill(parsed.id)
+        existing = store.get_skill(parsed.id, tenant_id=tenant_id)
         target = None
         if len(matches) > 1:
             raise ImportIdentityConflict(f"More than one skill owns {source!r}; resolve its source bindings before importing.")
@@ -107,12 +107,11 @@ def resolve_identities(skills, store, queue, tenant_id):
             conventional = (source == f"skills/{slug(parsed.id)}/SKILL.md"
                             or PurePosixPath(source).is_absolute())
             candidate = parsed.id if conventional else source_skill_id(parsed.id, source)
-            owner = store.get_skill(candidate)
+            owner = store.get_skill(candidate, tenant_id=tenant_id)
             if owner is not None:
-                # Never overwrite a different source or
-                # another tenant's node (IDs are globally unique in storage).
+                # Never overwrite another source in the admitted workspace.
                 candidate = source_skill_id(parsed.id, source)
-                owner = store.get_skill(candidate)
+                owner = store.get_skill(candidate, tenant_id=tenant_id)
                 if owner is not None:
                     raise ImportIdentityConflict(
                         f"Import identity for {source!r} is already occupied; give this skill a distinct frontmatter name.")

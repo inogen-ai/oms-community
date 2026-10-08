@@ -60,7 +60,7 @@ class MergeStep:
     def merge_skill(self, skill: ParsedSkill, transaction_id: str, tenant_id: str,
                     *, observe_sources: bool = False) -> MergeReport:
         report = MergeReport()
-        existing = self._store.rules_for_skill(skill.id)          # snapshot before inserts
+        existing = self._store.rules_for_skill(skill.id, tenant_id=tenant_id)          # snapshot before inserts
         by_key = {(_normalise(r.body), r.polarity): r for r in existing}
         by_norm = {_normalise(r.body): r for r in existing}       # for cross-polarity detection
         by_id = {r.id: r for r in existing}                       # vector-match candidates
@@ -94,7 +94,7 @@ class MergeStep:
                     match.corroboration_count += 1
                     self._store.upsert_rule(match)
                 self._store.attach_edge(Edge(type=EdgeType.DERIVED_FROM,
-                                             from_id=match.id, to_id=transaction_id))
+                                             from_id=match.id, to_id=transaction_id), tenant_id=tenant_id)
                 if observe_sources:
                     self._store.observe_rule_in(match.id, transaction_id, skill.source_ref)
                 for ex in prule.examples:
@@ -102,7 +102,7 @@ class MergeStep:
                         id=_example_id(match.id, ex.body),
                         body=ex.body, kind=ex.kind, tenant_id=tenant_id,
                         parent_rule_id=match.id,
-                    ))
+                    ), tenant_id=tenant_id)
                 seen.add(match.id)
                 report.corroborated += 1
                 continue
@@ -118,14 +118,14 @@ class MergeStep:
                 self._store.upsert_rule(rule)
             if self._extension is not None:
                 self._extension.rule_stored(rule)
-            self._store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule.id, to_id=skill.id))
+            self._store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule.id, to_id=skill.id), tenant_id=tenant_id)
             # The rule's OWN tags only. The skill's go on the skill, because a
             # tag copied down here would make `rules_by_tags` answer with every
             # rule in the skill rather than the ones about the tag.
             for tag in dict.fromkeys(prule.tags):
                 self._store.upsert_tag(tag, tag)
-                self._store.attach_edge(Edge(type=EdgeType.TAGGED_WITH, from_id=rule.id, to_id=tag))
-            self._store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule.id, to_id=transaction_id))
+                self._store.attach_edge(Edge(type=EdgeType.TAGGED_WITH, from_id=rule.id, to_id=tag), tenant_id=tenant_id)
+            self._store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule.id, to_id=transaction_id), tenant_id=tenant_id)
             if observe_sources:
                 self._store.observe_rule_in(rule.id, transaction_id, skill.source_ref)
             for ex in prule.examples:
@@ -133,7 +133,7 @@ class MergeStep:
                     id=_example_id(rule.id, ex.body),
                     body=ex.body, kind=ex.kind, tenant_id=tenant_id,
                     parent_rule_id=rule.id,
-                ))
+                ), tenant_id=tenant_id)
             by_key[key] = rule
             by_norm[norm] = rule
             by_id[rule.id] = rule

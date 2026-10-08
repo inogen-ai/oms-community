@@ -1,3 +1,5 @@
+from dataclasses import replace
+from copy import copy
 import hashlib
 import json
 import logging
@@ -9,12 +11,16 @@ from pathlib import Path
 from uuid import uuid4
 
 from oms.domain.ids import slug as _slug
-from oms.domain.models import Constraint, Publication, Rule, Skill
+from oms.domain.models import Constraint, Publication, Rule, Section, Skill
 from oms.domain.repo import is_repo_skill
 from oms.domain.types import ArtefactKind, SectionKind, SkillStatus
+from oms.import_skills.parser import parse_frontmatter
 from oms.ports.blob_store import BlobStore
 from oms.ports.graph_store import GraphStore
 from oms.publish.gate import GateResult, run_publish_gate
+from oms.publish.manifest import (
+    LEGACY_MODE, PUBLICATION_POLICY_VERSION, file_mode, intended_mode, mode_matches, package_manifest,
+)
 from oms.publish.parts import DocPart
 from oms.ports.publishing import PublishingRenderer
 from oms.publish.render import (
@@ -223,6 +229,8 @@ class Publisher:
         core's. A path that is absolute, escapes the tree, sits under
         `skills/` or `.git/`, starts `.oms-`, or names a file the core
         publishes is refused with ValueError before anything is written."""
+        self = copy(self)
+        self._emitted: dict[str, tuple[str, int | None, int]] = {}
         extra = self._checked_extra_root_files(extra_root_files)
         rendered = self.publishable_skills(tenant_id, select=select)
         skills = [skill for skill, _ in rendered]
@@ -240,15 +248,26 @@ class Publisher:
         out_dir.mkdir(parents=True, exist_ok=True)
         ownership_path = out_dir / ".oms-ownership.json"
         owned_hashes = None
+        owned_modes: dict[str, int | str | None] = {}
         if ownership_path.is_file():
             try:
-                owned_hashes = json.loads(ownership_path.read_text(encoding="utf-8"))
+                ownership_records = json.loads(ownership_path.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 raise ValueError("the publication ownership manifest cannot be read") from None
-            if (not isinstance(owned_hashes, dict) or
-                    any(not isinstance(ref, str) or not isinstance(value, str)
-                        for ref, value in owned_hashes.items())):
+            if not isinstance(ownership_records, dict):
                 raise ValueError("the publication ownership manifest is invalid")
+            owned_hashes = {}
+            for ref, value in ownership_records.items():
+                if isinstance(value, str):
+                    digest, mode = value, LEGACY_MODE
+                elif (isinstance(value, dict) and set(value) == {"sha256", "mode"}
+                      and isinstance(value["sha256"], str) and value["mode"] in (None, 0o100644, 0o100755)):
+                    digest, mode = value["sha256"], value["mode"]
+                else:
+                    raise ValueError("the publication ownership manifest is invalid")
+                if not isinstance(ref, str):
+                    raise ValueError("the publication ownership manifest is invalid")
+                owned_hashes[ref], owned_modes[ref] = digest, mode
         if skills_only:
             # A skills-only destination holding a full bundle is the main
             # bundle under another name or another spelling of its address.
@@ -277,10 +296,12 @@ class Publisher:
             previous_ids = ["(org)"]
             if (out_dir / "skills").is_dir():
                 previous_ids += [child.name for child in (out_dir / "skills").iterdir() if child.is_dir()]
-            owned_hashes = {record.source_ref: record.content_hash
-                            for skill_id in previous_ids
-                            for record in self._store.publications_for_skill(tenant_id, skill_id)}
-        self._recover_publication_writes(out_dir, owned_hashes)
+            records = [record for skill_id in previous_ids
+                       for record in self._store.publications_for_skill(tenant_id, skill_id)]
+            owned_hashes = {record.source_ref: record.content_hash for record in records}
+            owned_modes = {record.source_ref: LEGACY_MODE if record.mode is None else record.mode
+                           for record in records}
+        self._recover_publication_writes(out_dir, owned_hashes, owned_modes)
         # Local refreshers only reconcile a completed publication. Keep the
         # pending marker after an interrupted write until the next success.
         pending = out_dir / ".oms-publishing"
@@ -331,12 +352,12 @@ class Publisher:
         # directory OMS cannot prove it created is never touched.
         self._prune_stale_skill_dirs(tenant_id, out_dir,
                                      published_ids={s.id for s, _ in rendered},
-                                     owned_hashes=owned_hashes)
+                                     owned_hashes=owned_hashes, owned_modes=owned_modes)
         # Same for root artefacts a withdrawn setting has stopped producing.
         # Runs here because it needs the full set of this publish's root
         # writes, which the block above completes.
         self._prune_stale_root_files(tenant_id, out_dir, written_refs=root_refs,
-                                    owned_hashes=owned_hashes)
+                                    owned_hashes=owned_hashes, owned_modes=owned_modes)
 
         for skill, r in rendered:
             skill_id = skill.id
@@ -346,7 +367,9 @@ class Publisher:
                 skill_dir / "SKILL.md", r.skill_md,
                 tenant_id=tenant_id, skill_id=skill_id,
                 source_ref=f"skills/{skill_id}/SKILL.md",
+                mode=skill.document_mode,
             )
+            emitted = {"SKILL.md"}
             if r.references_md is not None:
                 ref_path = skill_dir / REFERENCES_FILE
                 ref_path.parent.mkdir(parents=True, exist_ok=True)
@@ -355,22 +378,29 @@ class Publisher:
                     tenant_id=tenant_id, skill_id=skill_id,
                     source_ref=f"skills/{skill_id}/{REFERENCES_FILE}",
                 )
+                emitted.add(REFERENCES_FILE)
             # Write artefacts back to disk from the BlobStore (when wired).
-            self._write_artefacts(skill_id, skill_dir, tenant_id)
+            emitted.update(self._write_artefacts(skill_id, skill_dir, tenant_id))
+            self._prune_stale_skill_files(tenant_id, skill_id, out_dir, emitted, owned_hashes, owned_modes)
+            primary = self._store.get_publication(tenant_id, f"skills/{skill_id}/SKILL.md")
+            self._store.upsert_publication(replace(primary,
+                content_hash=self._emitted[f"skills/{skill_id}/SKILL.md"][0],
+                mode=self._emitted[f"skills/{skill_id}/SKILL.md"][1],
+                manifest_json=package_manifest(self._emitted, f"skills/{skill_id}/"),
+                policy_version=PUBLICATION_POLICY_VERSION))
 
         # Each destination retains its own proof of ownership. The database
         # ledger describes the most recent publish, which may have gone to a
         # different folder/repository with different bytes. Without this,
         # returning to an older destination can keep a now-muted skill there.
         ownership = dict(owned_hashes or {})
-        for skill_id in ("(org)", *(skill.id for skill, _ in rendered)):
-            for record in self._store.publications_for_skill(tenant_id, skill_id):
-                path = out_dir / record.source_ref
-                if (path.resolve().is_relative_to(out_dir.resolve()) and path.is_file() and
-                        hashlib.sha256(path.read_bytes()).hexdigest() == record.content_hash):
-                    ownership[record.source_ref] = record.content_hash
+        for ref, (digest, mode, _) in self._emitted.items():
+            ownership[ref], owned_modes[ref] = digest, mode
         ownership_tmp = out_dir / ".oms-ownership.tmp"
-        ownership_tmp.write_text(json.dumps(ownership, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        # A legacy record stays hash-only until a publish learns its mode.
+        ownership_tmp.write_text(json.dumps({ref: digest if owned_modes.get(ref) == LEGACY_MODE
+            else {"sha256": digest, "mode": owned_modes.get(ref)}
+            for ref, digest in ownership.items()}, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         ownership_tmp.replace(ownership_path)
         (out_dir / ".oms-writes.jsonl").unlink(missing_ok=True)
 
@@ -384,7 +414,7 @@ class Publisher:
                 relative = path.relative_to(out_dir).as_posix()
                 if relative in (".oms-publication", ".oms-publishing", ".oms-publication.tmp") or path.is_symlink():
                     continue
-                digest.update(relative.encode() + b"\0" + path.read_bytes() + b"\0")
+                digest.update(relative.encode() + b"\0" + str(file_mode(path)).encode() + b"\0" + path.read_bytes() + b"\0")
         revision = out_dir / ".oms-publication.tmp"
         revision.write_text(digest.hexdigest() + "\n", encoding="utf-8")
         revision.replace(out_dir / ".oms-publication")
@@ -462,9 +492,8 @@ class Publisher:
             installer,
             self._renderer.install_script(self._mcp_endpoint, root_files=self._root_files,
                                   bundle_token=self._bundle_token),
-            tenant_id=tenant_id, skill_id="(org)", source_ref="install.sh",
+            tenant_id=tenant_id, skill_id="(org)", source_ref="install.sh", mode=0o100755,
         ))
-        installer.chmod(0o755)
         # The Windows twin. Native Windows has no POSIX shell, so the same
         # contract ships a second time in the one language a stock machine
         # already has. Not chmod'ed: PowerShell is invoked by file path, and
@@ -503,7 +532,7 @@ class Publisher:
     def render_skill(self, skill_id: str, tenant_id: str) -> str:
         """Render a single skill's SKILL.md as a string, without writing to disk.
         Reuses the same renderer used by publish() so output matches exactly."""
-        skill = self._store.get_skill(skill_id)
+        skill = self._store.get_skill(skill_id, tenant_id=tenant_id)
         if skill is None or skill.tenant_id != tenant_id:
             raise KeyError(f"skill {skill_id!r} not found for tenant {tenant_id!r}")
         return self._render(skill).skill_md
@@ -515,12 +544,12 @@ class Publisher:
         because the caller has already loaded it."""
         return self._render(skill)
 
-    def resource_names(self, skill_id: str, has_references: bool) -> list[str]:
+    def resource_names(self, skill_id: str, has_references: bool, *, tenant_id: str) -> list[str]:
         """The Level 3 files published alongside a skill: the generated overflow
         file when the body overran its budget, then the imported artefacts. The
         publisher-owned files regenerated on every publish are not resources."""
         names = [REFERENCES_FILE] if has_references else []
-        names += [path for _artefact, path in self._store.artefacts_for_skill(skill_id)
+        names += [path for _artefact, path in self._store.artefacts_for_skill(skill_id, tenant_id=tenant_id)
                   if path not in (REFERENCES_FILE, "SKILL.md", "CLAUDE.md")]
         return names
 
@@ -531,7 +560,7 @@ class Publisher:
 
         Publish computes the manifest's version map through here too, so the
         versions it quotes are the versions the read tools serve."""
-        resources = self.resource_names(skill.id, package.references_md is not None)
+        resources = self.resource_names(skill.id, package.references_md is not None, tenant_id=skill.tenant_id)
         return rewrite_resource_links(package.skill_md, skill.id, resources), resources
 
     def publishable_skills(self, tenant_id: str, *,
@@ -597,7 +626,8 @@ class Publisher:
             if has_nothing_to_say(body.skill_md):
                 logger.info("publish: skipping %s, which has no content yet", skill.id)
                 continue
-            out.append((skill, body))
+            fields, _ = parse_frontmatter(body.skill_md)
+            out.append((replace(skill, description=fields.get("description", skill.description)), body))
         return out
 
     def outline_skill(self, skill_id: str, tenant_id: str) -> tuple[list[DocPart], str]:
@@ -613,46 +643,60 @@ class Publisher:
         edited. A flat skill has no section headings to rename, and an editor
         that simply showed none would look broken rather than correct.
         """
-        skill = self._store.get_skill(skill_id)
+        skill = self._store.get_skill(skill_id, tenant_id=tenant_id)
         if skill is None or skill.tenant_id != tenant_id:
             raise KeyError(f"skill {skill_id!r} not found for tenant {tenant_id!r}")
-        sections = self._store.sections_for_skill(skill.id)
-        blocks_by = {s.id: self._store.blocks_for_section(s.id) for s in sections}
+        sections = self._store.sections_for_skill(skill.id, tenant_id=tenant_id)
+        blocks_by = {s.id: self._store.blocks_for_section(s.id, tenant_id=tenant_id) for s in sections}
         if any(blocks_by.values()):
-            rules_by = {s.id: self._store.rules_for_section(s.id) for s in sections
+            rules_by = {s.id: self._store.rules_for_section(s.id, tenant_id=tenant_id) for s in sections
                         if s.kind is SectionKind.RULES}
-            placements_by = {s.id: self._store.rule_placements_for_section(s.id)
+            placements_by = {s.id: self._store.rule_placements_for_section(s.id, tenant_id=tenant_id)
                              for s in sections}
-            ex_by_sec = {s.id: self._store.examples_for_section(s.id) for s in sections}
+            ex_by_sec = {s.id: self._store.examples_for_section(s.id, tenant_id=tenant_id) for s in sections}
             section_rule_ids = {r.id for rs in rules_by.values() for r in rs}
-            orphans = [r for r in self._store.rules_for_skill(skill.id)
+            orphans = [r for r in self._store.rules_for_skill(skill.id, tenant_id=tenant_id)
                        if r.id not in section_rule_ids]
             all_rules = [r for rs in rules_by.values() for r in rs] + orphans
             active = sorted((r for r in all_rules if publishable(r)),
                             key=lambda r: r.corroboration_count, reverse=True)
             skill.description = describe(skill, active)
-            examples_by_rule = {r.id: self._store.examples_for_rule(r.id) for r in all_rules}
+            examples_by_rule = {r.id: self._store.examples_for_rule(r.id, tenant_id=tenant_id) for r in all_rules}
             parts, _ = outline_skill_sectioned(
                 skill, sections,
                 rules_by_section=rules_by, blocks_by_section=blocks_by,
                 examples_by_section=ex_by_sec, examples_by_rule=examples_by_rule,
                 extra_body_rules=orphans, placements_by_section=placements_by,
-                decisions=self._decisions(skill.id),
+                decisions=self._decisions(skill.id, tenant_id=skill.tenant_id),
             )
             return parts, "sectioned"
-        rules = self._store.rules_for_skill(skill.id)
+        rules = self._placed_order(sections, tenant_id,
+                                   self._store.rules_for_skill(skill.id, tenant_id=tenant_id))
         active = [r for r in rules if publishable(r)]
         active.sort(key=lambda r: r.corroboration_count, reverse=True)
         skill.description = describe(skill, active)
-        examples_by_rule = {r.id: self._store.examples_for_rule(r.id) for r in rules}
-        skill_examples = self._store.examples_for_skill(skill.id)
+        examples_by_rule = {r.id: self._store.examples_for_rule(r.id, tenant_id=tenant_id) for r in rules}
+        skill_examples = self._store.examples_for_skill(skill.id, tenant_id=tenant_id)
         parts, _ = outline_skill_flat(
             skill, rules, examples_by_rule=examples_by_rule,
             skill_examples=skill_examples, body_budget=self._body_budget,
         )
         return parts, "flat"
 
-    def _decisions(self, skill_id: str) -> list[Rule] | None:
+    def _placed_order(self, sections: list[Section], tenant_id: str, rules: list[Rule]) -> list[Rule]:
+        """Order a flat skill's rules by the author's placements. The store
+        lists rules by id, which would scramble a headingless import. The
+        renderer's corroboration sort is stable, so this order only breaks
+        ties: a reinforced rule still rises above the author's sequence.
+        Placed rules come first, then placed without an order, then the rest."""
+        rank: dict[str, tuple[int, int, int]] = {}
+        for index, section in enumerate(sections):
+            for placement in self._store.rule_placements_for_section(section.id, tenant_id=tenant_id):
+                key = (1, index, 0) if placement.order is None else (0, index, placement.order)
+                rank[placement.rule_id] = min(key, rank.get(placement.rule_id, key))
+        return sorted(rules, key=lambda r: rank.get(r.id, (2, 0, 0)))
+
+    def _decisions(self, skill_id: str, *, tenant_id: str) -> list[Rule] | None:
         """Extensions may supply a prioritised rules block; local publication
         retains the document's manually chosen rule positions."""
         return None
@@ -661,41 +705,43 @@ class Publisher:
         """Render a skill to SKILL.md. Uses the authorial section structure when
         the skill has sections (preserving headings, prose and checklists), and
         falls back to a flat rule list for skills without section custody."""
-        sections = self._store.sections_for_skill(skill.id)
-        blocks_by = {s.id: self._store.blocks_for_section(s.id) for s in sections}
+        skill = replace(skill)
+        sections = self._store.sections_for_skill(skill.id, tenant_id=skill.tenant_id)
+        blocks_by = {s.id: self._store.blocks_for_section(s.id, tenant_id=skill.tenant_id) for s in sections}
         # Only the authorial-section structure is worth preserving; a skill whose
         # content is purely aggregated rules (no content blocks) renders the same
         # either way, so it stays on the flat path (which keeps the references file).
         if any(blocks_by.values()):
-            rules_by = {s.id: self._store.rules_for_section(s.id) for s in sections
+            rules_by = {s.id: self._store.rules_for_section(s.id, tenant_id=skill.tenant_id) for s in sections
                         if s.kind is SectionKind.RULES}
-            placements_by = {s.id: self._store.rule_placements_for_section(s.id) for s in sections}
-            ex_by_sec = {s.id: self._store.examples_for_section(s.id) for s in sections}
+            placements_by = {s.id: self._store.rule_placements_for_section(s.id, tenant_id=skill.tenant_id) for s in sections}
+            ex_by_sec = {s.id: self._store.examples_for_section(s.id, tenant_id=skill.tenant_id) for s in sections}
             section_rule_ids = {r.id for rs in rules_by.values() for r in rs}
             # Only a rules section actually renders CONTAINS_RULE memberships.
             # Reimport can reclassify its heading as prose while a removal is
             # awaiting review. Keep those live rules visible as extras until
             # an operator explicitly retires them.
-            orphans = [r for r in self._store.rules_for_skill(skill.id)
+            orphans = [r for r in self._store.rules_for_skill(skill.id, tenant_id=skill.tenant_id)
                        if r.id not in section_rule_ids]
             all_rules = [r for rs in rules_by.values() for r in rs] + orphans
             active = sorted((r for r in all_rules if publishable(r)),
                             key=lambda r: r.corroboration_count, reverse=True)
             skill.description = describe(skill, active)
-            examples_by_rule = {r.id: self._store.examples_for_rule(r.id) for r in all_rules}
+            examples_by_rule = {r.id: self._store.examples_for_rule(r.id, tenant_id=skill.tenant_id) for r in all_rules}
             return render_skill_sectioned(
                 skill, sections,
                 rules_by_section=rules_by, blocks_by_section=blocks_by,
                 examples_by_section=ex_by_sec, examples_by_rule=examples_by_rule,
                 extra_body_rules=orphans, placements_by_section=placements_by,
-                decisions=self._decisions(skill.id),
+                decisions=self._decisions(skill.id, tenant_id=skill.tenant_id),
             )
-        rules = self._store.rules_for_skill(skill.id)
+        rules = self._placed_order(sections, skill.tenant_id,
+                                   self._store.rules_for_skill(skill.id, tenant_id=skill.tenant_id))
         active = [r for r in rules if publishable(r)]
         active.sort(key=lambda r: r.corroboration_count, reverse=True)
         skill.description = describe(skill, active)
-        examples_by_rule = {r.id: self._store.examples_for_rule(r.id) for r in rules}
-        skill_examples = self._store.examples_for_skill(skill.id)
+        examples_by_rule = {r.id: self._store.examples_for_rule(r.id, tenant_id=skill.tenant_id) for r in rules}
+        skill_examples = self._store.examples_for_skill(skill.id, tenant_id=skill.tenant_id)
         return render_skill_with_examples(
             skill, rules, examples_by_rule=examples_by_rule,
             skill_examples=skill_examples, body_budget=self._body_budget,
@@ -704,23 +750,27 @@ class Publisher:
     def _write_with_ledger(
         self, path: Path, body: str, *,
         tenant_id: str, skill_id: str, source_ref: str,
+        mode: int | None = None,
     ) -> str:
         """Write the file and record it in the publication ledger. Returns the
         source_ref it ledgered, so a caller tracking what this publish emitted
         can collect it in the same expression as the write rather than keeping
         a second list beside the writes."""
-        content_hash = self._write_published_file(path, body.encode("utf-8"), source_ref)
+        content_hash = self._write_published_file(path, body.encode("utf-8"), source_ref, mode=mode)
+        if hasattr(self, "_emitted"):
+            self._emitted[source_ref] = (content_hash, intended_mode(mode), len(body.encode("utf-8")))
         self._store.upsert_publication(Publication(
             id=f"publication-{tenant_id}-{_slug(source_ref)}",
             skill_id=skill_id, source_ref=source_ref,
             content_hash=content_hash,
             published_at=datetime.now(timezone.utc),
             tenant_id=tenant_id,
+            mode=intended_mode(mode), policy_version=PUBLICATION_POLICY_VERSION,
         ))
         return source_ref
 
     @staticmethod
-    def _write_published_file(path: Path, body: bytes, source_ref: str) -> str:
+    def _write_published_file(path: Path, body: bytes, source_ref: str, *, mode: int | None = None) -> str:
         """Journal ownership before atomically replacing generated bytes.
 
         Recording only at the end leaves an interrupted publish with new
@@ -728,6 +778,8 @@ class Publisher:
         files for hand edits. The write-ahead record names an intended hash;
         recovery trusts it only if the current file actually has those bytes.
         """
+        if mode not in (None, 0o100644, 0o100755):
+            raise ValueError("Unsupported source file mode")
         root = path.parents[len(Path(source_ref).parts) - 1]
         journal = root / ".oms-writes.jsonl"
         if journal.is_symlink() or not path.parent.resolve().is_relative_to(root.resolve()):
@@ -735,7 +787,8 @@ class Publisher:
         digest = hashlib.sha256(body).hexdigest()
         temporary = path.with_name(f".{path.name}.oms-{uuid4().hex}")
         record = {"path": source_ref, "sha256": digest,
-                  "temporary": temporary.relative_to(root).as_posix()}
+                  "temporary": temporary.relative_to(root).as_posix(),
+                  "mode": intended_mode(mode)}
         with journal.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record) + "\n")
             handle.flush()
@@ -748,6 +801,8 @@ class Publisher:
             created = True
             with os.fdopen(fd, "wb") as handle:
                 handle.write(body)
+                if mode is not None and hasattr(os, "fchmod"):
+                    os.fchmod(handle.fileno(), mode & 0o777)
                 handle.flush()
                 os.fsync(handle.fileno())
             temporary.replace(path)
@@ -757,7 +812,8 @@ class Publisher:
         return digest
 
     @staticmethod
-    def _recover_publication_writes(out_dir: Path, owned_hashes: dict[str, str]) -> None:
+    def _recover_publication_writes(out_dir: Path, owned_hashes: dict[str, str],
+                                    owned_modes: dict[str, int | str | None] | None = None) -> None:
         journal = out_dir / ".oms-writes.jsonl"
         if journal.is_symlink():
             raise ValueError("the publication write journal cannot be a symbolic link")
@@ -765,6 +821,7 @@ class Publisher:
             return
         root = out_dir.resolve()
         candidates: dict[str, set[str]] = {}
+        modes: dict[tuple[str, str], set[int | None]] = {}
         with journal.open("r+", encoding="utf-8") as handle:
             while True:
                 offset = handle.tell()
@@ -781,6 +838,9 @@ class Publisher:
                 try:
                     record = json.loads(line)
                     ref, digest, temporary_ref = record["path"], record["sha256"], record["temporary"]
+                    mode = record.get("mode")
+                    if mode not in (None, 0o100644, 0o100755):
+                        raise ValueError("invalid file mode")
                     if not all(isinstance(value, str) for value in (ref, digest, temporary_ref)):
                         raise ValueError("invalid record")
                     target, temporary = out_dir / ref, out_dir / temporary_ref
@@ -794,6 +854,7 @@ class Publisher:
                 except (ValueError, KeyError, TypeError):
                     raise ValueError("the publication write journal is invalid") from None
                 candidates.setdefault(ref, set()).add(digest)
+                modes.setdefault((ref, digest), set()).add(mode)
                 # A killed writer can leave only its uniquely named temporary
                 # file. It was never installed and is safe to discard.
                 temporary.unlink(missing_ok=True)
@@ -802,11 +863,45 @@ class Publisher:
             if target.is_file():
                 actual = hashlib.sha256(target.read_bytes()).hexdigest()
                 if actual in digests:
-                    owned_hashes[ref] = actual
+                    matched_mode = file_mode(target)
+                    if matched_mode in modes.get((ref, actual), ()):
+                        owned_hashes[ref] = actual
+                        if owned_modes is not None:
+                            owned_modes[ref] = matched_mode
+                    elif owned_modes is not None:
+                        # Never combine a new digest with mode evidence from a prior write.
+                        owned_hashes[ref], owned_modes[ref] = actual, None
+
+    def _prune_stale_skill_files(self, tenant_id: str, skill_id: str, out_dir: Path,
+                                 emitted: set[str], owned_hashes: dict[str, str],
+                                 owned_modes: dict[str, int | str | None]) -> None:
+        prefix, root = f"skills/{skill_id}/", out_dir.resolve()
+        for ref, digest in list(sorted(owned_hashes.items())):
+            if not ref.startswith(prefix) or ref[len(prefix):] in emitted:
+                continue
+            target = out_dir / ref
+            if target.is_symlink() or root not in target.resolve().parents:
+                logger.warning("Publication retained an unsafe stale path", extra={"source_ref": ref})
+                continue
+            if target.is_file():
+                if (hashlib.sha256(target.read_bytes()).hexdigest() != digest
+                        or not mode_matches(target, owned_modes.get(ref))):
+                    logger.warning("Publication retained a modified or unverified stale file", extra={"source_ref": ref})
+                    continue
+                if owned_modes.get(ref) == LEGACY_MODE:
+                    owned_modes[ref] = file_mode(target)
+                target.unlink()
+                self._prune_emptied_dirs(root, target.parent)
+                # Keep proof until a later publish observes the deletion durable.
+                continue
+            self._store.delete_publication(tenant_id, ref)
+            owned_hashes.pop(ref, None)
+            owned_modes.pop(ref, None)
 
     def _prune_stale_skill_dirs(self, tenant_id: str, out_dir: Path,
                                 published_ids: set[str],
-                                owned_hashes: dict[str, str] | None = None) -> None:
+                                owned_hashes: dict[str, str] | None = None,
+                                owned_modes: dict[str, int | str | None] | None = None) -> None:
         """Delete skills/<id> directories for skills no longer in the graph -
         but ONLY what the publication ledger proves OMS created. A directory
         with no ledger rows is someone else's and is invisible to the prune.
@@ -817,7 +912,7 @@ class Publisher:
         if not skills_dir.is_dir():
             return
         for child in sorted(skills_dir.iterdir()):
-            if not child.is_dir() or child.name in published_ids:
+            if child.is_symlink() or not child.is_dir() or child.name in published_ids:
                 continue
             prefix = f"skills/{child.name}/"
             if owned_hashes is None:
@@ -834,7 +929,8 @@ class Publisher:
                 if not f.is_file():
                     continue
                 rel = f.relative_to(child).as_posix()
-                if hashes.get(rel) != hashlib.sha256(f.read_bytes()).hexdigest():
+                if (f.is_symlink() or hashes.get(rel) != hashlib.sha256(f.read_bytes()).hexdigest()
+                        or (owned_modes is not None and not mode_matches(f, owned_modes.get(prefix + rel)))):
                     edited = rel
                     break
             if edited is not None:
@@ -853,7 +949,8 @@ class Publisher:
 
     def _prune_stale_root_files(self, tenant_id: str, out_dir: Path,
                                 written_refs: set[str],
-                                owned_hashes: dict[str, str] | None = None) -> None:
+                                owned_hashes: dict[str, str] | None = None,
+                                owned_modes: dict[str, int | str | None] | None = None) -> None:
         """Delete root-level artefacts this publish no longer writes.
 
         .mcp.json, .cursor/mcp.json, oms_contribute.py and tier2/AGENTS.md are
@@ -893,17 +990,20 @@ class Publisher:
             if source_ref in written_refs:
                 continue
             target = out_dir / source_ref
-            if root not in target.resolve().parents:
+            if target.is_symlink() or root not in target.resolve().parents:
                 logger.warning(
                     "publish: not pruning retired root file %s: it resolves "
                     "outside the published tree", source_ref)
                 continue
             if target.is_file():
-                if hashlib.sha256(target.read_bytes()).hexdigest() != content_hash:
+                if (hashlib.sha256(target.read_bytes()).hexdigest() != content_hash
+                        or (owned_modes is not None and not mode_matches(target, owned_modes.get(source_ref)))):
                     logger.warning(
                         "publish: not pruning retired root file %s: it is not the "
                         "file OMS published (hand-edited)", source_ref)
                     continue
+                if owned_modes is not None and owned_modes.get(source_ref) == LEGACY_MODE:
+                    owned_modes[source_ref] = file_mode(target)
                 target.unlink()
                 self._prune_emptied_dirs(root, target.parent)
                 logger.info("publish: pruned retired root file %s", source_ref)
@@ -941,8 +1041,9 @@ class Publisher:
             current.rmdir()
             current = current.parent
 
-    def _write_artefacts(self, skill_id: str, skill_dir: Path, tenant_id: str) -> None:
-        artefacts = self._store.artefacts_for_skill(skill_id)
+    def _write_artefacts(self, skill_id: str, skill_dir: Path, tenant_id: str) -> set[str]:
+        emitted = set()
+        artefacts = self._store.artefacts_for_skill(skill_id, tenant_id=tenant_id)
         for artefact, path in artefacts:
             # Don't overwrite SKILL.md / CLAUDE.md / the overflow references
             # file - those are publisher-owned and regenerated every publish.
@@ -951,11 +1052,10 @@ class Publisher:
             out_path = skill_dir / path
             out_path.parent.mkdir(parents=True, exist_ok=True)
             if self._blob_store is not None:
-                try:
-                    body = self._blob_store.get(artefact.content_ref)
-                except Exception:
-                    continue       # missing blob is reported by fsck, not here
-                content_hash = self._write_published_file(out_path, body, f"skills/{skill_id}/{path}")
+                body = self._blob_store.get(artefact.content_ref)
+                content_hash = self._write_published_file(out_path, body, f"skills/{skill_id}/{path}", mode=artefact.mode)
+                if hasattr(self, "_emitted"):
+                    self._emitted[f"skills/{skill_id}/{path}"] = (content_hash, intended_mode(artefact.mode), len(body))
                 self._store.upsert_publication(Publication(
                     id=f"publication-{tenant_id}-{_slug(f'skills/{skill_id}/{path}')}",
                     skill_id=skill_id,
@@ -963,4 +1063,7 @@ class Publisher:
                     content_hash=content_hash,
                     published_at=datetime.now(timezone.utc),
                     tenant_id=tenant_id,
+                    mode=intended_mode(artefact.mode), policy_version=PUBLICATION_POLICY_VERSION,
                 ))
+                emitted.add(path)
+        return emitted

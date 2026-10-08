@@ -374,3 +374,51 @@
   .oms-mode-tabs button { flex: 1; padding: 12px 10px; font-size: 12px; }
   .oms-target-skills__summary { align-items: start; flex-wrap: wrap; }
 }
+
+.oms-source-workspace, .oms-source-details, .oms-source-discovery, .oms-source-card, .oms-source-files, .oms-source-undo { min-width: 0; overflow-wrap: anywhere; }
+.oms-source-workspace { display: grid; gap: 20px; }
+.oms-source-workspace > .oms-button { justify-self: start; }
+.oms-source-details > .oms-panel { margin-block: 16px; }
+.oms-source-details details { margin-block: 12px; }
+:is(.oms-source-workspace, .oms-source-details, .oms-source-discovery, .oms-source-card, .oms-source-files, .oms-source-undo) .oms-button { box-sizing: border-box; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; background: var(--oms-accent); border-color: transparent; color: white; }
+:is(.oms-source-workspace, .oms-source-details, .oms-source-discovery, .oms-source-card, .oms-source-files, .oms-source-undo) .oms-button:hover { background: var(--oms-accent-hover); }
+:is(.oms-source-workspace, .oms-source-details) .record-heading { flex-wrap: wrap; }
+:is(.oms-source-workspace, .oms-source-details) .record-heading h3 { flex: 1 1 14rem; min-width: 0; }
+.oms-source-badges, .oms-source-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.oms-source-badges .oms-badge { white-space: normal; }
+.oms-source-ref { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.oms-source-ref code, .oms-source-metadata dd { overflow-wrap: anywhere; }
+.oms-source-packages { list-style: none; padding: 0; margin: 18px 0; }
+.oms-source-packages > li, .oms-source-part { border-top: 1px solid var(--oms-line); padding: 18px 0; min-width: 0; }
+.oms-source-packages p, .oms-source-status p { font-size: 13px; line-height: 1.55; }
+.oms-source-check { display: flex; align-items: baseline; gap: 9px; font-size: 13px; margin: 10px 0; }
+.oms-source-check input { flex: 0 0 auto; width: auto; accent-color: var(--oms-accent); }
+.oms-source-fields, .oms-source-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
+.oms-source-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.oms-source-fields label, .oms-source-field { display: grid; gap: 7px; font-size: 13px; min-width: 0; margin: 12px 0; }
+.oms-source-fields :is(input, select), .oms-source-field :is(select, textarea), .oms-source-field input:where(:not([type="checkbox"]):not([type="radio"])) { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid var(--oms-line); border-radius: 7px; padding: 10px 12px; background: var(--oms-paper); color: var(--oms-ink); font: inherit; }
+.oms-source-field textarea { resize: vertical; line-height: 1.6; }
+:is(.oms-source-discovery, .oms-source-card, .oms-source-files, .oms-source-undo) :is(input, select, textarea, button, summary, pre):focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }
+.oms-source-side { min-width: 0; padding: 12px; border: 1px solid var(--oms-line); border-radius: 8px; background: var(--oms-wash); }
+.oms-source-side h5 { font-size: 13px; margin: 0 0 10px; }
+.oms-source-side pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 360px; font: 12px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.oms-source-side p { font-size: 12px; }
+.oms-source-files details { margin: 16px 0; }
+.oms-source-files summary { cursor: pointer; }
+.oms-source-metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; font-size: 12px; }
+.oms-source-metadata dt { color: var(--oms-muted); }
+.oms-source-metadata dd { margin: 4px 0; }
+.oms-source-removals { border: 1px solid var(--oms-line); border-radius: 8px; padding: 16px; margin: 18px 0; }
+.oms-source-removals legend { padding: 0 6px; font-weight: 600; }
+.oms-source-undo { border-top: 1px solid var(--oms-line); margin-top: 18px; padding-top: 12px; }
+@media (max-width: 800px) { .oms-source-columns { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 550px) { .oms-source-fields, .oms-source-metadata { grid-template-columns: minmax(0, 1fr); } }
+.oms-source-advanced { margin: 4px 0 8px; }
+.oms-source-advanced > summary, .oms-source-names > summary { cursor: pointer; font-size: 13px; }
+.oms-source-advanced > label { display: grid; gap: 7px; font-size: 13px; margin: 12px 0; }
+.oms-source-names { margin: 14px 0; }
+.oms-source-confirm { border: 1px solid var(--oms-line); border-radius: 8px; padding: 16px; margin: 18px 0; }
+.oms-source-confirm :is(input, select, textarea, button, summary):focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }
+.oms-github-mark { display: inline-block; vertical-align: middle; flex: none; box-sizing: content-box; }
+.oms-button > .oms-github-mark { margin: -4px; }
+.oms-panel-footer { margin-top: 16px; }

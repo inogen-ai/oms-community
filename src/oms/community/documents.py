@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from oms.domain.types import Plane, RuleStatus, SkillVersionCause
 from oms.publish.parts import document_revision
 from oms.skills.compare import compare_parts, version_markdown
-from oms.skills.service import SkillAdminService
 from oms.community.placement import insertion_sections
 
 
@@ -37,7 +36,7 @@ def document_routes(services, publisher, history, safe_text):
     router = APIRouter(prefix="/api/skills")
 
     def require_skill(store, skill_id):
-        found = store.get_skill(skill_id)
+        found = store.get_skill(skill_id, tenant_id=tenant)
         if found is None or found.tenant_id != tenant:
             raise HTTPException(404, "skill not found in this workspace")
         return found
@@ -46,11 +45,11 @@ def document_routes(services, publisher, history, safe_text):
         require_skill(store, skill_id)
         parts, path = publisher(store).outline_skill(skill_id, tenant)
         return {"skill_id": skill_id, "revision": document_revision(parts),
-                "rule_sections": insertion_sections(store, skill_id),
+                "rule_sections": insertion_sections(store, skill_id, tenant_id=tenant),
                 "path": path, "parts": [{**asdict(part), "affected_skills": [
                     {"id": skill.id, "name": skill.name} for skill in
-                    (store.skills_for_rule(part.source_id) if part.kind in ("rule", "overflow-rule")
-                     else [store.get_skill(skill_id)]) if skill.tenant_id == tenant]}
+                    (store.skills_for_rule(part.source_id, tenant_id=tenant) if part.kind in ("rule", "overflow-rule")
+                     else [store.get_skill(skill_id, tenant_id=tenant)]) if skill.tenant_id == tenant]}
                     for part in parts]}
 
     def require_revision(document, revision):
@@ -75,7 +74,7 @@ def document_routes(services, publisher, history, safe_text):
     def capture(store, skill_id, rule_ids, **kwargs):
         affected = {skill_id}
         for rule_id in rule_ids:
-            affected.update(sk.id for sk in store.skills_for_rule(rule_id) if sk.tenant_id == tenant)
+            affected.update(sk.id for sk in store.skills_for_rule(rule_id, tenant_id=tenant) if sk.tenant_id == tenant)
         for affected_id in affected:
             history(store).capture_required(affected_id, tenant, actor=actor, **kwargs)
 
@@ -92,7 +91,7 @@ def document_routes(services, publisher, history, safe_text):
             anchors = [p.anchor for p in body.parts]
             if len(set(anchors)) != len(anchors) or not set(anchors) <= editable:
                 raise HTTPException(422, "Choose each editable document part once.")
-            service = SkillAdminService(store=store)
+            service = s.skills.using(store, queue)
             problems = service.check_document(skill_id, tenant, [(p.anchor, p.text) for p in body.parts])
             if problems:
                 raise HTTPException(422, "; ".join(message for _, message in problems))
@@ -105,7 +104,7 @@ def document_routes(services, publisher, history, safe_text):
 
     def version(store, skill_id, version_id):
         require_skill(store, skill_id)
-        found = store.get_skill_version(version_id)
+        found = store.get_skill_version(version_id, tenant_id=tenant)
         if found is None or found.tenant_id != tenant or found.skill_id != skill_id:
             raise HTTPException(404, "version not found for this skill")
         return found
@@ -117,7 +116,7 @@ def document_routes(services, publisher, history, safe_text):
             rule = store.get_rule(rule_id)
             if rule is None or rule.tenant_id != tenant or rule.plane is not Plane.DATA:
                 return None
-            if skill_id not in {sk.id for sk in store.skills_for_rule(rule_id)}:
+            if skill_id not in {sk.id for sk in store.skills_for_rule(rule_id, tenant_id=tenant)}:
                 return None
             return rule.status.value
         rows = compare_parts(json.loads(saved.parts_json), current["parts"],
@@ -148,7 +147,7 @@ def document_routes(services, publisher, history, safe_text):
             anchors = set(body.anchors)
             if len(anchors) != len(body.anchors) or any(a not in rows or not rows[a]["restorable"] for a in anchors):
                 raise HTTPException(422, "One or more selected changes cannot be restored.")
-            service = SkillAdminService(store=store)
+            service = s.skills.using(store, queue)
             touched = []
             for row in compared["rows"]:
                 if row["anchor"] not in anchors:
@@ -158,7 +157,7 @@ def document_routes(services, publisher, history, safe_text):
                     rule = store.get_rule(rule_id)
                     if rule is None or rule.tenant_id != tenant or rule.plane is not Plane.DATA:
                         raise HTTPException(422, "The selected rule cannot be restored.")
-                    if skill_id not in {sk.id for sk in store.skills_for_rule(rule_id)}:
+                    if skill_id not in {sk.id for sk in store.skills_for_rule(rule_id, tenant_id=tenant)}:
                         raise HTTPException(422, "The selected rule no longer belongs to this skill.")
                     rule.status = RuleStatus.ACTIVE if row["state"] == "only_old" else RuleStatus.RETIRED
                     if row["state"] == "only_old":
@@ -178,7 +177,7 @@ def document_routes(services, publisher, history, safe_text):
     @router.get("/{skill_id}/files")
     def preview_file(skill_id: str, path: str):
         require_skill(s.store, skill_id)
-        found = next((a for a, p in s.store.artefacts_for_skill(skill_id) if p == path), None)
+        found = next((a for a, p in s.store.artefacts_for_skill(skill_id, tenant_id=tenant) if p == path), None)
         if found is None:
             raise HTTPException(404, "file not found in this skill")
         if found.size > 200_000:

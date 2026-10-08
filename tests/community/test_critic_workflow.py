@@ -178,7 +178,7 @@ def test_manual_approval_records_one_rule_lineage_decision_and_version(world):
     rule = world.store.get_rule(result.rule_id)
     assert rule.corroboration_count == 1
     assert [txn.id for txn in world.store.lineage(rule.id)] == ["approval"]
-    assert [skill.id for skill in world.store.skills_for_rule(rule.id)] == ["expenses"]
+    assert [skill.id for skill in world.store.skills_for_rule(rule.id, tenant_id="acme")] == ["expenses"]
     assert world.service.inbox("acme") == []
     item = world.queue.get("manual-approval")
     assert item.resolved and item.decided_by == "local-reviewer" and item.decided_at
@@ -615,3 +615,33 @@ def test_a_replayed_decision_with_reordered_skills_returns_the_recorded_result(w
     replay = world.decide("reordered", skill_ids=["audit", "expenses", "audit"])
     assert first == replay and first.state == "applied"
     assert world.store.get_rule(first.rule_id).corroboration_count == 1
+
+
+def test_neo4j_reads_share_the_write_bookmarks_so_they_see_prior_writes():
+    class Session:
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def execute_read(self, work):
+            return work(object())
+        def execute_write(self, work):
+            return work(self)
+        def run(self, *args, **kwargs):
+            return self
+        def consume(self):
+            return None
+
+    class Driver:
+        execute_query_bookmark_manager = object()
+        def __init__(self):
+            self.opened = []
+        def session(self, **kwargs):
+            self.opened.append(kwargs)
+            return Session()
+
+    driver = Driver()
+    repository = Neo4jWorkflowRepository(driver, InMemoryGraphStore(), InMemoryReviewQueue())
+    repository.metadata("write", "acme", lambda graph, reviews: None)
+    repository.query("read", "acme", lambda graph, reviews: None)
+    assert [kwargs.get("bookmark_manager") for kwargs in driver.opened] == [Driver.execute_query_bookmark_manager] * 2

@@ -111,6 +111,9 @@ class SkillVersionCause(str, Enum):
     RESTORE = "restore"
     CREATED = "created"
     UNATTRIBUTED = "unattributed"
+    SOURCE_INSTALL = "source_install"
+    SOURCE_UPDATE = "source_update"
+    SOURCE_UNDO = "source_undo"
 
 
 class EdgeType(str, Enum):
@@ -199,7 +202,6 @@ class Plane(str, Enum):
     """Stored content category; only DATA rules are eligible for publication."""
     DATA = "data"        # guidance for the people and agents doing the work
     CONTROL = "control"  # describes how OMS itself operates; never published
-
 
 
 

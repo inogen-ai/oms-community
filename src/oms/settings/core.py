@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from oms.sources.settings import SourceSettings
 from oms.web.endpoints import contribution_endpoint_for, mcp_endpoint_for
 
 # The single-machine posture, and the common one: the server, the agents and
@@ -84,6 +85,8 @@ class CoreSettings:
     local_launcher_dir: str | None = None
     compose_project_name: str | None = None
     publish_in_container: bool = False
+    source_settings: SourceSettings | None = None
+    github_skill_sources: bool = True
 
     def validate(self):
         if not self.tenant_id.strip():
@@ -183,6 +186,8 @@ class CoreSettings:
         port = int(os.environ.get("OMS_PORT", defaults.port))
         return cls(
             tenant_id=os.environ.get("OMS_TENANT", defaults.tenant_id),
+            source_settings=SourceSettings.from_env(Path(os.environ.get("OMS_DATA_DIR", ".oms"))),
+            github_skill_sources=os.environ.get("OMS_GITHUB_SKILL_SOURCES", "1") == "1",
             data_dir=Path(os.environ.get("OMS_DATA_DIR", ".oms")),
             host=os.environ.get("OMS_HOST", defaults.host),
             port=port,

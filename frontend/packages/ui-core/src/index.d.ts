@@ -10,7 +10,7 @@ export type VersionComparisonView = "overview" | "detailed";
 export function SkillDeleteConfirmation(props: { name: string; confirmation: string; onConfirmationChange: (value: string) => void; onConfirm: () => void; onCancel: () => void; busy?: boolean; hasUnsavedChanges?: boolean }): ReactNode;
 export function VersionComparison(props: { rows: { anchor: string; kind: string; state: string; old_text: string | null; new_text: string | null; restorable: boolean; note?: string | null }[]; selected: string[]; onSelect: (anchor: string, checked: boolean) => void; disabled?: boolean; view?: VersionComparisonView }): ReactNode;
 export function Panel(props: HTMLAttributes<HTMLElement> & { title?: string; children?: ReactNode }): ReactNode;
-export function Button(props: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "danger"; children?: ReactNode }): ReactNode;
+export function Button(props: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "danger"; children?: ReactNode; ref?: Ref<HTMLButtonElement> }): ReactNode;
 export function Notice(props: { kind?: "info" | "error" | "success"; children?: ReactNode }): ReactNode;
 export function EmptyState(props: { title: string; children?: ReactNode }): ReactNode;
 export function Badge(props: { children?: ReactNode }): ReactNode;
@@ -45,3 +45,13 @@ export interface ManualItem {
 export function ManualReviewCard(props: { item: ManualItem; skills: { id: string; name: string }[]; onDecision: (decision: ManualDecision) => Promise<unknown>; createSkillHref?: string; draft?: ManualReviewDraft; onDraftChange?: (draft: ManualReviewDraft) => void; loadDocument?: (skillId: string) => Promise<ManualDocument> }): ReactNode;
 
 export { collectionPage, CollectionPagination, CollectionViewToggle, CollectionList, CollectionMultiSelect } from "./collection.js";
+export * from "./source-discovery.js";
+export * from "./source-card.js";
+export * from "./source-files.js";
+export { SourceStatus, SourceUndo, sourceBulkExclusions } from "./source-status.js";
+export type { SourceRefDisplay, SourceOperationDisplay, SourceUndoGuard } from "./source-status.js";
+export * from "./source-lookup.js";
+export * from "./source-confirm.js";
+export * from "./github-mark.js";
+export * from "./source-display.js";
+export * from "./source-updates.js";

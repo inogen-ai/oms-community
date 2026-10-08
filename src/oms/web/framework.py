@@ -43,7 +43,7 @@ def register_capabilities(app, services, bundles, *, edition,
 
 def create_core_app(services, bundles: tuple[RouteBundle, ...], *, edition,
                     title, lifespan=None, requirement=None, advertised=None):
-    app = FastAPI(title=title, version="1.1", lifespan=lifespan)
+    app = FastAPI(title=title, version="1.2", lifespan=lifespan)
     for bundle in bundles:
         app.include_router(bundle.router)
     register_capabilities(app, services, bundles, edition=edition,

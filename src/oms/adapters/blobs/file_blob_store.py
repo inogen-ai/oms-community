@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
+import os
 import re
+from tempfile import NamedTemporaryFile
 
 from oms.ports.blob_store import BlobNotFound
 
@@ -26,9 +28,16 @@ class FileBlobStore:
         path = self._path(digest)
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_bytes(body)
-            tmp.rename(path)
+            staged = NamedTemporaryFile(dir=path.parent, prefix=".blob-", delete=False)
+            tmp = Path(staged.name)
+            try:
+                with staged:
+                    staged.write(body)
+                    staged.flush()
+                    os.fsync(staged.fileno())
+                os.replace(tmp, path)
+            finally:
+                tmp.unlink(missing_ok=True)
         return ref
 
     def get(self, ref: str) -> bytes:

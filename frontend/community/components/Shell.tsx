@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { communityNavigation } from "@inogen/oms-client";
-import { BrandMark, ProductMark } from "@inogen/oms-ui-core";
+import { BrandMark, ProductMark, Notice } from "@inogen/oms-ui-core";
 import { MobileNavigation } from "@inogen/oms-ui-core/mobile-navigation";
 import logo from "@inogen/oms-ui-core/assets/inogen_logo_darkmode.png";
 import productLogo from "@inogen/oms-ui-core/assets/oms_logo_darkthemev2.png";
@@ -26,7 +26,7 @@ function CommunityNavigationLink({ href, children, ...props }: {
 }
 
 export default function Shell({ children }: { children: ReactNode }) {
-  const { capabilities } = useWorkspace();
+  const { capabilities, sourceWorkspaceNotice } = useWorkspace();
   const [collapsed, setCollapsed] = useState(false);
   const [preview, setPreview] = useState(false);
   const paidControl = useRef<HTMLButtonElement>(null);
@@ -71,7 +71,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         navigationLabel="Main navigation" wideQuery="(min-width: 721px)" /></div>
       <div className="sidebar-brand"><BrandMark logoSrc={logo.src} /></div>
     </aside>
-    <div className="content-wrap"><header className="topbar"><span>Workspace <span className="breadcrumb-divider">/</span> <strong>{current?.label || "OMS"}</strong></span><span className="local-badge">Local · Community</span></header><main id="content">{children}</main></div>
+    <div className="content-wrap"><header className="topbar"><span>Workspace <span className="breadcrumb-divider">/</span> <strong>{current?.label || "OMS"}</strong></span><span className="local-badge">Local · Community</span></header><main id="content">{sourceWorkspaceNotice && <Notice>{sourceWorkspaceNotice}</Notice>}{children}</main></div>
     {preview && <EditionPreview onClose={closePreview} />}
   </div>;
 }
