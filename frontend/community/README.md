@@ -11,7 +11,7 @@ npm run build
 OMS_COMMUNITY_API_URL=http://127.0.0.1:4317 npm run start
 ```
 
-The build exports static HTML, CSS and JavaScript to `out/`. Point the Community API’s `OMS_UI_DIR` at that directory to serve the application and API together. The application reads `/oms-config.json` once at startup; `{ "api_url": "" }` uses the same origin. A separate static host can supply an explicit API URL in that file without changing the built JavaScript. The URL is public and must never contain a credential. Release builds should set `OMS_BUILD_ID` to the reviewed source commit; the local default is the deterministic package version identifier `oms-community-1.4.0`.
+The build exports static HTML, CSS and JavaScript to `out/`. Point the Community API’s `OMS_UI_DIR` at that directory to serve the application and API together. The application reads `/oms-config.json` once at startup; `{ "api_url": "" }` uses the same origin. A separate static host can supply an explicit API URL in that file without changing the built JavaScript. The URL is public and must never contain a credential. Release builds should set `OMS_BUILD_ID` to the reviewed source commit; the local default is the deterministic package version identifier `oms-community-1.4.1`.
 
 `npm run start` is an isolated local preview server bound to `127.0.0.1:4318`; its config endpoint reads `OMS_COMMUNITY_API_URL` and defaults to `http://127.0.0.1:4317`. Permit the exact browser origin `http://127.0.0.1:4318` in the API settings. `npm run dev` also uses API port 4317. Remote exposure belongs to the backend’s explicit local-security policy.
 
