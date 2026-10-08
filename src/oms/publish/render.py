@@ -2669,11 +2669,12 @@ $OmsAskRules = @('mcp__oms__log_correction', 'mcp__oms__log_signal')
 $OmsAskRecord = "$OMS_DIR/claude-ask-rules"
 # Claude Code's managed settings, which can make a rule in the person's own
 # settings ineffective. OMS_CLAUDE_MANAGED_DIR points elsewhere, for a test or
-# a machine that keeps them somewhere else.
+# a machine that keeps them somewhere else. $OnWindows comes first: $IsMacOS
+# does not exist on Windows PowerShell 5.1 (see $OnWindows above).
 $OmsManagedDirs = if ($env:OMS_CLAUDE_MANAGED_DIR) { @($env:OMS_CLAUDE_MANAGED_DIR) }
+    elseif ($OnWindows) { @("$env:ProgramFiles\ClaudeCode", "$env:ProgramData\ClaudeCode") }
     elseif ($IsMacOS) { @('/Library/Application Support/ClaudeCode') }
-    elseif ($IsLinux) { @('/etc/claude-code') }
-    else { @("$env:ProgramFiles\ClaudeCode", "$env:ProgramData\ClaudeCode") }
+    else { @('/etc/claude-code') }
 # $true when managed settings apply only their own permission rules, or when
 # one cannot be read and might.
 function Test-ManagedRulesOnly {

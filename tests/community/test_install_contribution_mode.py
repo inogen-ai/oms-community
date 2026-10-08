@@ -1148,6 +1148,21 @@ def test_the_powershell_rule_step_respects_managed_settings(tmp_path: Path) -> N
     assert not (oms_dir / "claude-ask-rules").exists()
 
 
+def test_windows_powershell_never_reads_a_platform_variable_it_lacks() -> None:
+    """$IsWindows, $IsMacOS and $IsLinux exist only from PowerShell 6. Windows
+    PowerShell 5.1, on every stock Windows machine, stops on reading one under
+    Set-StrictMode; 1.4.1 did, in the managed settings lookup. pwsh defines
+    them everywhere, so the tests above cannot see it. A read is safe only
+    once a $OnWindows test has sent Windows down another branch."""
+    lines = [line for line in render_install_ps1(MCP_URL).splitlines()
+             if not line.lstrip().startswith("#")]
+    for number, line in enumerate(lines):
+        for name in ("$IsWindows", "$IsMacOS", "$IsLinux"):
+            if name in line:
+                window = "\n".join(lines[max(0, number - 3):number + 1])
+                assert "($OnWindows)" in window.split(name)[0], (name, line)
+
+
 @pytest.mark.parametrize("root_files, variant, other", [
     (None, "CLAUDE.confirm.md", "AGENTS.confirm.md"),
     (["AGENTS.md"], "AGENTS.confirm.md", "CLAUDE.confirm.md"),

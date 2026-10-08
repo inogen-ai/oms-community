@@ -2,7 +2,7 @@
 from collections.abc import Callable, Mapping
 from packaging.version import InvalidVersion, Version
 
-CORE_VERSION = "1.4.1"
+CORE_VERSION = "1.4.2"
 SCHEMA_VERSION = 1
 
 
