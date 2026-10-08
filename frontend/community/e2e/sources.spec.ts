@@ -1,16 +1,27 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { sourceFixture } from "./source-fixture";
+
+const openAddSource = async (page: Page) => {
+  await page.goto("/skills/");
+  await page.getByRole("button", { name: "Add a GitHub source", exact: true }).click();
+};
+const github = (page: Page) => page.getByRole("button", { name: "GitHub", exact: true });
 
 test("source controls are hidden when the capability is disabled", async ({ page }) => {
   await sourceFixture(page, { enabled: false });
   await page.goto("/sources/");
+  await expect(page).toHaveURL(/\/import\/\?github=sources$/);
   await expect(page.getByText("Source tracking is unavailable on this server.")).toBeVisible();
   await expect(page.getByRole("navigation").getByRole("link", { name: "Sources", exact: true })).toHaveCount(0);
+  await page.goto("/skills/");
+  await expect(page.getByRole("button", { name: "Create skill" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add a GitHub source" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "GitHub", exact: true })).toHaveCount(0);
 });
 
 test("a copied source deep link survives reload and Check now carries source guards", async ({ page }) => {
   const state = await sourceFixture(page, { blocked: true });
-  await page.goto("/sources/?source=source-1");
+  await page.goto("/import/?github=sources&source=source-1");
   await expect(page.getByRole("heading", { name: "Source details" })).toBeVisible();
   await expect(page.getByText("Retry needed", { exact: true }).first()).toBeVisible();
   await page.reload();
@@ -25,14 +36,14 @@ test("a copied source deep link survives reload and Check now carries source gua
 
 test("repository discovery starts unselected and preserves local installation names", async ({ page }) => {
   const state = await sourceFixture(page);
-  await page.goto("/sources/");
-  await page.getByRole("button", { name: "Add a GitHub source" }).click();
+  await openAddSource(page);
   await page.getByLabel("GitHub repository or skill folder URL").fill("https://github.com/fixture/skills");
   await page.getByRole("button", { name: "Discover packages", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Discovered skill packages" })).toBeVisible();
   await expect(page.getByLabel("Select expenses", { exact: true })).not.toBeChecked();
   await expect(page.getByLabel("Select orders", { exact: true })).not.toBeChecked();
   await page.getByLabel("Select orders", { exact: true }).check();
+  await page.getByText("Edit names and areas").click();
   await page.getByLabel("Local name for orders").fill("Local purchase guidance");
   await page.getByRole("button", { name: "Install selected skills" }).click();
   await expect.poll(() => state.requests.filter(row => row.path === "/api/skill-source-installations").length).toBe(1);
@@ -41,7 +52,7 @@ test("repository discovery starts unselected and preserves local installation na
 
 test("merged choices survive save revisions and a lost Apply response recovers the same request", async ({ page }) => {
   const state = await sourceFixture(page, { loseApply: true });
-  await page.goto("/sources/?update=update-1");
+  await page.goto("/import/?github=sources&update=update-1");
   await page.getByLabel("Decision for section:intro").selectOption("merged_text");
   await page.getByLabel("Merged text for section:intro").fill("Retain receipts and verify each order.");
   await expect(page.getByRole("button", { name: "Apply whole skill" })).toBeDisabled();
@@ -51,8 +62,9 @@ test("merged choices survive save revisions and a lost Apply response recovers t
   await page.getByRole("button", { name: "Apply whole skill" }).click();
   await expect.poll(() => state.decisions).toEqual(["apply"]);
   await page.reload();
-  await page.getByRole("button", { name: "Recover request 1" }).click();
-  await expect(page.getByRole("heading", { name: "Pending source requests" })).toHaveCount(0);
+  await expect(page.getByText("A previous request did not confirm. Your browser sent it but did not get the answer. Check its result before trying again; checking does not start a new request.")).toBeVisible();
+  await page.getByRole("button", { name: "Check result" }).click();
+  await expect(page.getByRole("button", { name: "Check result" })).toHaveCount(0);
   const applies = state.requests.filter(row => row.path.endsWith("/apply"));
   expect(applies).toHaveLength(2);
   expect(applies[0].key).toEqual(applies[1].key);
@@ -61,7 +73,7 @@ test("merged choices survive save revisions and a lost Apply response recovers t
 
 test("Skip and keep-current/adopt use distinct actions and do not claim an apply", async ({ page }) => {
   const state = await sourceFixture(page);
-  await page.goto("/sources/?update=update-1");
+  await page.goto("/import/?github=sources&update=update-1");
   await page.getByRole("button", { name: "Skip this version" }).click();
   await expect.poll(() => state.decisions).toEqual(["skip"]);
   state.update.status = "open";
@@ -73,7 +85,7 @@ test("Skip and keep-current/adopt use distinct actions and do not claim an apply
 
 test("removal consent and individual Keep are explicit whole-skill decisions", async ({ page }) => {
   const state = await sourceFixture(page, { removal: true });
-  await page.goto("/sources/?update=update-1");
+  await page.goto("/import/?github=sources&update=update-1");
   await expect(page.getByRole("button", { name: "Apply whole skill" })).toBeDisabled();
   await page.getByLabel("Consent to remove group 1").check();
   await expect(page.getByRole("button", { name: "Apply whole skill" })).toBeEnabled();
@@ -88,7 +100,7 @@ test("removal consent and individual Keep are explicit whole-skill decisions", a
 
 test("bulk Apply excludes executable updates and preserves per-skill results", async ({ page }) => {
   const state = await sourceFixture(page, { clean: true, script: true });
-  await page.goto("/sources/");
+  await page.goto("/import/?github=sources");
   await expect(page.getByText("Scripts or executable files")).toBeVisible();
   await page.getByRole("button", { name: "Apply all clean updates" }).click();
   await expect.poll(() => state.decisions).toEqual(["bulk-apply"]);
@@ -112,8 +124,9 @@ test("staged local imports require an explicit target and recover without retain
   expect(retained).not.toContain("private-upload-bytes");
   expect(retained).toContain("upload-1");
   await page.reload();
-  await page.getByRole("button", { name: "Recover request 1" }).click();
-  await expect(page.getByRole("heading", { name: "Pending source requests" })).toHaveCount(0);
+  await expect(page.getByText("A previous import did not confirm. Your browser sent the request but did not get the answer. Check its result before trying again; checking does not start a new import.")).toBeVisible();
+  await page.getByRole("button", { name: "Check result" }).click();
+  await expect(page.getByRole("button", { name: "Check result" })).toHaveCount(0);
   const requests = state.requests.filter(row => row.path === "/api/skill-local-imports");
   expect(requests).toHaveLength(2);
   expect(requests[0].key).toEqual(requests[1].key);
@@ -123,10 +136,11 @@ test("staged local imports require an explicit target and recover without retain
 
 test("a refused retarget leaves the committed ref visible", async ({ page }) => {
   const state = await sourceFixture(page, { blockRetarget: true });
-  await page.goto("/sources/?source=source-1");
+  await page.goto("/import/?github=sources&source=source-1");
   await page.getByRole("button", { name: "Change tracked ref or folder" }).click();
-  await page.getByLabel("Ref type").selectOption("tag");
-  await page.getByLabel("Ref name or commit").fill("v2");
+  await page.getByText("Advanced", { exact: true }).click();
+  await page.getByLabel("What to follow").selectOption("tag");
+  await page.getByLabel("Branch, tag or commit").fill("v2");
   await page.getByLabel("Skill folder (optional)").fill("expenses");
   await page.getByRole("button", { name: "Discover packages", exact: true }).click();
   await page.getByRole("button", { name: "Retarget source", exact: true }).click();
@@ -138,7 +152,7 @@ test("a refused retarget leaves the committed ref visible", async ({ page }) => 
 test("source history exposes guarded undo without changing document restore semantics", async ({ page }) => {
   const state = await sourceFixture(page, { undo: true });
   await page.goto("/skills/?skill=expenses");
-  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await github(page).click();
   await expect(page.getByRole("heading", { name: "Source and attachment history" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Undo source update", exact: true })).toBeDisabled();
   await page.getByLabel("Confirm undo of this source update").check();
@@ -150,20 +164,22 @@ test("source history exposes guarded undo without changing document restore sema
 test("linking creates an admitted source identity and unlinking preserves the skill", async ({ page }) => {
   const state = await sourceFixture(page, { unlinked: true });
   await page.goto("/skills/?skill=expenses");
-  await page.getByText("Source tracking", { exact: true }).click();
-  await page.getByRole("button", { name: "Link a GitHub source", exact: true }).click();
+  await page.getByRole("button", { name: "Link to GitHub repository", exact: true }).click();
   await page.getByLabel("GitHub repository or skill folder URL").fill("https://github.com/fixture/skills");
+  await page.getByText("Advanced", { exact: true }).click();
   await page.getByLabel("Skill folder (optional)").fill("expenses");
   await page.getByRole("button", { name: "Discover packages", exact: true }).click();
   await page.getByRole("button", { name: "Confirm link", exact: true }).click();
   await expect.poll(() => state.requests.some(row => row.path.endsWith("/source-binding/link"))).toBe(true);
   expect(state.requests.find(row => row.path === "/api/skill-sources" && row.method === "POST")!.body).toEqual({ discovery_id: "discovery-1" });
+  await expect(github(page)).toBeVisible();
   await page.getByText("Unlink GitHub source", { exact: true }).click();
   await page.getByLabel("Confirm unlinking this skill").check();
   await page.getByRole("button", { name: "Unlink source", exact: true }).click();
   await expect.poll(() => state.binding.binding?.active).toBe(false);
   expect(state.skills[0].name).toBe("Expense review");
   await expect(page.getByRole("button", { name: "Relink source", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Link to GitHub repository", exact: true })).toBeVisible();
 });
 
 test("a blocked local attempt survives closure and resubmission clears only its own retry state", async ({ page }) => {
@@ -176,9 +192,12 @@ test("a blocked local attempt survives closure and resubmission clears only its 
     await page.getByRole("button", { name: "Apply selected local packages" }).click();
   };
   await upload();
+  // Leaving before the refusal reaches the browser would keep the request pending and block the resubmission below.
+  await expect(page.getByText(/This local attempt was refused/)).toBeVisible();
   await expect.poll(() => state.binding.blocked_attempts.some(row => row.attempt_id === "local-attempt")).toBe(true);
-  await page.goto("/sources/?source=source-1&update=update-1");
+  await page.goto("/import/?github=sources&source=source-1&update=update-1");
   await page.getByRole("button", { name: "Skip this version" }).click();
+  await expect.poll(() => state.decisions).toEqual(["skip"]);
   await page.reload();
   await expect(page.getByText(/Local upload refused/)).toBeVisible();
   expect(state.binding.blocked_attempts).toHaveLength(2);
@@ -202,15 +221,16 @@ test("late binding and card responses cannot restore the old ref after retarget"
     await route.fulfill({ json: snapshot, headers: { "Access-Control-Allow-Origin": `http://127.0.0.1:${process.env.OMS_COMMUNITY_UI_PORT || "4318"}` } });
     done();
   });
-  await page.goto("/sources/?source=source-1&update=update-1");
+  await page.goto("/import/?github=sources&source=source-1&update=update-1");
   await expect(page.getByLabel("Decision for section:intro")).toBeVisible();
   delaying = true;
   await page.getByRole("button", { name: "Check source now", exact: true }).click();
   await expect.poll(() => queued.length).toBe(2);
   delaying = false;
   await page.getByRole("button", { name: "Change tracked ref or folder" }).click();
-  await page.getByLabel("Ref type").selectOption("tag");
-  await page.getByLabel("Ref name or commit").fill("v2");
+  await page.getByText("Advanced", { exact: true }).click();
+  await page.getByLabel("What to follow").selectOption("tag");
+  await page.getByLabel("Branch, tag or commit").fill("v2");
   await page.getByLabel("Skill folder (optional)").fill("expenses");
   await page.getByRole("button", { name: "Discover packages", exact: true }).click();
   await page.getByRole("button", { name: "Retarget source", exact: true }).click();
@@ -224,7 +244,7 @@ test("late binding and card responses cannot restore the old ref after retarget"
 
 test("file previews remain inert and downloads use authorised side paths", async ({ page }) => {
   const state = await sourceFixture(page, { file: true });
-  await page.goto("/sources/?update=update-1");
+  await page.goto("/import/?github=sources&update=update-1");
   await expect(page.getByText("Retained but excluded from publication: reserved output")).toBeVisible();
   await expect(page.locator(".oms-source-files pre")).toHaveText(Array(3).fill("<script>window.bad = true</script>"));
   expect(await page.evaluate(() => "bad" in window)).toBe(false);
@@ -237,7 +257,7 @@ test("file previews remain inert and downloads use authorised side paths", async
 test("Community rejects a runtime workspace override before contacting the API", async ({ page }) => {
   const state = await sourceFixture(page);
   await page.route("**/oms-config.json", route => route.fulfill({ json: { api_url: "", tenant: "other-workspace" } }));
-  await page.goto("/sources/");
+  await page.goto("/import/?github=sources");
   await expect(page.getByText("Community configuration cannot override the local workspace.")).toBeVisible();
   expect(state.requests).toHaveLength(0);
 });
@@ -246,7 +266,7 @@ test("the source workspace remains readable with keyboard focus on desktop and m
   await sourceFixture(page);
   for (const width of [1320, 390]) {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto("/sources/?update=update-1");
+    await page.goto("/import/?github=sources&update=update-1");
     const decision = page.getByLabel("Decision for section:intro");
     await expect(decision).toBeVisible();
     await decision.focus(); await expect(decision).toBeFocused();
@@ -258,15 +278,14 @@ test("the source workspace remains readable with keyboard focus on desktop and m
 
 test("a lost discovery response recovers its receipt without storing the private URL", async ({ page }) => {
   const state = await sourceFixture(page, { loseDiscovery: true });
-  await page.goto("/sources/");
-  await page.getByRole("button", { name: "Add a GitHub source" }).click();
+  await openAddSource(page);
   await page.getByLabel("GitHub repository or skill folder URL").fill("https://github.com/fixture/private-repository-name");
   await page.getByRole("button", { name: "Discover packages", exact: true }).click();
   await expect.poll(() => state.discoveryLost).toBe(true);
   expect(await page.evaluate(() => JSON.stringify({ ...sessionStorage }))).not.toContain("private-repository-name");
   await page.reload();
-  await page.getByRole("button", { name: "Recover request 1" }).click();
-  await page.getByRole("link", { name: "Open recovered discovery" }).click();
+  await expect(page.getByText("A previous import did not confirm. Your browser sent the request but did not get the answer. Check its result before trying again; checking does not start a new import.")).toBeVisible();
+  await page.getByRole("button", { name: "Check result" }).click();
   await expect(page.getByRole("heading", { name: "Discovered skill packages" })).toBeVisible();
   expect(state.requests.filter(row => row.method === "POST" && row.path === "/api/skill-source-discoveries")).toHaveLength(1);
   expect(state.requests.some(row => row.path === "/api/skill-source-operations" && row.method === "GET")).toBe(true);
@@ -274,16 +293,15 @@ test("a lost discovery response recovers its receipt without storing the private
 
 test("a lost GitHub installation response recovers retained selections with the original key", async ({ page }) => {
   const state = await sourceFixture(page, { loseInstall: true });
-  await page.goto("/sources/");
-  await page.getByRole("button", { name: "Add a GitHub source" }).click();
+  await openAddSource(page);
   await page.getByLabel("GitHub repository or skill folder URL").fill("https://github.com/fixture/skills");
   await page.getByRole("button", { name: "Discover packages", exact: true }).click();
   await page.getByLabel("Select orders", { exact: true }).check();
   await page.getByRole("button", { name: "Install selected skills" }).click();
   await expect.poll(() => state.installLost).toBe(true);
   await page.reload();
-  await page.getByRole("button", { name: "Recover request 1" }).click();
-  await expect(page.getByRole("heading", { name: "Pending source requests" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Check result" }).click();
+  await expect(page.getByRole("button", { name: "Check result" })).toHaveCount(0);
   const installs = state.requests.filter(row => row.path === "/api/skill-source-installations");
   expect(installs).toHaveLength(2); expect(installs[0].key).toEqual(installs[1].key); expect(installs[0].body).toEqual(installs[1].body);
 });
@@ -301,14 +319,13 @@ test("a confirmed failed installation allows an identical explicit retry with a 
     await route.fulfill({ status: 409, json: { code: "package_already_owned", message: "Package is already installed", operation_id: key },
       headers: { "Access-Control-Allow-Origin": `http://127.0.0.1:${process.env.OMS_COMMUNITY_UI_PORT || "4318"}` } });
   });
-  await page.goto("/sources/");
-  await page.getByRole("button", { name: "Add a GitHub source" }).click();
+  await openAddSource(page);
   await page.getByLabel("GitHub repository or skill folder URL").fill("https://github.com/fixture/skills");
   await page.getByRole("button", { name: "Discover packages", exact: true }).click();
   await page.getByLabel("Select orders", { exact: true }).check();
   await page.getByRole("button", { name: "Install selected skills" }).click();
   await expect(page.getByText("Package is already installed", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Pending source requests" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Check result" })).toHaveCount(0);
   await page.getByRole("button", { name: "Install selected skills" }).click();
   await expect.poll(() => keys.length).toBe(2);
   expect(keys[1]).not.toBe(keys[0]);
@@ -318,7 +335,7 @@ test("a confirmed failed installation allows an identical explicit retry with a 
 
 test("a parsed response without an operation state never reports success", async ({ page }) => {
   await sourceFixture(page, { invalidOperation: true });
-  await page.goto("/sources/?source=source-1");
+  await page.goto("/import/?github=sources&source=source-1");
   await page.getByRole("button", { name: "Check source now", exact: true }).click();
   await expect(page.getByText("The server returned an invalid source operation. Recover the original request before retrying.")).toBeVisible();
   await expect(page.getByText("Operation complete", { exact: true })).toHaveCount(0);
@@ -336,7 +353,7 @@ test("changed approval input cannot replace an unresolved local request with a n
   await page.getByLabel("Local name for bundle").fill("New local guide");
   await page.getByRole("button", { name: "Apply selected local packages" }).click();
   await expect(page.getByText("A previous attempt needs recovery. Resolve it below before submitting your current input.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Recover previous request", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Check result" })).toBeEnabled();
   expect(state.requests.filter(row => row.path === "/api/skill-local-imports")).toHaveLength(1);
 });
 
@@ -348,14 +365,14 @@ test("a new database at the same server URL discards pending mutations but keeps
   await page.getByLabel("Destination for bundle").selectOption("expenses");
   await page.getByRole("button", { name: "Apply selected local packages" }).click();
   await expect.poll(() => state.localLost).toBe(true);
-  await expect(page.getByRole("button", { name: "Recover request 1" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Check result" })).toBeVisible();
   const originalSession = await page.evaluate(() => sessionStorage.getItem("oms-community-source-session"));
   state.workspaceId = "22222222-2222-4222-8222-222222222222";
   state.operations.clear();
   await page.reload();
   await expect(page.getByRole("heading", { name: "Bring your existing skills" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem("oms.source-requests.v1"))).toBeNull();
-  await expect(page.getByRole("button", { name: "Recover request 1" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Check result" })).toHaveCount(0);
   expect(await page.evaluate(() => sessionStorage.getItem("oms-community-source-session"))).toEqual(originalSession);
   expect(state.requests.filter(row => row.path === "/api/skill-local-imports")).toHaveLength(1);
   expect(state.requests.filter(row => row.path === "/api/skill-source-workspace")).toHaveLength(2);
@@ -364,7 +381,7 @@ test("a new database at the same server URL discards pending mutations but keeps
 test("missing or malformed workspace identity prevents recovery and source mutations", async ({ page }) => {
   const state = await sourceFixture(page);
   state.workspaceAvailable = false;
-  await page.goto("/sources/");
+  await page.goto("/import/?github=sources");
   await expect(page.getByText("Workspace identity is unavailable")).toBeVisible();
   expect(state.requests.every(row => ["/api/capabilities", "/api/skill-source-workspace"].includes(row.path))).toBe(true);
   state.workspaceAvailable = true; state.workspaceId = "";
@@ -375,8 +392,9 @@ test("missing or malformed workspace identity prevents recovery and source mutat
 
 test("changing the tracked folder uses relink with the current source and generation guards", async ({ page }) => {
   const state = await sourceFixture(page);
-  await page.goto("/sources/?source=source-1");
+  await page.goto("/import/?github=sources&source=source-1");
   await page.getByRole("button", { name: "Change tracked ref or folder" }).click();
+  await page.getByText("Advanced", { exact: true }).click();
   await page.getByLabel("Skill folder (optional)").fill("orders");
   await page.getByRole("button", { name: "Discover packages", exact: true }).click();
   await page.getByRole("button", { name: "Confirm folder relink", exact: true }).click();
@@ -388,7 +406,7 @@ test("changing the tracked folder uses relink with the current source and genera
 
 test("checking 101 bindings collects both pages and claims the source throttle once", async ({ page }) => {
   const state = await sourceFixture(page, { bindingCount: 101 });
-  await page.goto("/sources/?source=source-1");
+  await page.goto("/import/?github=sources&source=source-1");
   await page.getByRole("button", { name: "Check source now", exact: true }).click();
   await expect.poll(() => state.checkClaims).toBeGreaterThan(0);
   await expect(page.getByText("Processing source request…", { exact: true })).toHaveCount(0);
@@ -407,18 +425,20 @@ test("explicit recovery rechecks workspace identity while the tab stays open", a
   await page.getByRole("button", { name: "Preview local package" }).click();
   await page.getByLabel("Destination for bundle").selectOption("expenses");
   await page.getByRole("button", { name: "Apply selected local packages" }).click();
-  await expect(page.getByRole("button", { name: "Recover request 1" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Check result" })).toBeVisible();
+  // Let the page finish its own refreshes first: a request still in flight would meet the new workspace and reset the view early.
+  await page.waitForLoadState("networkidle");
   state.workspaceId = "22222222-2222-4222-8222-222222222222"; state.operations.clear();
-  await page.getByRole("button", { name: "Recover request 1" }).click();
+  await page.getByRole("button", { name: "Check result" }).click();
   await expect(page.getByText(/The workspace changed\. Earlier source requests and views were reset/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Recover request 1" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Check result" })).toHaveCount(0);
   expect(state.requests.filter(row => row.path === "/api/skill-local-imports")).toHaveLength(1);
   expect(await page.evaluate(() => sessionStorage.getItem("oms.source-requests.v1"))).toBeNull();
 });
 
 test("workspace guard rejection resets the view before a stale check can reserve an operation", async ({ page }) => {
   const state = await sourceFixture(page);
-  await page.goto("/sources/?source=source-1");
+  await page.goto("/import/?github=sources&source=source-1");
   await expect(page.getByRole("button", { name: "Check source now", exact: true })).toBeEnabled();
   const originalWorkspace = state.workspaceId;
   state.workspaceId = "22222222-2222-4222-8222-222222222222";
@@ -441,12 +461,20 @@ test("confirmed repository relocation changes only the endpoint before the next 
     Object.assign(state.source, { canonical_url: body.destination_url, generation: 2 });
     await route.fulfill({ json: { operation_id: "moved", source_id: "source-1", state: "complete", committed: true, outcomes: [] }, headers: { "Access-Control-Allow-Origin": `http://127.0.0.1:${process.env.OMS_COMMUNITY_UI_PORT || "4318"}` } });
   });
-  await page.goto("/sources/?source=source-1");
+  await page.goto("/import/?github=sources&source=source-1");
   await page.getByText("Change repository location", { exact: true }).click();
   await page.getByLabel("New GitHub repository URL").fill("https://github.com/fixture/moved");
-  await expect(page.getByRole("button", { name: "Confirm repository relocation" })).toBeDisabled();
-  await page.getByLabel("Confirm this repository moved to the new location").check();
-  await page.getByRole("button", { name: "Confirm repository relocation" }).click();
+  await page.getByRole("button", { name: "Change repository URL" }).click();
+  const dialog = page.getByRole("alertdialog", { name: "Change repository URL confirmation" });
+  await expect(dialog.getByText("Warning: This action will move the source for all skills that are part of this repository to https://github.com/fixture/moved. Do you still want to move it?")).toBeVisible();
+  await dialog.getByText("Affected skills (1)").click();
+  await expect(dialog.getByRole("listitem")).toHaveText(["Expense review"]);
+  await dialog.getByRole("button", { name: "No" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Change repository URL" })).toBeFocused();
+  expect(moves).toHaveLength(0);
+  await page.getByRole("button", { name: "Change repository URL" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Yes" }).click();
   await expect.poll(() => moves.length).toBe(1);
   await expect(page.getByRole("heading", { name: "https://github.com/fixture/moved" })).toBeVisible();
   expect(moves[0]).toEqual({ destination_url: "https://github.com/fixture/moved", expected_source_generation: 1,

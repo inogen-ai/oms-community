@@ -12,3 +12,8 @@ export { SourceDiscovery, initialSourceSelections } from "./source-discovery.js"
 export { SourceStatus, SourceUndo, sourceBulkExclusions } from "./source-status.js";
 export { SourceFileComparison, boundedSourceText } from "./source-files.js";
 export { SourceUpdateCard, initialSourceDraft, sourceCardState } from "./source-card.js";
+export { SourceLookupForm, SourcePendingNotice, sourceLookupBody, sourceLookupValue, sourcePendingSubject } from "./source-lookup.js";
+export { SourceChangeConfirmation } from "./source-confirm.js";
+export { GitHubMark } from "./github-mark.js";
+export { sourceDisplayUrl } from "./source-display.js";
+export { sourceUpdateScope } from "./source-updates.js";

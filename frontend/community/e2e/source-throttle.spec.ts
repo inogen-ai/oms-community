@@ -13,14 +13,14 @@ test("an unreserved throttled check stays retryable after reload", async ({ page
       json: { code: "check_throttled", message: "Check throttled", operation_id: null, retry_after_seconds: 60 } });
     return route.fulfill({ headers, json: { operation_id: `check-${keys.length}`, state: "complete", committed: false, outcomes: [] } });
   });
-  await page.goto("/sources/?source=source-1");
+  await page.goto("/import/?github=sources&source=source-1");
   await page.getByRole("button", { name: "Check source now", exact: true }).click();
   await expect.poll(() => keys.length).toBe(1);
   await page.getByRole("button", { name: "Check source now", exact: true }).click();
   await expect(page.getByText(/Try again after 60 seconds/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Recover previous request" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Check result" })).toHaveCount(0);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Pending source requests" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Check result" })).toHaveCount(0);
   await page.getByRole("button", { name: "Check source now", exact: true }).click();
   await expect.poll(() => keys.length).toBe(3);
   expect(new Set(keys).size).toBe(3);

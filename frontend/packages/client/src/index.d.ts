@@ -1,3 +1,4 @@
+import type { SkillSourceSummary } from "./sources.js";
 export interface Capabilities {
   edition: "community" | "pro" | "enterprise";
   api_contract_version: "1.0" | "1.1" | "1.2";
@@ -31,7 +32,7 @@ export interface Section { id: string; heading?: string; name?: string; body?: s
 export interface Artefact { path: string; bytes?: number; size?: number; digest?: string }
 export interface SkillVersion { id: string; at?: string; cause: string; actor_person_id?: string | null; detail?: string | null; revision?: string }
 export interface SkillChange extends SkillVersion { skill_id: string; skill_name: string }
-export interface Skill { id: string; name: string; description?: string; domain?: string; publish_enabled?: boolean; body?: string; rules?: Rule[]; sections?: Section[]; artefacts?: (Artefact | string)[]; versions?: SkillVersion[] }
+export interface Skill { id: string; name: string; description?: string; domain?: string; publish_enabled?: boolean; body?: string; rules?: Rule[]; sections?: Section[]; artefacts?: (Artefact | string)[]; versions?: SkillVersion[]; source?: SkillSourceSummary | null }
 export interface ReviewItem {
   posted_at?: string | null; repo?: string | null; skill_hint?: string | null; source_agent_id?: string | null; source_runtime?: string | null; context?: { user_input: string; agent_output: string } | null; context_truncated?: boolean; txn_id: string; text: string; signal_type: string; source_ref?: string | null; state: string; exact_matches: (Rule | string)[]; candidate_skill_ids: string[]; warning?: string | null; warnings?: string[]; held_reason?: string | null; skill_suggestions?: { id: string; name: string; score: number; reason: string }[]; similar_matches?: { id: string; body: string; score: number; reason: string; exact: boolean }[] }
 export interface RuleInsertion { skill_id: string; revision: string; section_id: string; position: "start" | "end" | "after"; after_rule_id?: string }

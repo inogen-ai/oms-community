@@ -1,32 +1,33 @@
 "use client";
 import { useEffect, useId, useState } from "react";
-import type { Skill, SkillDeletion, SkillDocument } from "@inogen/oms-client";
-import { AutoTextarea, Badge, Button, SkillTextEditor, EmptyState, Markdown, Notice, Panel, SkillDeleteConfirmation, SkillMarkdown, VersionComparison, type VersionComparisonView } from "@inogen/oms-ui-core";
+import type { Skill, SkillDeletion, SkillDocument, SkillSourceSummary } from "@inogen/oms-client";
+import { AutoTextarea, Badge, Button, GitHubMark, SkillTextEditor, EmptyState, Markdown, Notice, Panel, SkillDeleteConfirmation, SkillMarkdown, VersionComparison, type VersionComparisonView } from "@inogen/oms-ui-core";
 import { HistorySummary } from "@inogen/oms-ui-core/history";
 import { ArrowLeft, FileText, History, Pencil, Trash2, Volume2, VolumeX } from "lucide-react";
 import { Feedback, ResourceStatus, useAction, useResource, useWorkspace } from "@/lib/workspace";
 import { PageHeading } from "./Shell";
-import SkillSourcePanel from "./SkillSourcePanel";
+import SkillGitHubPanel, { skillGitHubPanelId } from "./SkillGitHubPanel";
 import SourceSkillHistory from "./SourceSkillHistory";
 import type { SkillDraft, UpdateDraft } from "./Skills";
 
 const tabs = ["Preview", "Markdown source", "Edit document", "Files", "History"] as const;
 type Tab = typeof tabs[number];
 
-export default function SkillDetail({ id, domains, draft, onDraftChange, onBack, onDeleted }: {
-  id: string; domains: string[]; draft: SkillDraft; onDraftChange: UpdateDraft; onBack: () => void; onDeleted: (result: SkillDeletion) => void;
+export default function SkillDetail({ id, source, domains, draft, onDraftChange, onBack, onDeleted }: {
+  id: string; source?: SkillSourceSummary | null; domains: string[]; draft: SkillDraft; onDraftChange: UpdateDraft; onBack: () => void; onDeleted: (result: SkillDeletion) => void;
 }) {
   const { api, sourceRevision } = useWorkspace();
   const resource = useResource(() => api.skill(id), [api, id, sourceRevision]);
-  return <><Button variant="secondary" onClick={onBack}><ArrowLeft size={15} />All skills</Button><ResourceStatus resource={resource} />{resource.data?.id === id && <SkillEditor skill={resource.data} domains={domains} refresh={resource.refresh} draft={draft} onDraftChange={onDraftChange} onDeleted={onDeleted} />}</>;
+  return <><Button variant="secondary" onClick={onBack}><ArrowLeft size={15} />All skills</Button><ResourceStatus resource={resource} />{resource.data?.id === id && <SkillEditor skill={resource.data} source={source} domains={domains} refresh={resource.refresh} draft={draft} onDraftChange={onDraftChange} onDeleted={onDeleted} />}</>;
 }
 
-function SkillEditor({ skill, domains, draft, onDraftChange, refresh, onDeleted }: {
-  skill: Skill; domains: string[]; draft: SkillDraft; onDraftChange: UpdateDraft; refresh: () => void; onDeleted: (result: SkillDeletion) => void;
+function SkillEditor({ skill, source, domains, draft, onDraftChange, refresh, onDeleted }: {
+  skill: Skill; source?: SkillSourceSummary | null; domains: string[]; draft: SkillDraft; onDraftChange: UpdateDraft; refresh: () => void; onDeleted: (result: SkillDeletion) => void;
 }) {
   const { api, capabilities } = useWorkspace();
   const [tab, setTab] = useState<Tab>("Preview");
   const [editing, setEditing] = useState(false);
+  const [github, setGithub] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const action = useAction();
   const domainId = useId();
@@ -42,7 +43,7 @@ function SkillEditor({ skill, domains, draft, onDraftChange, refresh, onDeleted 
   }, [dirty]);
   return <>
     <div className="skill-overline"><Badge>{skill.domain || "general"}</Badge><span>{muted ? "Muted · excluded from publication" : "Included in publication"}</span>{dirty && <span className="collection-unsaved">Unsaved edits</span>}</div>
-    <PageHeading title={skill.name} description={skill.description || "Instructions and context for your agents."}><div className="actions"><Button variant="secondary" aria-expanded={editing} onClick={() => setEditing(!editing)}><Pencil size={14} />Edit details</Button><Button variant="secondary" disabled={action.busy} onClick={() => void action.run(() => api.updateSkill(skill.id, { publish_enabled: muted }), muted ? "Skill included in the next publication." : "Skill muted. Publish to update your agents.", refresh)}>{muted ? <Volume2 size={14} /> : <VolumeX size={14} />}{muted ? "Unmute skill" : "Mute skill"}</Button><Button id={`${tabId}-delete`} variant="secondary" disabled={action.busy} aria-expanded={deleting !== null} onClick={() => setDeleting("")}><Trash2 size={14} />Delete skill</Button></div></PageHeading>
+    <PageHeading title={skill.name} description={skill.description || "Instructions and context for your agents."}><div className="actions"><Button variant="secondary" aria-expanded={editing} onClick={() => setEditing(!editing)}><Pencil size={14} />Edit details</Button><Button variant="secondary" disabled={action.busy} onClick={() => void action.run(() => api.updateSkill(skill.id, { publish_enabled: muted }), muted ? "Skill included in the next publication." : "Skill muted. Publish to update your agents.", refresh)}>{muted ? <Volume2 size={14} /> : <VolumeX size={14} />}{muted ? "Unmute skill" : "Mute skill"}</Button><Button id={`${tabId}-delete`} variant="secondary" disabled={action.busy} aria-expanded={deleting !== null} onClick={() => setDeleting("")}><Trash2 size={14} />Delete skill</Button>{capabilities.github_skill_sources && source !== undefined && <Button variant="secondary" aria-expanded={github} aria-controls={github ? skillGitHubPanelId(skill.id) : undefined} onClick={() => setGithub(!github)}><GitHubMark />{source ? "GitHub" : "Link to GitHub repository"}</Button>}</div></PageHeading>
     <Feedback action={action} />
     {deleting !== null && <SkillDeleteConfirmation name={skill.name} confirmation={deleting} onConfirmationChange={setDeleting} busy={action.busy} hasUnsavedChanges={dirty} onCancel={() => { setDeleting(null); document.getElementById(`${tabId}-delete`)?.focus(); }} onConfirm={() => {
       if (deleting !== skill.name || action.busy) return;
@@ -54,7 +55,7 @@ function SkillEditor({ skill, domains, draft, onDraftChange, refresh, onDeleted 
       <label>Domain<input required maxLength={200} list={domainId} value={details.domain} disabled={action.busy} onChange={event => onDraftChange(current => ({ ...current, details: { ...details, domain: event.target.value } }))} /><datalist id={domainId}>{domains.map(domain => <option key={domain} value={domain} />)}</datalist></label><p className="muted">Choose an existing domain or type a new one. Imports without an explicit domain use “general”.</p>
       <div className="actions"><Button type="submit" disabled={action.busy}>Save details</Button><Button variant="secondary" disabled={action.busy} onClick={() => { onDraftChange(current => ({ ...current, details: undefined })); setEditing(false); }}>Discard detail edits</Button></div>
     </form></Panel>}
-    {capabilities.github_skill_sources && <details className="compact"><summary>Source tracking</summary><SkillSourcePanel skill={skill} /></details>}
+    {capabilities.github_skill_sources && github && source !== undefined && <SkillGitHubPanel skill={skill} source={source} dirty={dirty} />}
     <div className="document-tabs" role="tablist" aria-label="Skill views">{tabs.map((name, index) => <button key={name} id={`${tabId}-${index}`} role="tab" aria-selected={tab === name} aria-controls={`${tabId}-panel`} tabIndex={tab === name ? 0 : -1} onClick={() => setTab(name)} onKeyDown={event => {
       let next = index;
       if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
@@ -69,7 +70,7 @@ function SkillEditor({ skill, domains, draft, onDraftChange, refresh, onDeleted 
       {tab === "Markdown source" && <Panel title="Markdown source"><pre className="document">{skill.body || "No guidance yet."}</pre></Panel>}
       {tab === "Edit document" && <DocumentEditor skill={skill} draft={draft} onDraftChange={onDraftChange} refresh={refresh} />}
       {tab === "Files" && <SkillFiles skill={skill} />}
-      {tab === "History" && <><SkillHistory skillId={skill.id} dirty={dirty} onRestored={refresh} />{capabilities.github_skill_sources && <SourceSkillHistory skillId={skill.id} dirty={dirty} />}</>}
+      {tab === "History" && <><SkillHistory skillId={skill.id} dirty={dirty} onRestored={refresh} />{capabilities.github_skill_sources && source === null && <SourceSkillHistory skillId={skill.id} dirty={dirty} />}</>}
     </section>
   </>;
 }

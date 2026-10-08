@@ -413,3 +413,12 @@
 .oms-source-undo { border-top: 1px solid var(--oms-line); margin-top: 18px; padding-top: 12px; }
 @media (max-width: 800px) { .oms-source-columns { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 550px) { .oms-source-fields, .oms-source-metadata { grid-template-columns: minmax(0, 1fr); } }
+.oms-source-advanced { margin: 4px 0 8px; }
+.oms-source-advanced > summary, .oms-source-names > summary { cursor: pointer; font-size: 13px; }
+.oms-source-advanced > label { display: grid; gap: 7px; font-size: 13px; margin: 12px 0; }
+.oms-source-names { margin: 14px 0; }
+.oms-source-confirm { border: 1px solid var(--oms-line); border-radius: 8px; padding: 16px; margin: 18px 0; }
+.oms-source-confirm :is(input, select, textarea, button, summary):focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }
+.oms-github-mark { display: inline-block; vertical-align: middle; flex: none; box-sizing: content-box; }
+.oms-button > .oms-github-mark { margin: -4px; }
+.oms-panel-footer { margin-top: 16px; }

@@ -45,6 +45,11 @@ export interface SourceStatus extends SourceRecord {
   readonly state: "unchecked" | "up_to_date" | "updates_available" | "failed" | "missing" | "redirect";
   readonly checked_at: string | null; readonly code: string | null;
 }
+/** What a skill list row says about its GitHub source; `status` is the skill's own binding status. */
+export interface SkillSourceSummary {
+  readonly source_id: string; readonly canonical_url: string; readonly status: SourceStatus | null;
+  readonly ref_kind: "branch" | "tag" | "commit"; readonly ref_name: string;
+}
 export interface SkillSource extends SourceRecord {
   readonly source_id: string; readonly tenant_id: string; readonly canonical_url: string; readonly confirmed_aliases: readonly string[];
   readonly discovery_root: string; readonly credential_profile_id: string | null; readonly generation: number;

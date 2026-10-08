@@ -2,13 +2,13 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Button, SkillPackagePicker } from "@inogen/oms-ui-core";
-import TrackedSkillImport from "./TrackedSkillImport";
+import TrackedSkillImport, { type GitHubChoice } from "./TrackedSkillImport";
 import { Feedback, useAction, useWorkspace } from "@/lib/workspace";
 
 /** Used from both the skills library and the import page. */
-export default function SkillImport({ onImported }: { onImported?: () => void }) {
+export default function SkillImport({ onImported, github }: { onImported?: () => void; github?: GitHubChoice }) {
   const { capabilities } = useWorkspace();
-  return capabilities.github_skill_sources ? <TrackedSkillImport onImported={onImported} /> : <LegacySkillImport onImported={onImported} />;
+  return capabilities.github_skill_sources ? <TrackedSkillImport onImported={onImported} github={github} /> : <LegacySkillImport onImported={onImported} />;
 }
 
 function LegacySkillImport({ onImported }: { onImported?: () => void }) {

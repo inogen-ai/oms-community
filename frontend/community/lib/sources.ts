@@ -97,3 +97,22 @@ export function saveSourceDownload(bytes: Uint8Array, path: string) {
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
+
+/** Where an old `/sources/` link now lives: the Import page (or Skills, for a discovery), keeping the source, update or discovery it named. */
+export function legacySourcesTarget(search: string): string {
+  const query = new URLSearchParams(search);
+  const next = new URLSearchParams();
+  if (query.get("discovery")) { next.set("github", "add"); next.set("discovery", query.get("discovery")!); }
+  else {
+    next.set("github", "sources");
+    for (const name of ["source", "update"]) if (query.get(name)) next.set(name, query.get(name)!);
+    return `/import/?${next}`;
+  }
+  return `/skills/?${next}`;
+}
+
+/** Where one update's card opens: GitHub cards under View GitHub sources and local re-import cards under Review imported changes, both on Import. */
+export function updateTarget(kind: "github" | "local", updateId: string): string {
+  const id = encodeURIComponent(updateId);
+  return kind === "local" ? `/import/?update=${id}` : `/import/?github=sources&update=${id}`;
+}

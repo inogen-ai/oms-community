@@ -190,6 +190,55 @@ def test_recreated_visible_skill_id_does_not_expose_retired_source_card_or_bindi
     assert client.get("/api/skills/expenses/source-binding").json()["binding"] is None
 
 
+def test_skill_source_summaries_follow_active_unretired_bindings(source_api):
+    from oms.skills.service import SkillAdminService
+    _, world, _ = source_api
+    reads = SourceReads(world.service, world.blobs)
+    assert reads.skill_sources(world.context, ["expenses"]) == {}
+    world.install()
+    found = reads.skill_sources(world.context, ["expenses", "unlinked"])
+    assert list(found) == ["expenses"]
+    assert found["expenses"].canonical_url == "https://github.com/example/skills.git"  # the source identity, not the binding ref URL
+    assert (found["expenses"].ref_kind, found["expenses"].ref_name) == ("branch", "main")
+    assert found["expenses"].status == world.sources.get_binding(world.skill).status
+    assert reads.skill_sources(world.context, ["unlinked"]) == {}
+    admin = SkillAdminService(store=world.store, repository=world.repository)
+    admin.delete_skill("expenses", "acme", actor="reviewer")
+    admin.create_skill("acme", name="expenses", description="New unrelated skill", domain="engineering", actor="reviewer")
+    assert reads.skill_sources(world.context, ["expenses"]) == {}
+
+
+def test_skill_source_summaries_use_one_bulk_read(source_api, monkeypatch):
+    from collections import Counter
+    from oms.sources.repository import SourceRecords
+    _, world, _ = source_api
+    world.install()
+    source_id = world.sources.get_binding(world.skill).source_id
+    scans, sources = Counter(), []
+    # Each adapter supplies its own `_rows`, so patch the class that defines it for this repository.
+    adapter = next(cls for cls in type(world.sources).__mro__ if "_rows" in vars(cls))
+    rows, get_source = adapter._rows, SourceRecords.get_source
+
+    def counted_rows(self, tenant, kind, **kwargs):
+        scans[kind] += 1
+        return rows(self, tenant, kind, **kwargs)
+
+    def counted_source(self, source_id, **kwargs):
+        sources.append(source_id)
+        return get_source(self, source_id, **kwargs)
+
+    def per_skill(*args, **kwargs):
+        raise AssertionError("a list read must not query binding or retirement per skill")
+    monkeypatch.setattr(adapter, "_rows", counted_rows)
+    monkeypatch.setattr(SourceRecords, "get_source", counted_source)
+    monkeypatch.setattr(SourceRecords, "get_binding", per_skill)
+    monkeypatch.setattr(SourceRecords, "get_retirement", per_skill)
+    assert list(SourceReads(world.service, world.blobs).skill_sources(world.context, ["expenses", "other", "another"])) == ["expenses"]
+    # One scan of bindings, one of retirement fences, and one source read per distinct repository.
+    assert (scans["binding"], scans["retirement"]) == (1, 1)
+    assert sources == [source_id]
+
+
 def test_workspace_identity_is_verified_stable_and_separate_from_tenant_label(source_api):
     client, world, state = source_api
     response = client.get("/api/skill-source-workspace")

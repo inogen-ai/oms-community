@@ -11,7 +11,7 @@ const skillRef = { tenant_id: "local", skill_id: skill.id };
 const origin = { format_version, skill: skillRef, origin_id: "origin-1", kind: "github" as const, generation: 1 };
 const ref = { format_version, canonical_url: "https://github.com/fixture/skills", kind: "branch" as const, name: "main", package_path: "expenses", commit: "a".repeat(40) };
 const evidence = (value: string) => ({ format_version, kind: "known" as const, value, source_digest: null, policy_version: "p" });
-export async function sourceFixture(page: Page, options: { enabled?: boolean; blocked?: boolean; loseApply?: boolean; removal?: boolean; clean?: boolean; script?: boolean; loseLocal?: boolean; blockLocal?: boolean; blockRetarget?: boolean; undo?: boolean; unlinked?: boolean; file?: boolean; loseDiscovery?: boolean; loseInstall?: boolean; invalidOperation?: boolean; bindingCount?: number } = {}) {
+export async function sourceFixture(page: Page, options: { enabled?: boolean; blocked?: boolean; loseApply?: boolean; removal?: boolean; clean?: boolean; script?: boolean; loseLocal?: boolean; blockLocal?: boolean; blockRetarget?: boolean; undo?: boolean; unlinked?: boolean; file?: boolean; loseDiscovery?: boolean; loseInstall?: boolean; invalidOperation?: boolean; bindingCount?: number; localReview?: boolean } = {}) {
   const source: SkillSource = { format_version, source_id: "source-1", tenant_id: "local", canonical_url: ref.canonical_url, confirmed_aliases: [], discovery_root: "", credential_profile_id: null, generation: 1, scheduled: false, status: { format_version, state: "updates_available", checked_at: null, code: null } };
   const binding: Mutable<SourceBindingView> = { binding: { format_version, origin, source_id: source.source_id, package_path: "expenses", ref, baseline: { format_version, snapshot_id: "base", origin }, automatic_apply: false, automation_actor_id: null, first_reconciliation: true, status: source.status, active: true }, local_stream: null, generations: { format_version, skill: skillRef, content: 1, binding: 1 }, blocked_attempts: options.blocked ? [{ format_version, attempt_id: "blocked-1", origin, actor_id: "local-operator", reason: "Other-origin update remains open", existing_update_id: "update-1", retry_needed: true }] : [] };
   const originalBinding = structuredClone(binding.binding);
@@ -20,6 +20,8 @@ export async function sourceFixture(page: Page, options: { enabled?: boolean; bl
   if (options.file) update.plan = { ...update.plan, flags: [], conflicts: [], changes: [{ ...update.plan.changes[0], part_id: "file:references/guide.md", kind: "file", action: "replace", base: { ...evidence(""), value: { path: "references/guide.md", digest: "base-digest", size: 12 } }, local: { ...evidence(""), value: { path: "references/guide.md", digest: "local-digest", size: 12 } }, incoming: { ...evidence(""), value: { path: "references/guide.md", digest: "upstream-digest", size: 12, published: false, exclusion_reason: "reserved output" } } }] };
   if (options.removal) update.plan = { ...update.plan, flags: ["deletion_consent"], conflicts: [], changes: [{ ...update.plan.changes[0], action: "remove", incoming: { ...evidence(""), kind: "absent", value: null } }] };
   if (options.clean) update.plan = { ...update.plan, flags: [], conflicts: [], changes: [{ ...update.plan.changes[0], action: "replace" }] };
+  const localOrigin = { ...origin, origin_id: "local-origin", kind: "local" as const };
+  const localUpdate: Mutable<SourceUpdateView> = { ...structuredClone(update), update_id: "update-local", plan: { ...update.plan, origin: localOrigin, base: { format_version, snapshot_id: "local-base", origin: localOrigin }, incoming: { format_version, snapshot_id: "local-incoming", origin: localOrigin } } };
   const scriptOrigin = { ...origin, origin_id: "script-origin", skill: { tenant_id: "local", skill_id: "scripts" } };
   const script: Mutable<SourceUpdateView> = { ...structuredClone(update), update_id: "update-script", plan: { ...update.plan, skill: scriptOrigin.skill, origin: scriptOrigin, base: { format_version, snapshot_id: "script-base", origin: scriptOrigin }, incoming: { format_version, snapshot_id: "script-incoming", origin: scriptOrigin }, flags: ["script_changes"], conflicts: [], changes: [] } };
   const discovery: SourceDiscovery = { discovery_id: "discovery-1", resolved_ref: ref, expires_at: "2099-01-01T00:00:00Z", preselected_path: null, packages: { format_version, next_cursor: null, items: ["expenses", "orders"].map(path => ({ format_version, path, valid: true, upstream_name: path === "expenses" ? "Expenses incoming" : "Orders", description: null, file_count: 1, total_bytes: 10, reasons: [], unsupported_metadata: [] })) } };
@@ -28,7 +30,7 @@ export async function sourceFixture(page: Page, options: { enabled?: boolean; bl
     const extraOrigin = { ...origin, origin_id: `origin-${id}`, skill: { ...skillRef, skill_id: id } };
     return { ...originalBinding!, origin: extraOrigin, baseline: { format_version, snapshot_id: `base-${id}`, origin: extraOrigin } };
   });
-  const state = { source, binding, update, discovery, workspaceId: "11111111-1111-4111-8111-111111111111", workspaceAvailable: true, checkClaims: 0, additionalBindings,
+  const state = { source, binding, update, localUpdate, discovery, workspaceId: "11111111-1111-4111-8111-111111111111", workspaceAvailable: true, checkClaims: 0, additionalBindings,
     skills: [skill, ...additionalBindings.map(row => ({ ...skill, id: row.origin.skill.skill_id, name: row.origin.skill.skill_id }))], requests: [] as { method: string; path: string; key: string | undefined; body: unknown; query: string; workspace: string | undefined }[], operations: new Map<string, SourceOperation>(), decisions: [] as string[], lost: false, uploadCount: 0, localLost: false, undone: false, discoveryLost: false, installLost: false, extraUpdates: options.script ? [script] : [], violations: [] as string[] };
   await page.route("**/*", route => {
     const origin = new URL(route.request().url()).origin;
@@ -49,7 +51,10 @@ export async function sourceFixture(page: Page, options: { enabled?: boolean; bl
     if (path !== "/api/skill-source-workspace" && request.headers()["x-source-workspace"] && request.headers()["x-source-workspace"] !== state.workspaceId) return reply({ code: "workspace_changed", message: "The source workspace changed" }, 409);
     if (path === "/api/capabilities") return reply({ edition: "community", api_contract_version: "1.2", schema_version: 2, github_skill_sources: options.enabled ?? true, manual_learning: true, semantic_compilation: false, multi_user_identity: false, team_scoping: false, personal_mutes: false, contributor_portal: false, redaction_vault: false, model_settings: false, scheduled_publish: false, managed_publish: false, graph_query_console: false, advanced_review: false, usage_analytics: false });
     if (path === "/api/skill-source-workspace") return state.workspaceAvailable ? reply({ workspace_id: state.workspaceId }) : reply({ message: "Workspace identity is unavailable" }, 503);
-    if (path === "/api/skills") return reply(state.skills);
+    if (path === "/api/skills") return reply(state.skills.map(row => {
+      const linked = row.id === skill.id ? binding.binding : additionalBindings.find(extra => extra.origin.skill.skill_id === row.id);
+      return { ...row, source: linked?.active ? { source_id: source.source_id, canonical_url: source.canonical_url, status: linked.status, ref_kind: linked.ref.kind, ref_name: linked.ref.name } : null };
+    }));
     if (path === "/api/skills/expenses") return reply(skill);
     if (["/api/review", "/api/import-review", "/api/skills/expenses/versions"].includes(path)) return reply([]);
     if (path === "/api/skill-sources" && method === "GET") return reply({ format_version, items: [source], next_cursor: null });
@@ -62,8 +67,9 @@ export async function sourceFixture(page: Page, options: { enabled?: boolean; bl
     if (extraBinding) return reply({ binding: extraBinding, local_stream: null, generations: { format_version, skill: extraBinding.origin.skill, content: 1, binding: 1 }, blocked_attempts: [] });
     if (path === "/api/skills/expenses/source-binding" && method === "GET") return reply(binding);
     if (path === "/api/skills/expenses/source-history") return reply({ format_version, items: options.undo ? [{ id: "history-1", skill_id: "expenses", tenant_id: "local", at: "2026-10-06T12:00:00Z", revision: "revision-1", cause: "source_update", actor_person_id: "local-operator", detail: "Updated supporting files", group_id: null, parts_json: "[]", metadata_json: "{}", rules_json: "[]", files_json: "[]", source_operation_id: "prior-operation", source_origin_id: "origin-1", source_revision: "a".repeat(40), undo: { undo_id: "undo-1", update_id: "update-1", skill_id: "expenses", expected_generations: [{ skill_id: "expenses", content: 1, binding: 1 }], policy_version: "p", available: !state.undone, reasons: state.undone ? ["already_undone"] : [] } }] : [], next_cursor: null });
-    if (path === "/api/skill-updates") return reply({ format_version, items: [update, ...state.extraUpdates].filter(row => row.status === "open"), next_cursor: null });
+    if (path === "/api/skill-updates") return reply({ format_version, items: [update, ...(options.localReview ? [localUpdate] : []), ...state.extraUpdates].filter(row => row.status === "open"), next_cursor: null });
     if (path === "/api/skill-updates/update-script") return reply(script);
+    if (path === "/api/skill-updates/update-local" && method === "GET") return reply(localUpdate);
     if (path === "/api/skill-updates/update-1" && method === "GET") {
       const resolved = update.plan.conflicts.every(conflict => update.drafts.some(choice => choice.part_id === conflict.part_id));
       update.resolved_check = { format_version, state: resolved ? "passed" : "held", code: resolved ? "resolved_writes_checked" : "review_decisions_required", reasons: [] };
@@ -93,7 +99,7 @@ export async function sourceFixture(page: Page, options: { enabled?: boolean; bl
       const action = path.split("/").at(-1)!;
       if (action === "check") { state.checkClaims++; if (state.checkClaims > 1) return reply({ message: "Source check was throttled", code: "source_busy" }, 429); }
       if (action === "draft") { update.drafts = body!.choices as SourceUpdateView["drafts"]; update.generation++; update.plan = { ...update.plan, fingerprint: { ...update.plan.fingerprint, update_generation: update.generation } }; }
-      if (["apply", "skip", "adopt"].includes(action)) { update.status = action === "apply" ? "applied" : action === "skip" ? "skipped" : "adopted"; state.decisions.push(action); }
+      if (["apply", "skip", "adopt"].includes(action)) { const target = path.includes("/update-local/") ? localUpdate : update; target.status = action === "apply" ? "applied" : action === "skip" ? "skipped" : "adopted"; state.decisions.push(action); }
       if (action === "unlink" && binding.binding) binding.binding = { ...binding.binding, active: false };
       if (action === "retarget" && options.blockRetarget) return reply({ operation_id: key, state: "blocked", committed: false, outcomes: [{ skill_id: "expenses", state: "blocked", update_id: "update-1", code: "source_card_open" }] });
       if (action === "retarget" && binding.binding) {
@@ -113,6 +119,7 @@ export async function sourceFixture(page: Page, options: { enabled?: boolean; bl
         }
         binding.blocked_attempts = binding.blocked_attempts.filter(row => row.attempt_id !== "local-attempt");
         state.decisions.push("local-import");
+        if (options.localReview) { const review: SourceOperation = { operation_id: key, state: "awaiting_review", committed: false, outcomes: [{ skill_id: skill.id, state: "awaiting_review", code: null, update_id: localUpdate.update_id }] }; state.operations.set(key, review); return reply(review); }
       }
       const result: SourceOperation = { operation_id: key, source_id: path === "/api/skill-sources" ? "source-1" : null, state: action === "check" ? "awaiting_review" : "complete", committed: action === "apply", outcomes: [{ skill_id: skill.id, state: action === "apply" ? "applied" : action === "check" ? "awaiting_review" : "unchanged", code: null, update_id: update.update_id }] };
       state.operations.set(key, result);

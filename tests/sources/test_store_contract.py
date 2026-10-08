@@ -139,3 +139,27 @@ def test_live_ownership_is_separate_from_snapshots_and_does_not_alias_entities(s
     assert source_repository.get_generations(skill).content == before.content + 2
     source_repository.clear_ownership(skill, first.part_id, entity_ids=first.entity_ids)
     assert source_repository.ownership_for_skill(skill) == (second,)
+
+
+def test_tenant_bindings_hide_those_at_or_below_the_retirement_fence(source_repository):
+    skill = SkillRef("acme", "expenses")
+    url = "https://github.com/example/skills"
+    source_repository.put_source(Source(source_id="first", tenant_id="acme", canonical_url=url))
+    ref = ResolvedRef(canonical_url=url, kind="branch", name="main", commit="a" * 40)
+
+    def binding(generation, active=True):
+        origin = OriginRef(skill=skill, origin_id="first", kind="github", generation=generation)
+        return Binding(origin=origin, source_id="first", package_path="skills/a", ref=ref, active=active)
+
+    def write(kind, value):
+        # Rows are written below put_binding on purpose: the fence is what retire_skill leaves behind.
+        source_repository._atomic("acme", lambda bound: bound._save("acme", kind, skill.skill_id, value))
+    write("binding", binding(3))
+    assert [row.origin.generation for row in source_repository.active_bindings_for_tenant(tenant_id="acme")] == [3]
+    write("retirement", Generations(skill=skill, content=0, binding=3))
+    assert source_repository.active_bindings_for_tenant(tenant_id="acme") == ()
+    write("binding", binding(4))
+    assert [row.origin.generation for row in source_repository.active_bindings_for_tenant(tenant_id="acme")] == [4]
+    write("binding", binding(5, active=False))
+    assert source_repository.active_bindings_for_tenant(tenant_id="acme") == ()
+    assert source_repository.active_bindings_for_tenant(tenant_id="other") == ()

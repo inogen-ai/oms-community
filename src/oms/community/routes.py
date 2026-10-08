@@ -138,7 +138,9 @@ def build_routes(services):
 
     @router.get("/skills")
     def skills():
-        return [asdict(sk) for sk in s.store.skills_for_tenant(tenant)]
+        rows = s.store.skills_for_tenant(tenant)
+        linked = s.source_reads.skill_sources(s.sources.policy.context(), [sk.id for sk in rows]) if s.source_reads is not None else {}
+        return [{**asdict(sk), "source": linked[sk.id].model_dump(mode="json") if sk.id in linked else None} for sk in rows]
 
     @router.get("/skill-changes")
     def skill_changes():

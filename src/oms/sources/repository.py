@@ -154,6 +154,14 @@ class SourceRecords:
             if (binding := Binding.model_validate_json(data)).active and binding.source_id == source_id),
             key=lambda binding: binding.origin.skill))
 
+    def active_bindings_for_tenant(self, *, tenant_id: str) -> tuple[Binding, ...]:
+        # One scan of bindings and one of retirement fences: a list read must not cost a query per skill.
+        fences = {key: Generations.model_validate_json(data).binding for key, data in self._rows(tenant_id, "retirement")}
+        return tuple(sorted((binding for _, data in self._rows(tenant_id, "binding")
+            if (binding := Binding.model_validate_json(data)).active
+            and binding.origin.generation > fences.get(binding.origin.skill.skill_id, -1)),
+            key=lambda binding: binding.origin.skill))
+
     @transactional
     def put_source(self, source: Source) -> None:
         old = self.get_source(source.source_id, tenant_id=source.tenant_id)

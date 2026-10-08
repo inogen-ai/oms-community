@@ -12,7 +12,9 @@ from oms.domain.identity import SkillRef
 from oms.ports.blob_store import BlobStore
 from oms.ports.graph_store import GraphStore
 from oms.publish.publisher import Publisher
-from oms.sources.api_models import DiscoveryView, SkillGenerationBody, SourceHistoryEntry, UndoView, UpdateView
+from oms.sources.api_models import (
+    DiscoveryView, SkillGenerationBody, SkillSourceSummary, SourceHistoryEntry, UndoView, UpdateView,
+)
 from oms.sources.errors import SourceConflict, SourceForbidden, SourceNotFound, StaleMutation
 from oms.sources.files import FileSide, require_path, verified_bytes
 from oms.sources.local_projection import project_local
@@ -97,6 +99,25 @@ class SourceReads:
                     "generations": bound.sources.get_generations(ref),
                     "blocked_attempts": bound.sources.blocked_attempts(ref)}
         return self.service._read(context, "read", (), read, read_only=True)
+
+    def skill_sources(self, context: ActionContext, skill_ids: Iterable[str]) -> dict[str, SkillSourceSummary]:
+        """Active, unretired GitHub bindings for list rows, in one bulk read.
+
+        The caller passes only skills it already shows to this reader; per-skill
+        visibility is the caller's job. This performs no per-skill admission.
+        """
+        wanted = set(skill_ids)
+
+        def read(bound):
+            bindings = [row for row in bound.sources.active_bindings_for_tenant(tenant_id=context.tenant_id)
+                        if row.origin.skill.skill_id in wanted]
+            sources = {source_id: bound.sources.get_source(source_id, tenant_id=context.tenant_id)
+                       for source_id in {row.source_id for row in bindings}}
+            return {row.origin.skill.skill_id: SkillSourceSummary(source_id=row.source_id,
+                        canonical_url=sources[row.source_id].canonical_url, status=row.status,
+                        ref_kind=row.ref.kind, ref_name=row.ref.name)
+                    for row in bindings if sources[row.source_id] is not None}
+        return self.service._read(context, "list_sources", (), read, read_only=True)
 
     def updates(self, context: ActionContext, *, cursor=None, limit=100) -> Page[Update]:
         def read(bound):

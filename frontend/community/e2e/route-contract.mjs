@@ -5,7 +5,7 @@ const operations = [
   ["GET", /^\/api\/skill-source-discoveries\/[^/]+(?:\/files)?$/],
   ["DELETE", /^\/api\/skill-source-discoveries\/[^/]+$/],
   ["GET", /^\/api\/skill-sources\/[^/]+$/],
-  ["POST", /^\/api\/skill-sources\/[^/]+\/(check|remove)$/],
+  ["POST", /^\/api\/skill-sources\/[^/]+\/(check|remove|relocate)$/],
   ["GET", /^\/api\/skills\/[^/]+\/(source-binding|source-history)$/],
   ["POST", /^\/api\/skills\/[^/]+\/source-binding\/(link|relink|retarget|unlink)$/],
   ["GET", /^\/api\/skill-updates\/[^/]+(?:\/files)?$/],

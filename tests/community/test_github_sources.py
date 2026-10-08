@@ -8,6 +8,7 @@ import pytest
 from oms.community.app import _compose, build_community
 from oms.domain.identity import SkillRef
 from oms.settings.core import CoreSettings
+from oms.sources.api_models import SkillSourceSummary
 from oms.sources.mutation import source_repository
 from oms.web.api import create_app
 from tests.community.test_critic_workflow import critic_neo4j_driver  # noqa: F401
@@ -32,15 +33,8 @@ def source_application(request, tmp_path):
         yield services, client
 
 
-def test_enabled_source_intake_commits_one_receipt_history_and_generation(source_application, monkeypatch):
-    services, client = source_application
-    def unavailable(*args, **kwargs):
-        raise AssertionError("Source intake called ordinary import processing")
-    monkeypatch.setattr(services.importer, "prepare_directory", unavailable)
-    capabilities = client.get("/api/capabilities").json()
-    assert capabilities["github_skill_sources"] is True
-    assert capabilities["schema_version"] == 2
-    assert capabilities["api_contract_version"] == "1.2"
+def import_expenses(services, client, key):
+    """Stage and commit a local ZIP package; a local package has no GitHub binding."""
     workspace = client.get("/api/skill-source-workspace").json()["workspace_id"]
     content = BytesIO()
     with ZipFile(content, "w") as archive:
@@ -51,10 +45,23 @@ def test_enabled_source_intake_commits_one_receipt_history_and_generation(source
     assert services.store.get_skill("expenses", tenant_id="acme") is None
     body = {"upload_id": staged.json()["upload_id"], "selections": [
         {"package_path": "", "local_name": "Expenses", "domain": "finance"}]}
-    headers = {"Idempotency-Key": "local-installed-import", "X-Source-Workspace": workspace}
+    headers = {"Idempotency-Key": key, "X-Source-Workspace": workspace}
     first = client.post("/api/skill-local-imports", json=body, headers=headers)
     assert first.status_code == 200, first.text
     assert first.json()["state"] == "complete" and first.json()["committed"] is True
+    return body, headers, first
+
+
+def test_enabled_source_intake_commits_one_receipt_history_and_generation(source_application, monkeypatch):
+    services, client = source_application
+    def unavailable(*args, **kwargs):
+        raise AssertionError("Source intake called ordinary import processing")
+    monkeypatch.setattr(services.importer, "prepare_directory", unavailable)
+    capabilities = client.get("/api/capabilities").json()
+    assert capabilities["github_skill_sources"] is True
+    assert capabilities["schema_version"] == 2
+    assert capabilities["api_contract_version"] == "1.2"
+    body, headers, first = import_expenses(services, client, "local-installed-import")
     skill = SkillRef("acme", "expenses")
     sources = source_repository(services.store)
     before = sources.get_generations(skill)
@@ -110,3 +117,22 @@ def test_source_identity_upgrade_requires_explicit_maintenance_and_preserves_vis
     assert {row["key"] for row in rows} == {SkillRef(tenant, "expenses").storage_key for tenant in ("acme", "other")}
     with pytest.raises(SchemaCompatibilityError):
         manager._check(metadata, "community", 1)
+
+
+def test_skill_rows_carry_no_source_for_a_local_package_and_the_service_summary_when_linked(source_application, monkeypatch):
+    services, client = source_application
+    import_expenses(services, client, "local-row-import")
+    rows = client.get("/api/skills").json()
+    assert [(row["id"], row["source"]) for row in rows] == [("expenses", None)]
+    seen = []
+    summary = SkillSourceSummary(source_id="source-1", canonical_url="https://github.com/example/skills",
+                                 status=None, ref_kind="branch", ref_name="main")
+
+    def stub(context, ids):
+        seen.append(list(ids))
+        return {"expenses": summary}
+    monkeypatch.setattr(services.source_reads, "skill_sources", stub)
+    rows = client.get("/api/skills").json()
+    assert seen == [["expenses"]]
+    assert rows[0]["source"] == {"source_id": "source-1", "canonical_url": "https://github.com/example/skills",
+                                 "status": None, "ref_kind": "branch", "ref_name": "main"}

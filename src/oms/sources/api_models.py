@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, Field
 
 from oms.domain.models import SkillVersion
-from oms.sources.models import CheckResult, DraftChoice, OperationResult, Page, Update
+from oms.sources.models import CheckResult, DraftChoice, OperationResult, Page, SourceStatus, Update
 from oms.sources.primitives import DiscoveredPackage, Generation, PlanFingerprint, ResolvedRef
 
 Identifier = Annotated[str, Field(min_length=1, max_length=1000)]
@@ -155,6 +155,15 @@ class FilePreview(Body):
     byte_limit: int = 65536
     line_limit: int = 1000
     media_type: Literal["text/plain"] = "text/plain"
+
+
+class SkillSourceSummary(Body):
+    """What a skill list row says about the skill's GitHub source; the status is the binding's own."""
+    source_id: str
+    canonical_url: str
+    status: SourceStatus | None
+    ref_kind: Literal["branch", "tag", "commit"]
+    ref_name: str
 
 
 class UpdateView(Update):

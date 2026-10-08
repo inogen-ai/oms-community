@@ -1,10 +1,13 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import type { LocalSourceSelection } from "@inogen/oms-client";
-import { Button, Notice, SkillPackagePicker, SourceStatus } from "@inogen/oms-ui-core";
+import { Button, GitHubMark, Notice, SkillPackagePicker, SourceStatus } from "@inogen/oms-ui-core";
 import { ResourceStatus, message, useWorkspace } from "@/lib/workspace";
 import { useSourceAction, useSourceResource } from "@/lib/source-state";
+import { updateTarget } from "@/lib/sources";
 import { SourceActionFeedback, SourceRecovery } from "./SourceOperations";
+import GitHubImport from "./GitHubImport";
 
 interface StagedUpload {
   upload_id: string; filename: string; warnings: string[];
@@ -22,7 +25,10 @@ function stageResult(value: Record<string, unknown>): StagedUpload {
 interface Target { destination: string; localName: string; domain: string }
 const skillId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 
-export default function TrackedSkillImport({ onImported }: { onImported?: () => void }) {
+/** `github` adds the third choice, "Add a GitHub source", which swaps the file chooser for the GitHub add flow in place. */
+export interface GitHubChoice { active: boolean; discoveryId: string | null; onChange: (active: boolean) => void }
+
+export default function TrackedSkillImport({ onImported, github }: { onImported?: () => void; github?: GitHubChoice }) {
   const { api, sources } = useWorkspace();
   const skills = useSourceResource(() => api.skills(), [api]);
   const [directory, setDirectory] = useState(false), [file, setFile] = useState<File | null>(null), [files, setFiles] = useState<File[]>([]);
@@ -69,14 +75,15 @@ export default function TrackedSkillImport({ onImported }: { onImported?: () => 
     if (result) onImported?.();
   }
   const patch = (path: string, next: Partial<Target>) => setTargets(current => ({ ...current, [path]: { ...(current[path] ?? { destination: "", localName: "", domain: "general" }), ...next } }));
-  return <><SourceRecovery /><p>Upload a folder or ZIP for a retained preview, then explicitly choose a new or existing skill for each package. A filename never chooses an existing skill.</p>
-    <div className="actions" role="group" aria-label="Upload format"><Button variant={!directory ? "primary" : "secondary"} disabled={busy || action.busy} onClick={() => { setDirectory(false); setFiles([]); setStage(null); }}>ZIP package</Button><Button variant={directory ? "primary" : "secondary"} disabled={busy || action.busy} onClick={() => { setDirectory(true); setFile(null); setStage(null); }}>Folder</Button></div>
+  return <><SourceRecovery match={row => row.path.split("?")[0] === "/api/skill-local-imports" && row.key !== action.recoveryKey} /><p>Upload a folder or ZIP for a retained preview, then explicitly choose a new or existing skill for each package. A filename never chooses an existing skill.</p>
+    <div className="actions" role="group" aria-label="Upload format"><Button variant={!directory && !github?.active ? "primary" : "secondary"} disabled={busy || action.busy} onClick={() => { setDirectory(false); setFiles([]); setStage(null); github?.onChange(false); }}>ZIP package</Button><Button variant={directory && !github?.active ? "primary" : "secondary"} disabled={busy || action.busy} onClick={() => { setDirectory(true); setFile(null); setStage(null); github?.onChange(false); }}>Folder</Button>{github && <Button variant={github.active ? "primary" : "secondary"} disabled={busy || action.busy} onClick={() => github.onChange(true)}><GitHubMark size={15} />Add a GitHub source</Button>}</div>
+    {github?.active ? <GitHubImport discoveryId={github.discoveryId} onInstalled={() => onImported?.()} /> : <>
     <SkillPackagePicker key={String(directory)} directory={directory} disabled={busy || action.busy} label={directory ? "Choose a skill folder" : "Choose a ZIP package"} inputLabel={directory ? "Skill folder" : "Skill ZIP package"}
       onChoose={value => { setFile(value); setStage(null); }} onChooseDirectory={value => { setFiles(value); setStage(null); }}>
       <span>{file?.name || (files.length ? `${files.length} files selected` : "Select a package to preview")}</span>
     </SkillPackagePicker>
     <Button disabled={busy || action.busy || (!file && !files.length)} onClick={() => void upload()}>{busy ? "Staging package…" : "Preview local package"}</Button>
-    {error && <Notice kind="error">{error}</Notice>}<SourceActionFeedback action={action} />
+    {error && <Notice kind="error">{error}</Notice>}<SourceActionFeedback action={action} subject="import" />{action.operation?.state === "awaiting_review" && action.operation.outcomes.filter(row => row.update_id).map(row => <p key={row.update_id}><Link href={updateTarget("local", row.update_id!)}>Review the update for {row.skill_id}</Link></p>)}
     {refused && <SourceStatus status="blocked" retryNeeded message="This local attempt was refused. Nothing is queued. Upload again for a fresh comparison after the blocker is resolved." />}
     {stage && <section className="compact" aria-label="Staged local package"><h3>{stage.filename}</h3><ResourceStatus resource={skills} />
       {stage.warnings.map((warning, index) => <Notice key={index}>{warning}</Notice>)}
@@ -95,5 +102,6 @@ export default function TrackedSkillImport({ onImported }: { onImported?: () => 
       {selections.length > 100 && <Notice>Select at most 100 packages for one local import.</Notice>}
       <Button disabled={busy || action.busy || skills.loading || !!skills.error || invalid || !selections.length || selections.length > 100 || !!refused} onClick={() => void apply()}>Apply selected local packages</Button>
     </section>}
+    </>}
   </>;
 }

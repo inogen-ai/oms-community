@@ -32,6 +32,7 @@ function text(node) {
 }
 const button = (tree, label) => nodes(tree).find(node => node.type === "button" && text(node) === label);
 const input = (tree, label) => nodes(tree).find(node => node.props?.["aria-label"] === label);
+const names = tree => nodes(tree).find(node => node.type === "details" && node.props.className === "oms-source-names");
 
 test("source status is inert and only the declared field flag uses the licence label", () => {
   assert.equal(typeof ui.SourceStatus, "function");
@@ -60,9 +61,18 @@ test("select-all retains edited names and new names are unique; duplicates and e
   button(tree, "Select all shown").props.onClick();
   assert.deepEqual(selections, [{ package_path: "a", local_name: "Hand edited", domain: "docs" }, { package_path: "b", local_name: "Review 2", domain: "docs" }]);
   tree = component("SourceDiscovery", { ...props, selections: selections.map(row => ({ ...row, local_name: "Same" })) });
+  assert.equal(text(nodes(names(tree)).find(node => node.type === "summary")), "Edit names and areas"); assert.equal("open" in names(tree).props, false);
+  for (const label of ["Local name for a", "Domain for a", "Local name for b", "Domain for b"]) assert.ok(input(names(tree), label), label);
+  assert.equal(input(tree, "Local name for a").props.value, "Same"); assert.equal(nodes(tree).filter(node => node.props?.className === "oms-source-names").length, 1);
   assert.equal(button(tree, "Install selected skills").props.disabled, true); assert.match(text(tree), /unique local name/i);
   tree = component("SourceDiscovery", { ...props, selections: [{ ...selections[0], domain: "" }] });
   assert.equal(button(tree, "Install selected skills").props.disabled, true);
+});
+test("the names disclosure opens itself when the selection needs attention and otherwise stays as the user left it", () => {
+  const opened = selections => { const element = { open: false }; names(component("SourceDiscovery", { discovery, domains: ["docs"], selections, onSelectionsChange() {} })).props.ref(element); return element.open; };
+  assert.equal(opened([{ package_path: "a", local_name: "Fine", domain: "docs" }]), false);
+  assert.equal(opened([{ package_path: "a", local_name: "Fine", domain: "" }]), true);
+  assert.equal(opened([{ package_path: "a", local_name: "Same", domain: "docs" }, { package_path: "b", local_name: "Same", domain: "docs" }]), true);
 });
 test("installation sends only current selected paths, names and domains", () => {
   const selections = [{ package_path: "a", local_name: "Local review", domain: "docs" }]; let sent;
@@ -266,7 +276,17 @@ test("discovery caps Select all at 100 and lets oversized restored selections be
   assert.equal(button(tree, "Install selected skills").props.disabled, true);
   button(tree, "Install selected skills").props.onClick();
   assert.match(text(tree), /at most 100/i);
-  assert.equal(input(tree, "Local name for p-0").props.disabled, false);
+  assert.equal(input(names(tree), "Local name for p-0").props.disabled, false);
   button(tree, "Clear selection").props.onClick();
   assert.deepEqual(selected, []);
+});
+test("a lone valid package on a complete listing is preselected; several, or an unfinished listing, are not", () => {
+  const listing = (items, next_cursor = null, preselected_path = null) => ({ ...discovery, preselected_path, packages: { items, next_cursor } });
+  const pick = (value, options = { defaultDomain: "docs" }) => ui.initialSourceSelections(value, options).map(row => row.package_path);
+  assert.deepEqual(pick(listing([pkg("a"), pkg("broken", false)])), ["a"]);
+  assert.deepEqual(pick(listing([pkg("a"), pkg("b"), pkg("broken", false)])), []);
+  assert.deepEqual(pick(listing([pkg("a")], "cursor-2")), []);
+  assert.deepEqual(pick(listing([pkg("a"), pkg("b")], null, "b")), ["b"]);
+  assert.deepEqual(pick(listing([pkg("broken", false)])), []);
+  assert.deepEqual(pick(null), []);
 });

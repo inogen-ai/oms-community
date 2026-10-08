@@ -8,12 +8,12 @@ import { useSourceAction, useSourceResource } from "@/lib/source-state";
 import SourceDiscoveryForm from "./SourceDiscoveryForm";
 import { SourceActionFeedback } from "./SourceOperations";
 
-export default function SkillSourcePanel({ skill }: { skill: Pick<Skill, "id" | "name"> }) {
+export default function SkillSourcePanel({ skill, startEditing = false }: { skill: Pick<Skill, "id" | "name">; startEditing?: boolean }) {
   const { sources } = useWorkspace();
   const resource = useSourceResource(() => sources!.client.binding(skill.id), [sources, skill.id]);
   const action = useSourceAction();
   const [error, setError] = useState("");
-  const [editing, setEditing] = useState(false), [confirmUnlink, setConfirmUnlink] = useState(false);
+  const [editing, setEditing] = useState(startEditing), [confirmUnlink, setConfirmUnlink] = useState(false);
   const view = resource.data, binding = view?.binding;
   async function check() {
     if (!binding) return;
@@ -24,7 +24,7 @@ export default function SkillSourcePanel({ skill }: { skill: Pick<Skill, "id" | 
   return <Panel title={`Source tracking · ${skill.name}`} className="oms-source-details"><ResourceStatus resource={resource} /><SourceActionFeedback action={action} />{error && <Notice kind="error">{error}</Notice>}
     {view && <><SourceStatus status={binding && !binding.active ? "unlinked" : binding?.status ?? "unchecked"} ref={binding?.ref} firstReconciliation={!!binding?.active && binding.first_reconciliation} retryNeeded={view.blocked_attempts.some(attempt => attempt.retry_needed)}
       message={view.blocked_attempts.filter(attempt => attempt.retry_needed).map(attempt => attempt.reason.replaceAll("_", " ")).join("; ")} />
-      {binding?.active ? <><p><Link href={`/sources?source=${encodeURIComponent(binding.source_id)}`}>Open tracked source</Link> · Folder: {binding.package_path || "repository root"}</p>
+      {binding?.active ? <><p><Link href={`/import/?github=sources&source=${encodeURIComponent(binding.source_id)}`}>Open tracked source</Link> · Folder: {binding.package_path || "repository root"}</p>
         <div className="oms-source-actions"><Button disabled={action.busy || resource.loading} onClick={() => void check().catch(failure => setError(message(failure)))}>Check this skill now</Button><Button variant="secondary" disabled={action.busy} aria-expanded={editing} onClick={() => setEditing(value => !value)}>Change tracked ref or folder</Button></div>
         <details><summary>Unlink GitHub source</summary><p>Keep the skill, local package baseline and history. The GitHub binding and its open card close.</p><label className="oms-source-check"><input type="checkbox" checked={confirmUnlink} disabled={action.busy} onChange={event => setConfirmUnlink(event.target.checked)} />Confirm unlinking this skill</label>
           <Button variant="danger" disabled={!confirmUnlink || action.busy || resource.loading} onClick={() => { const body = { expected_content_generation: view.generations.content, expected_binding_generation: view.generations.binding }; void action.run(key => sources!.client.unlink(skill.id, body, key), JSON.stringify(["unlink", skill.id, body])); }}>Unlink source</Button></details>

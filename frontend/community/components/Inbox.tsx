@@ -5,7 +5,6 @@ import { Badge, Button, CollectionPagination, EmptyState, ManualReviewCard, Noti
 import { ChevronDown } from "lucide-react";
 import { Feedback, ResourceStatus, useAction, useResource, useWorkspace } from "@/lib/workspace";
 import { PageHeading } from "./Shell";
-import SourceUpdates from "./SourceUpdates";
 import { CorrectionAutomationHint } from "./EditionInformation";
 
 const PAGE_SIZE = 20;
@@ -82,7 +81,6 @@ export default function Inbox() {
       </div>}
       <ContributionForm skills={resource.data?.skills ?? []} onSubmitted={resource.refresh} subdued={items.length > 0} />
     </>}
-    {capabilities.github_skill_sources && <SourceUpdates />}
   </>;
 }
 

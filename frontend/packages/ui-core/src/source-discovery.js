@@ -13,7 +13,10 @@ function selectionFor(pkg, selected, existingNames, domain) {
   return { package_path: pkg.path, local_name: name, domain };
 }
 export function initialSourceSelections(discovery, { defaultDomain = "", existingNames = [] } = {}) {
-  const pkg = discovery?.packages.items.find(row => row.valid && row.path === discovery.preselected_path);
+  const items = discovery?.packages.items ?? [];
+  // A lone valid package on a complete listing needs no choosing; an explicit folder still wins.
+  const valid = discovery && discovery.packages.next_cursor == null ? items.filter(row => row.valid) : [];
+  const pkg = items.find(row => row.valid && row.path === discovery.preselected_path) ?? (valid.length === 1 ? valid[0] : null);
   return pkg ? [selectionFor(pkg, [], existingNames, defaultDomain)] : [];
 }
 
@@ -42,6 +45,14 @@ export function SourceDiscovery({ discovery, selections, onSelectionsChange, onI
     ? [...selected, selectionFor(pkg, selected, existingNames, defaultDomain)]
     : selected.filter(row => row.package_path !== pkg.path)); };
   const edit = (path, field, value) => change(selected.map(row => row.package_path === path ? { ...row, [field]: value } : row));
+  const nameFields = row => {
+    const display = row.package_path || "repository root";
+    const field = (label, key) => ({ value: row[key], disabled, "aria-label": `${label} for ${display}`, onChange: event => edit(row.package_path, key, event.target.value) });
+    return h("div", { key: row.package_path }, h("strong", null, display), h("div", { className: "oms-source-fields" },
+      h("label", null, "Local name", h("input", { ...field("Local name", "local_name"), maxLength: 200 }), h("small", null, `Skill ID: ${skillId(row.local_name) || "No usable ID"}`)),
+      h("label", null, "Domain", domains.length ? h("select", field("Domain", "domain"), h("option", { value: "" }, "Choose a domain"), domains.map(domain => h("option", { key: domain, value: domain }, domain)))
+        : h("input", { ...field("Domain", "domain"), maxLength: 200 }))));
+  };
   const atLimit = selected.length >= 100;
   const overLimit = selected.length > 100;
   const cannotInstall = disabled || invalid || overLimit || !selected.length || !onInstall;
@@ -65,13 +76,9 @@ export function SourceDiscovery({ discovery, selections, onSelectionsChange, onI
         pkg.description ? h("p", null, pkg.description) : null,
         h("p", null, `${pkg.file_count} files · ${pkg.total_bytes} bytes`),
         !pkg.valid ? h(Notice, { kind: "error" }, `Cannot install: ${pkg.reasons.join("; ") || "Invalid package"}`) : null,
-        pkg.unsupported_metadata?.length ? h("p", null, `Unsupported metadata retained as evidence: ${pkg.unsupported_metadata.join(", ")}`) : null,
-        row ? h("div", { className: "oms-source-fields" },
-          h("label", null, "Local name", h("input", { value: row.local_name, maxLength: 200, disabled, "aria-label": `Local name for ${display}`, onChange: event => edit(pkg.path, "local_name", event.target.value) }), h("small", null, `Skill ID: ${skillId(row.local_name) || "No usable ID"}`)),
-          h("label", null, "Domain", domains.length ? h("select", { value: row.domain, disabled, "aria-label": `Domain for ${display}`, onChange: event => edit(pkg.path, "domain", event.target.value) },
-            h("option", { value: "" }, "Choose a domain"), domains.map(domain => h("option", { key: domain, value: domain }, domain)))
-            : h("input", { value: row.domain, maxLength: 200, disabled, "aria-label": `Domain for ${display}`, onChange: event => edit(pkg.path, "domain", event.target.value) }))) : null);
+        pkg.unsupported_metadata?.length ? h("p", null, `Unsupported metadata retained as evidence: ${pkg.unsupported_metadata.join(", ")}`) : null);
     })),
+    selected.length ? h("details", { className: "oms-source-names", ref: element => { if (element && invalid) element.open = true; } }, h("summary", null, "Edit names and areas"), selected.map(nameFields)) : null,
     invalid ? h(Notice, { kind: "error" }, "Give every selected package a unique local name and an available domain. Names must produce a non-empty skill ID and cannot use the reserved repo- prefix.") : null,
     h("div", { className: "oms-source-actions" },
       discovery.packages.next_cursor ? h(Button, { variant: "secondary", disabled: busy || !onLoadMore, onClick: () => { if (!busy) onLoadMore?.(discovery.packages.next_cursor); } }, "Load more packages") : null,

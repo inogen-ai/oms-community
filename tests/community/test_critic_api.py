@@ -89,6 +89,7 @@ def test_http_import_contribute_review_history_and_publish_preserve_custody(api)
     assert not marker.exists()
     skills = api.client.get("/api/skills").json()
     assert len(skills) == 1
+    assert skills[0]["source"] is None  # sources are not composed in this application
     skill_id = skills[0]["id"]
 
     accepted = _contribute(api.client, "api-approved", skill_hint=skill_id, source_ref="session:api-critic")

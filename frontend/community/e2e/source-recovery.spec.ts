@@ -12,14 +12,14 @@ test("remounted source reviews recover the original Apply instead of sending a f
     if (writes.length === 1) return route.abort("failed");
     return route.fallback();
   });
-  await page.goto("/sources/?update=update-1");
+  await page.goto("/import/?github=sources&update=update-1");
   await page.getByRole("button", { name: "Apply whole skill" }).click();
-  await expect(page.getByRole("button", { name: "Recover previous request" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Check result" }).first()).toBeEnabled();
   await page.reload();
   await page.getByRole("button", { name: "Apply whole skill" }).click();
   await expect(page.getByText(/A previous attempt needs recovery/)).toBeVisible();
   expect(writes).toHaveLength(1);
-  await page.getByRole("button", { name: "Recover previous request" }).click();
+  await page.getByRole("button", { name: "Check result" }).first().click();
   await expect.poll(() => writes.length).toBe(2);
   expect(writes[1]).toEqual(writes[0]);
 });
@@ -39,15 +39,15 @@ test("private draft recovery requires the exact original input after remount", a
     await page.getByLabel("Decision for section:intro").selectOption("merged_text");
     await page.getByLabel("Merged text for section:intro").fill(value);
   };
-  await page.goto("/sources/?update=update-1");
+  await page.goto("/import/?github=sources&update=update-1");
   await fill("Original private prose");
   await page.getByRole("button", { name: "Save choices", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Recover previous request" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Check result" }).first()).toBeEnabled();
   expect(await page.evaluate(() => JSON.stringify({ ...sessionStorage }))).not.toContain("Original private prose");
   await page.reload();
   await fill("Changed prose");
   await page.getByRole("button", { name: "Save choices", exact: true }).click();
-  await page.getByRole("button", { name: "Recover previous request" }).click();
+  await page.getByRole("button", { name: "Check result" }).first().click();
   await expect(page.getByText(/No receipt is recorded yet/)).toBeVisible();
   await page.getByRole("checkbox", { name: /exact original input/ }).check();
   await page.getByRole("button", { name: "Save choices", exact: true }).click();
@@ -72,7 +72,7 @@ test("every bulk batch outcome stays visible after a later batch succeeds", asyn
       outcomes: batches.length === 1 ? [{ skill_id: "expenses", state: "failed", code: "stale", update_id: "update-1" }]
         : [{ skill_id: "skill-99", state: "applied", code: null, update_id: "extra-99" }] } });
   });
-  await page.goto("/sources/");
+  await page.goto("/import/?github=sources");
   await page.getByRole("button", { name: "Apply all clean updates" }).click();
   await expect(page.getByText(/skill-99: Applied/)).toBeVisible();
   await expect(page.getByText(/expenses: Failed/)).toBeVisible();
@@ -89,9 +89,9 @@ test("recovering an in-flight bulk batch displays its terminal outcomes without 
   });
   await page.route(`${api}/api/skill-source-operations/bulk-flight`, route => route.request().method() === "GET" ? route.fulfill({ headers,
     json: { operation_id: "bulk-flight", state: "failed", committed: false, outcomes: [{ skill_id: "expenses", state: "failed", code: "stale", update_id: "update-1" }] } }) : route.fallback());
-  await page.goto("/sources/");
+  await page.goto("/import/?github=sources");
   await page.getByRole("button", { name: "Apply all clean updates" }).click();
-  await page.getByRole("button", { name: "Recover previous request" }).click();
+  await page.getByRole("button", { name: "Check result" }).first().click();
   await expect(page.getByText(/expenses: Failed/)).toBeVisible();
   expect(writes).toBe(1);
 });

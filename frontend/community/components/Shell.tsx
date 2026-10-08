@@ -6,12 +6,12 @@ import { BrandMark, ProductMark, Notice } from "@inogen/oms-ui-core";
 import { MobileNavigation } from "@inogen/oms-ui-core/mobile-navigation";
 import logo from "@inogen/oms-ui-core/assets/inogen_logo_darkmode.png";
 import productLogo from "@inogen/oms-ui-core/assets/oms_logo_darkthemev2.png";
-import { BookOpen, FileUp, GitBranch, House, Inbox, ListChecks, LockKeyhole, Network, PanelLeftClose, PanelLeftOpen, Send, Settings } from "lucide-react";
+import { BookOpen, FileUp, House, Inbox, ListChecks, LockKeyhole, Network, PanelLeftClose, PanelLeftOpen, Send, Settings } from "lucide-react";
 import { useWorkspace } from "@/lib/workspace";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import EditionPreview from "./EditionPreview";
 
-const icons = { "/": House, "/skills": BookOpen, "/sources": GitBranch, "/inbox": Inbox, "/rules": ListChecks, "/import": FileUp, "/publish": Send, "/graph": Network, "/settings": Settings };
+const icons = { "/": House, "/skills": BookOpen, "/inbox": Inbox, "/rules": ListChecks, "/import": FileUp, "/publish": Send, "/graph": Network, "/settings": Settings };
 const PAID_PREVIEW = "#people-and-teams-preview";
 const paidLabel = "People and teams, Paid feature preview";
 
@@ -38,7 +38,6 @@ export default function Shell({ children }: { children: ReactNode }) {
   }
   const pathname = usePathname();
   const navigation = communityNavigation(capabilities);
-  if (capabilities.github_skill_sources) navigation.splice(2, 0, { href: "/sources", label: "Sources", key: "sources" });
   const workspaceNavigation = navigation.filter(item => !["graph", "settings"].includes(item.key));
   const manageNavigation = navigation.filter(item => ["graph", "settings"].includes(item.key));
   const current = navigation.find((item) => item.href.replace(/\/$/, "") === pathname.replace(/\/$/, ""));

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -42,4 +43,13 @@ test("browser fixture rejects a controlled non-Community endpoint mutation", asy
   assert.equal(allowedRequest("GET", "/api/people"), false);
   assert.equal(allowedRequest("GET", "/api/skills/example/mutes"), false);
   assert.equal(allowedRequest("POST", "/api/skills/example/consistency-scan"), false);
+});
+
+test("ui-core exports no path to the GitHub logo files; only the component binds them", () => {
+  const manifest = JSON.parse(readFileSync(resolve(root, "../packages/ui-core/package.json"), "utf8"));
+  assert.doesNotMatch(JSON.stringify(manifest.exports), /Invertocat/i);
+  // GitHub's official files, byte for byte (hashes from the logo pack).
+  const hashes = { White: "ccd84c89b1056345608fc3489357f8acc7397e49a3cdc2d418b6c8016911d47b", Black: "693d7abe6f899646cc2e96856723b45e95f71885a54910b2749f6decdf7e1ee1" };
+  for (const [colour, hash] of Object.entries(hashes))
+    assert.equal(createHash("sha256").update(readFileSync(resolve(root, `../packages/ui-core/src/assets/GitHub_Invertocat_${colour}.svg`))).digest("hex"), hash);
 });
