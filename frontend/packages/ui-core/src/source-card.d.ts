@@ -14,7 +14,7 @@ export type SourceCardChoice = { part_id: string; part_fingerprint: string } & (
 );
 export interface SourceCardUpdate {
   update_id: string; generation: number; status: string; drafts: readonly SourceCardChoice[]; stale?: boolean;
-  held_install?: boolean; check_findings?: readonly { path: string; part_id: string | null; line: number | null; category: string; summary: string }[];
+  held_install?: boolean; check_findings?: readonly { path: string | null; part_id: string | null; line: number | null; category: string; summary: string }[];
   resolved_check?: { readonly state: "passed" | "held" | "unavailable" };
   plan: {
     skill: { skill_id: string }; origin: { kind: string }; base: { snapshot_id: string } | null; incoming: { snapshot_id: string };

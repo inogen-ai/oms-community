@@ -121,8 +121,8 @@ export interface SourceUpdateView extends SourceUpdate {
   readonly part_fingerprints: Readonly<Record<string, string>>;
   readonly ownership: Readonly<Record<string, "source" | "shared" | "local" | "unknown">>;
   readonly stale: boolean;
-  /** Why a held install is held: a summary only, never the matched text. */
-  readonly check_findings?: readonly { readonly path: string; readonly part_id: string | null; readonly line: number | null; readonly category: string; readonly summary: string }[];
+  /** Why a held install is held: a summary only, never the matched text. `path` is null for a SKILL.md part. */
+  readonly check_findings?: readonly { readonly path: string | null; readonly part_id: string | null; readonly line: number | null; readonly category: string; readonly summary: string }[];
   readonly resolved_check: SourceResolvedCheck;
 }
 export interface SourceUpdateBody { skill_id: string; fingerprint: PlanFingerprint }
