@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import json
 
 from oms.domain.identity import SkillRef
+from oms.domain.types import SkillStatus
 from oms.ports.blob_store import BlobStore
 from oms.ports.graph_store import GraphStore
 from oms.publish.publisher import Publisher
@@ -156,9 +157,12 @@ class SourceReads:
                     else:
                         label = "local"
                 ownership[change.part_id] = label
+            # `_skill` above has already refused a skill that does not exist.
+            skill = bound.graph.get_skill(ref.skill_id, tenant_id=ref.tenant_id)
             view = UpdateView(**update.model_dump(), stale=stale, ownership=ownership,
                 part_fingerprints={change.part_id: part_fingerprint(update, change.part_id)
-                                   for change in update.plan.changes})
+                                   for change in update.plan.changes},
+                held_install=skill.status is SkillStatus.HELD and update.plan.base is None)
             return view, bound.sources.get_snapshot(update.plan.incoming), local
         view, incoming, local = self.service._read(context, "read", (), read, read_only=True)
         if view.stale or incoming is None:

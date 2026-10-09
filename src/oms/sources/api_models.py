@@ -181,6 +181,8 @@ class UpdateView(Update):
     ownership: dict[str, Literal["source", "shared", "local", "unknown"]]
     stale: bool
     resolved_check: CheckResult = CheckResult(state="unavailable", code="review_not_evaluated")
+    # The card of a skill held at install (spec 5.3): Apply or delete only, no Skip or Adopt.
+    held_install: bool = False
 
     @computed_field
     @property

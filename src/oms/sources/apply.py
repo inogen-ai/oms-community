@@ -12,7 +12,7 @@ from pathlib import PurePosixPath
 
 from oms.domain.models import Artefact, ContentBlock, Edge, Example, Rule, Section, Transaction
 from oms.domain.types import (ArtefactKind, EdgeType, ExampleKind, Mutability, Polarity, SectionKind, SignalType,
-    SkillVersionCause, SourceRuntime)
+    SkillStatus, SkillVersionCause, SourceRuntime)
 from oms.ports.mutation import MutationContext
 from oms.ports.source_store import SourcePolicy
 from oms.sources import operations, review
@@ -362,6 +362,12 @@ def commit_apply(bound: MutationContext, context: ActionContext, operation: Oper
     edges = []
     resolved = apply_parts(bound, aligned, selected, now=now, operation_id=operation.operation_id, local=local,
                            manual_parts=manual_parts, edges=edges)
+    # A held install becomes live only here, in the commit that writes its
+    # reviewed content and sets its first baseline (spec 5.3). The skill is
+    # read again because applying a field part rewrites the record.
+    record = bound.graph.get_skill(skill.skill_id, tenant_id=skill.tenant_id)
+    if record is not None and record.status is SkillStatus.HELD:
+        bound.graph.upsert_skill(replace(record, status=SkillStatus.ACTIVE))
     # Forking a shared rule gives it a new identity, so what was installed can
     # differ from what upstream sent. The installed form is retained under a
     # derived id and becomes the baseline: the next plan must compare against

@@ -2,6 +2,8 @@
 content; apply is the only action that does."""
 from dataclasses import dataclass
 
+from oms.domain.identity import SkillRef
+from oms.domain.types import SkillStatus
 from oms.sources import operations, review
 from oms.sources.errors import SourceConflict, SourceNotFound, StaleMutation
 from oms.sources.local_projection import project_local
@@ -46,13 +48,30 @@ def capture(service, context, request: UpdateRequest, bound, *, fresh: bool = Tr
     return ReviewState(update, holder, base, incoming, local, guard, policy)
 
 
+def refuse_held(bound, skill: SkillRef, action: str) -> None:
+    """Skip and Adopt would mark a held install's empty skill as reconciled (spec D6).
+
+    The only ways out of a held install are applying its card or deleting the skill.
+    Checked when the state is captured; the skill's status is part of its content
+    digest, so a status change before the commit fails the commit's generation guard.
+    """
+    if action not in {"skip", "adopt"}:
+        return
+    record = bound.graph.get_skill(skill.skill_id, tenant_id=skill.tenant_id)
+    if record is not None and record.status is SkillStatus.HELD:
+        raise SourceConflict("held_install_requires_apply", "apply this skill or delete it")
+
+
 def decide(service, context, request: UpdateRequest, key: str, action: str) -> OperationResult:
     operation, fresh = service._begin(context, action, request, key, (request.skill,))
     if not fresh:
         return operation.result
     try:
-        state = service._read(context, action, (request.skill,),
-                              lambda bound: capture(service, context, request, bound, fresh=action != "recheck"))
+        def read(bound):
+            state = capture(service, context, request, bound, fresh=action != "recheck")
+            refuse_held(bound, request.skill, action)
+            return state
+        state = service._read(context, action, (request.skill,), read)
         next_plan = state.update.plan
         next_drafts = state.update.drafts
         if action == "save_draft":
