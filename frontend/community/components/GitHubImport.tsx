@@ -16,6 +16,8 @@ const outcomeLink = (outcome: { update_id?: string | null }) => outcome.update_i
 /** Add a GitHub source: URL first, then pick packages. Recovery shows only the requests made here. */
 export default function GitHubImport({ discoveryId, onInstalled }: { discoveryId: string | null; onInstalled: () => void }) {
   const { sources, api } = useWorkspace();
+  // Re-read after every install attempt (each source action bumps the source
+  // revision), so a name taken meanwhile is flagged after a skill_already_exists refusal (spec 7.2).
   const skills = useSourceResource(() => api.skills(), [api]);
   const [discovery, setDiscovery] = useState<Discovery | null>(null);
   const [selections, setSelections] = useState<SourceSelection[] | undefined>(undefined);

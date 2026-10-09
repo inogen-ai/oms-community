@@ -381,6 +381,30 @@ test("an install result lists each skill, counts held ones and links to the held
   expect(state.violations).toEqual([]);
 });
 
+test("a name taken while the form was open is flagged after the server refuses it", async ({ page }) => {
+  // Spec 7.2: the form re-reads the skill list after a skill_already_exists
+  // refusal, so the names section shows the same prompt as for a known clash.
+  const state = await sourceFixture(page);
+  await page.route("**/api/skill-source-installations", async route => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const key = route.request().headers()["idempotency-key"];
+    state.skills.push({ ...state.skills[0], id: "orders", name: "Orders" });
+    state.operations.set(key, { operation_id: key, state: "failed", committed: false, outcomes: [] });
+    await route.fulfill({ status: 409, json: { code: "skill_already_exists", message: "a skill named orders already exists", operation_id: key },
+      headers: { "Access-Control-Allow-Origin": `http://127.0.0.1:${process.env.OMS_COMMUNITY_UI_PORT || "4318"}` } });
+  });
+  await openAddSource(page);
+  await page.getByLabel("GitHub repository or skill folder URL").fill("https://github.com/fixture/skills");
+  await page.getByRole("button", { name: "Discover packages", exact: true }).click();
+  await page.getByLabel("Select orders", { exact: true }).check();
+  await page.getByRole("button", { name: "Install selected skills" }).click();
+  await expect(page.getByText("a skill named orders already exists", { exact: true })).toBeVisible();
+  await expect(page.getByText("Give every selected package a unique local name and an available domain.", { exact: false })).toBeVisible();
+  await expect(page.locator("details.oms-source-names")).toHaveAttribute("open", "");
+  await expect(page.getByRole("button", { name: "Install selected skills" })).toBeDisabled();
+  expect(state.violations).toEqual([]);
+});
+
 test("a parsed response without an operation state never reports success", async ({ page }) => {
   await sourceFixture(page, { invalidOperation: true });
   await page.goto("/import/?github=sources&source=source-1");
