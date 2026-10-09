@@ -416,6 +416,12 @@
 .oms-source-advanced { margin: 4px 0 8px; }
 .oms-source-advanced > summary, .oms-source-names > summary { cursor: pointer; font-size: 13px; }
 .oms-source-advanced > label { display: grid; gap: 7px; font-size: 13px; margin: 12px 0; }
+/* The lookup form lays itself out, so an edition need not supply a form grid of its own. */
+.oms-source-lookup { display: grid; gap: 4px; max-width: 46rem; }
+.oms-source-lookup > .oms-source-field:first-child { margin-top: 0; }
+.oms-source-lookup > .oms-button { justify-self: start; margin-top: 8px; }
+.oms-source-lookup :is(input, select, summary, button):focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }
+.oms-source-advanced[open] { padding: 2px 0 2px 14px; border-left: 2px solid var(--oms-line); }
 .oms-source-names { margin: 14px 0; }
 .oms-source-confirm { border: 1px solid var(--oms-line); border-radius: 8px; padding: 16px; margin: 18px 0; }
 .oms-source-confirm :is(input, select, textarea, button, summary):focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }

@@ -8,6 +8,8 @@ const REF_OPTIONS = [
   ["tag", "A tag: stay on this tag; if the tag is moved, the next check picks it up"],
   ["commit", "A commit: pin exactly this commit; it never updates"],
 ];
+// The shared field style, so the form does not depend on an edition stylesheet.
+const FIELD = "oms-source-field";
 const NOTICE_TEXT = {
   import: "A previous import did not confirm. Your browser sent the request but did not get the answer. Check its result before trying again; checking does not start a new import.",
   request: "A previous request did not confirm. Your browser sent it but did not get the answer. Check its result before trying again; checking does not start a new request.",
@@ -38,11 +40,11 @@ export function sourcePendingSubject(path) {
 function profileRow(profile, value, set, disabled) {
   if (!profile) return null;
   if (profile.mode === "text") return [
-    h("label", { key: "profile" }, "Access profile for a private repository (optional)",
+    h("label", { key: "profile", className: FIELD }, "Access profile for a private repository (optional)",
       h("input", { value: value.profile, disabled, autoComplete: "off", onChange: event => set({ profile: event.target.value }) })),
     h("p", { key: "help", className: "muted" }, "If this OMS server has an access profile configured for private repositories, enter its id here. The profile holds the GitHub token on the server; the token never appears in OMS."),
   ];
-  if (profile.mode === "select" && profile.profiles.length) return h("label", null, "Private repository access: choose a profile",
+  if (profile.mode === "select" && profile.profiles.length) return h("label", { className: FIELD }, "Private repository access: choose a profile",
     h("select", { value: value.profile, disabled, onChange: event => set({ profile: event.target.value }) },
       h("option", { value: "" }, "Public repository"), profile.profiles.map(id => h("option", { key: id, value: id }, id))));
   return h("p", null, "Importing from a private repository needs an access profile. Ask your administrator.");
@@ -53,15 +55,15 @@ export function SourceLookupForm({ value, onChange, onSubmit, profile, busy = fa
   const filled = !!(value.kind || value.path || value.profile);
   const incomplete = !value.url.trim() || (!!value.kind && !value.name.trim());
   return h("form", { className: "form-grid oms-source-lookup", onSubmit: event => { event.preventDefault(); onSubmit(sourceLookupBody(value)); } },
-    h("label", null, "GitHub repository or skill folder URL",
-      h("input", { type: "url", required: true, value: value.url, disabled: busy, onChange: event => set({ url: event.target.value }) })),
+    h("label", { className: FIELD }, "GitHub repository or skill folder URL",
+      h("input", { type: "url", required: true, placeholder: "https://github.com/owner/repository", value: value.url, disabled: busy, onChange: event => set({ url: event.target.value }) })),
     h("details", { className: "oms-source-advanced", ref: element => openOnFirstValue(element, filled) }, h("summary", null, "Advanced"),
-      h("label", null, "What to follow",
+      h("label", { className: FIELD }, "What to follow",
         h("select", { value: value.kind, disabled: busy, onChange: event => set({ kind: event.target.value }) },
           REF_OPTIONS.map(([option, label]) => h("option", { key: option, value: option }, label)))),
-      value.kind ? h("label", null, "Branch, tag or commit",
+      value.kind ? h("label", { className: FIELD }, "Branch, tag or commit",
         h("input", { required: true, value: value.name, disabled: busy, onChange: event => set({ name: event.target.value }) })) : null,
-      h("label", null, "Skill folder (optional)",
+      h("label", { className: FIELD }, "Skill folder (optional)",
         h("input", { value: value.path, disabled: busy, onChange: event => set({ path: event.target.value }) })),
       profileRow(profile, value, set, busy)),
     error ? h(Notice, { kind: "error" }, error) : null,
