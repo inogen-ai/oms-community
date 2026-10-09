@@ -5,6 +5,8 @@ export interface SourceRequestStorage { getItem(key: string): string | null; set
 export interface PendingSourceRequest {
   readonly key: string; readonly path: string; readonly method: "POST" | "DELETE" | "PUT";
   readonly digest: string; readonly body: string | null; readonly requires_body: boolean; readonly operation_id: string | null;
+  /** This tab is still waiting for the answer, so the request is in progress rather than unconfirmed. Not retained. */
+  readonly in_flight: boolean;
 }
 /** A further mutation an edition retains for recovery. The pathname test sees the path without its query; `body` guards the parsed JSON. */
 export interface SourceMutationRoute {

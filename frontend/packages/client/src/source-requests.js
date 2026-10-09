@@ -279,7 +279,8 @@ export function createSourceRequests({ request, requestBytes, context = (path, i
       } catch (error) { assertCurrent(captured); throw error; }
     },
     get persistent() { return state.persistent; },
-    pending: async () => { const captured = epoch; await ready; if (closed || captured !== epoch) throw new StaleSourceResponseError(); return [...records.values()].map(row => Object.freeze({ ...row })); },
+    // `in_flight` is not retained: it says this view is still waiting for the answer, so the answer is not lost yet.
+    pending: async () => { const captured = epoch; await ready; if (closed || captured !== epoch) throw new StaleSourceResponseError(); return [...records.values()].map(row => Object.freeze({ ...row, in_flight: attempts.has(row.key) })); },
     recover: async (key, init) => {
       const captured = epoch;
       await ready;

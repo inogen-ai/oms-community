@@ -683,3 +683,15 @@ test("closing an owner suppresses queued invalidation and leaves live peers usab
   assert.deepEqual(notices, []);
   peer.close();
 });
+
+test("a request still waiting for its answer is marked in flight, and one that lost its answer is not", async () => {
+  let fail, issued;
+  const started = new Promise(resolve => { issued = resolve; });
+  const requests = create({ storage: storage(), request: () => new Promise((_, reject) => { fail = reject; issued(); }) });
+  const sent = requests.request(path, init("waiting-key"));
+  await started;
+  assert.deepEqual((await requests.pending()).map(row => [row.key, row.in_flight]), [["waiting-key", true]]);
+  fail(new TypeError("Lost"));
+  await assert.rejects(sent, /Lost/);
+  assert.deepEqual((await requests.pending()).map(row => [row.key, row.in_flight]), [["waiting-key", false]]);
+});
