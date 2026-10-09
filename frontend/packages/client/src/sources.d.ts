@@ -73,6 +73,8 @@ export interface SourceBlockedAttempt extends SourceRecord {
 export interface SourceBindingView {
   readonly binding: SourceBinding | null; readonly local_stream: SourceLocalStream | null;
   readonly generations: SourceGenerations; readonly blocked_attempts: readonly SourceBlockedAttempt[];
+  /** The review card waiting on this skill, if any. A held skill reaches content only through it. */
+  readonly open_update_id?: string | null;
 }
 export interface SkillSourceView { readonly source: SkillSource; readonly bindings: SourcePage<SourceBinding> }
 export interface SourceDiscoveredPackage extends SourceRecord {

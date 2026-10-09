@@ -6,10 +6,26 @@ deleted skill keep its archived snapshots and updates from being read as belongi
 a later skill created under the same id.
 """
 from oms.domain.identity import SkillRef
+from oms.domain.types import SkillStatus
 from oms.ports.source_store import SourceRepository
 from oms.sources import operations, review
 from oms.sources.errors import SourceConflict, SourceNotFound, StaleMutation
 from oms.sources.models import Binding, DurableEvent, OperationResult, SkillOutcome, SourceStatus, Update
+
+
+def refuse_held(bound, skills, message):
+    """A held skill reaches content only through its open card (spec 5.3). Closing that
+    card would leave an empty skill that nothing can make live, so the card must be
+    applied, or the skill deleted, first. A held skill can also have no card (an undo of
+    the apply that made it live): deleting it and installing again is then the way back."""
+    for skill in skills:
+        record = bound.graph.get_skill(skill.skill_id, tenant_id=skill.tenant_id)
+        if record is not None and record.status is SkillStatus.HELD:
+            name = record.name or skill.skill_id
+            if bound.sources.open_update(skill) is None:
+                raise SourceConflict("held_install_requires_apply", f"{name} is held for review and has no open "
+                                     "review card. Delete the skill and install it again.")
+            raise SourceConflict("held_install_requires_apply", message.format(name=name))
 
 
 def close_binding(bound, binding, actor_id):
@@ -35,6 +51,9 @@ def change_binding(service, context, request, key, action):
             if (guard.content, guard.binding) != (request.expected_content_generation,
                                                   request.expected_binding_generation):
                 raise StaleMutation("binding_changed", "binding or content changed")
+            if action == "unlink":
+                refuse_held(bound, (request.skill,), "{name} is held for review. Apply its review card or "
+                                                     "delete the skill before you unlink it.")
             return binding, guard, bound.sources.open_update(request.skill)
         state = service._read(context, action, (request.skill,), capture)
 
@@ -79,6 +98,10 @@ def change_source(service, context, request, key, action):
             guards = tuple(bound.sources.get_generations(binding.origin.skill) for binding in bindings)
             if tuple(sorted(request.expected_generations, key=lambda row: row.skill)) != guards:
                 raise StaleMutation("source_changed", "source scope changed")
+            if action == "remove_source":
+                refuse_held(bound, tuple(binding.origin.skill for binding in bindings),
+                            "{name} is held for review. Apply its review card or delete that skill before "
+                            "you remove this source.")
             return source, bindings, guards
         state = service._read(context, action, (), capture)
         source, bindings, guards = state

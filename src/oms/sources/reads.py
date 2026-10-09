@@ -101,7 +101,11 @@ class SourceReads:
         def read(bound):
             self._skill(context, bound.graph, ref)
             binding = bound.sources.get_binding(ref)
+            update = bound.sources.open_update(ref)
             return {"binding": None if retired_binding(bound.sources, binding) else binding,
+                    # The card waiting on this skill, so its page can link to it: a held skill has no other way in.
+                    "open_update_id": None if update is None or retired_update(bound.sources, update)
+                    else update.update_id,
                     "local_stream": bound.sources.get_local_stream(ref),
                     "generations": bound.sources.get_generations(ref),
                     "blocked_attempts": bound.sources.blocked_attempts(ref)}
