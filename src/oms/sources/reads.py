@@ -14,7 +14,7 @@ from oms.ports.blob_store import BlobStore
 from oms.ports.graph_store import GraphStore
 from oms.publish.publisher import Publisher
 from oms.sources.api_models import (
-    DiscoveryView, SkillGenerationBody, SkillSourceSummary, SourceHistoryEntry, UndoView, UpdateView,
+    DiscoveryView, SkillGenerationBody, SkillSourceSummary, SourceHistoryEntry, UndoView, UpdateListItem, UpdateView,
 )
 from oms.sources.errors import SourceConflict, SourceForbidden, SourceNotFound, StaleMutation
 from oms.sources.files import FileSide, require_path, verified_bytes
@@ -22,6 +22,12 @@ from oms.sources.local_projection import project_local
 from oms.sources.retirement import retired_binding, retired_update
 from oms.sources.models import ActionContext, CheckResult, Page, Source, Binding, Update
 from oms.sources.service import SourceService
+
+
+def held_install(graph: GraphStore, update: Update) -> bool:
+    """Whether an update is the card of a skill held at install (spec 5.3): Apply or delete only."""
+    skill = graph.get_skill(update.plan.skill.skill_id, tenant_id=update.plan.skill.tenant_id)
+    return skill is not None and skill.status is SkillStatus.HELD and update.plan.base is None
 
 
 def page[T](items: Iterable[T], key: Callable[[T], str], cursor: str | None,
@@ -120,11 +126,14 @@ class SourceReads:
                     for row in bindings if sources[row.source_id] is not None}
         return self.service._read(context, "list_sources", (), read, read_only=True)
 
-    def updates(self, context: ActionContext, *, cursor=None, limit=100) -> Page[Update]:
+    def updates(self, context: ActionContext, *, cursor=None, limit=100) -> Page[UpdateListItem]:
         def read(bound):
             updates = (update for ref in self._scope(context, bound.graph)
                        if (update := bound.sources.open_update(ref)) is not None)
-            return page(updates, lambda row: row.update_id, cursor, limit)
+            chosen = page(updates, lambda row: row.update_id, cursor, limit)
+            # Marked after the page is cut, so only the rows returned are read again.
+            return Page(items=tuple(UpdateListItem(**row.model_dump(), held_install=held_install(bound.graph, row))
+                                    for row in chosen.items), next_cursor=chosen.next_cursor)
         return self.service._read(context, "list_sources", (), read, read_only=True)
 
     def update(self, context: ActionContext, update_id: str) -> UpdateView:
@@ -157,12 +166,10 @@ class SourceReads:
                     else:
                         label = "local"
                 ownership[change.part_id] = label
-            # `_skill` above has already refused a skill that does not exist.
-            skill = bound.graph.get_skill(ref.skill_id, tenant_id=ref.tenant_id)
             view = UpdateView(**update.model_dump(), stale=stale, ownership=ownership,
                 part_fingerprints={change.part_id: part_fingerprint(update, change.part_id)
                                    for change in update.plan.changes},
-                held_install=skill.status is SkillStatus.HELD and update.plan.base is None)
+                held_install=held_install(bound.graph, update))
             return view, bound.sources.get_snapshot(update.plan.incoming), local
         view, incoming, local = self.service._read(context, "read", (), read, read_only=True)
         if view.stale or incoming is None:

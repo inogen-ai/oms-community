@@ -167,6 +167,7 @@ def undo(service, context, request: UndoRequest, *, idempotency_key):
                 raise SourceConflict("undo_state_changed")
             content_changes = watch_changes(bound.graph, context.tenant_id)
             restore(bound.graph, record)
+            restore_status(bound.graph, record)
             for claim in bound.sources.ownership_for_skill(record.origin.skill):
                 bound.sources.clear_ownership(record.origin.skill, claim.part_id, entity_ids=claim.entity_ids,
                                               section_id=claim.section_id)
@@ -319,6 +320,19 @@ def validate_retained(graph, undo):
         if item.before.kind == "known":
             _validate_retained(graph, item.skill.tenant_id, item.before.value,
                                item.after.value if item.after.kind == "known" else None, undo.edges)
+
+
+def restore_status(graph, undo):
+    """Put back the skill's status from before the apply (ruling 2 on spec 5.3).
+
+    The apply that activated a held install is the only apply that changes a
+    status, so its undo holds the skill again. Any status change since the apply
+    advanced the skill's content generation and has already refused this undo.
+    """
+    ref = undo.origin.skill
+    skill = graph.get_skill(ref.skill_id, tenant_id=ref.tenant_id)
+    if undo.previous_skill_status is not None and skill is not None and skill.status != undo.previous_skill_status:
+        graph.upsert_skill(replace(skill, status=undo.previous_skill_status))
 
 
 def restore(graph, undo):

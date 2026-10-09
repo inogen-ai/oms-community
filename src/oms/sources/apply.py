@@ -302,6 +302,20 @@ def remove_part(graph, ref, part, mapping):
         graph.remove_section(identifier, tenant_id=tenant)
 
 
+IDENTITY_FIELDS = frozenset({"field:name", "field:domain"})
+
+
+def installs_content(selected: tuple[ProjectionPart, ...]) -> bool:
+    """Whether an apply writes any content, as a held install needs (spec D6, ruling 1).
+
+    A selected part counts when it carries a known value, upstream's or the
+    reviewer's merged text: a rule, section, example, file, or a field other than
+    the identity fields. A removal does not count, and nor do name and domain,
+    which `apply_parts` never writes.
+    """
+    return any(part.evidence.kind == "known" and part.part_id not in IDENTITY_FIELDS for part in selected)
+
+
 def capture_apply(service, context, request, bound):
     skill = request.skill
     update = bound.sources.get_update(request.update_id, tenant_id=context.tenant_id)
@@ -356,6 +370,14 @@ def commit_apply(bound: MutationContext, context: ActionContext, operation: Oper
     if (bound.sources.get_update(update.update_id, tenant_id=skill.tenant_id) != update
             or review.origin_state(bound, binding.origin) != binding):
         raise StaleMutation("update_changed", "candidate changed")
+    current = bound.graph.get_skill(skill.skill_id, tenant_id=skill.tenant_id)
+    previous_status = current.status if current is not None else None
+    held = previous_status is SkillStatus.HELD
+    # Applying nothing would leave a held install's empty skill active and
+    # reconciled, the state Skip and Adopt are refused for (spec D6).
+    if held and not installs_content(selected):
+        raise SourceConflict("held_install_requires_content",
+                             "choose at least one part to install, or delete this skill")
     content_changes = watch_changes(bound.graph, context.tenant_id)
     previous_ownership = bound.sources.ownership_for_skill(skill)
     before_custody = capture_units(bound.graph, local, policy_version=policy_version)
@@ -365,8 +387,8 @@ def commit_apply(bound: MutationContext, context: ActionContext, operation: Oper
     # A held install becomes live only here, in the commit that writes its
     # reviewed content and sets its first baseline (spec 5.3). The skill is
     # read again because applying a field part rewrites the record.
-    record = bound.graph.get_skill(skill.skill_id, tenant_id=skill.tenant_id)
-    if record is not None and record.status is SkillStatus.HELD:
+    if held:
+        record = bound.graph.get_skill(skill.skill_id, tenant_id=skill.tenant_id)
         bound.graph.upsert_skill(replace(record, status=SkillStatus.ACTIVE))
     # Forking a shared rule gives it a new identity, so what was installed can
     # differ from what upstream sent. The installed form is retained under a
@@ -413,6 +435,7 @@ def commit_apply(bound: MutationContext, context: ActionContext, operation: Oper
                                    for guard in guards),
         policy_version=policy_version, policy_digest=policy.revision(context, bound.graph, bound.reviews, (skill,)),
         previous_first_reconciliation=binding.first_reconciliation if isinstance(binding, Binding) else None,
+        previous_skill_status=previous_status,
         previous_ownership=previous_ownership,
         resulting_ownership=bound.sources.ownership_for_skill(skill),
         previous_mappings=local.graph_mappings, resulting_mappings=actual.graph_mappings)

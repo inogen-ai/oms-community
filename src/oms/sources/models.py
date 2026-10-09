@@ -6,6 +6,7 @@ from typing import Annotated, Literal, Self
 from pydantic import AwareDatetime, Field, model_validator
 
 from oms.domain.identity import SkillRef
+from oms.domain.types import SkillStatus
 from oms.sources.primitives import (
     AcquiredPackage, DiscoveryRequest, DiscoveryResult, DiscoveredPackage, Evidence, Generation, Generations,
     JSONValue, LocalPackage, ManifestEntry, NonEmpty, OriginRef, PackageRequest, PartKind, PlanFingerprint, Record,
@@ -393,6 +394,10 @@ class UndoRecord(Record):
     update_id: NonEmpty | None = None
     policy_digest: NonEmpty | None = None
     previous_first_reconciliation: bool | None = None
+    # The skill's status before the apply. Undo puts it back, so undoing the
+    # apply that activated a held install holds the skill again. None on
+    # receipts written before this field existed: undo leaves the status alone.
+    previous_skill_status: SkillStatus | None = None
     previous_ownership: tuple[PartOwnership, ...] = ()
     resulting_ownership: tuple[PartOwnership, ...] = ()
     previous_mappings: tuple[GraphMapping, ...] = ()

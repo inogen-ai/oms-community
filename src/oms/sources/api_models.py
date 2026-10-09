@@ -176,6 +176,11 @@ class CheckFindingView(Body):
     summary: str
 
 
+class UpdateListItem(Update):
+    """One row of the review inbox: the update, and whether it is a held install's card."""
+    held_install: bool = False
+
+
 class UpdateView(Update):
     part_fingerprints: dict[str, str]
     ownership: dict[str, Literal["source", "shared", "local", "unknown"]]

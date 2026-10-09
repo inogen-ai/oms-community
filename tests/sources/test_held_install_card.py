@@ -11,6 +11,7 @@ from oms.domain.identity import SkillRef
 from oms.sources.errors import SourceConflict
 from oms.sources.models import ApplyRequest, DraftChoice, SaveDraftRequest, UpdateRequest
 from oms.sources.review import part_fingerprint
+from tests.sources.test_api import source_api  # noqa: F401
 from tests.sources.test_community_safety import community_world  # noqa: F401
 
 
@@ -29,13 +30,16 @@ def _held_card(world):
     return update
 
 
-def _choose_every_conflict(world, update, key):
-    """Take upstream wherever the card allows it; keep the empty skill's value otherwise."""
+def _choose_every_conflict(world, update, key, kept=frozenset()):
+    """Take upstream wherever the card allows it; keep the empty skill's value otherwise and for `kept`."""
     changes = {change.part_id: change for change in update.plan.changes}
     choices = []
     for conflict in update.plan.conflicts:
         allowed = conflict.allowed_choices
-        if "use_upstream" in allowed and changes[conflict.part_id].incoming.kind == "known":
+        if conflict.part_id in kept:
+            choice = DraftChoice(part_id=conflict.part_id, choice="keep_oms",
+                                 part_fingerprint=part_fingerprint(update, conflict.part_id))
+        elif "use_upstream" in allowed and changes[conflict.part_id].incoming.kind == "known":
             choice = DraftChoice(part_id=conflict.part_id, choice="use_upstream",
                                  part_fingerprint=part_fingerprint(update, conflict.part_id))
         elif "merged_text" in allowed:
@@ -46,6 +50,17 @@ def _choose_every_conflict(world, update, key):
                                  part_fingerprint=part_fingerprint(update, conflict.part_id))
         choices.append(choice)
     world.service.save_draft(world.context, SaveDraftRequest(**_request(update).model_dump(), choices=tuple(choices)),
+                             idempotency_key=key)
+    return world.sources.get_update(update.update_id, tenant_id="acme")
+
+
+def _keep_all_but(world, update, key, taken=frozenset()):
+    """Keep the empty skill's value for every conflict except the parts in `taken`, which take upstream."""
+    choices = tuple(DraftChoice(part_id=conflict.part_id,
+                                choice="use_upstream" if conflict.part_id in taken else "keep_oms",
+                                part_fingerprint=part_fingerprint(update, conflict.part_id))
+                    for conflict in update.plan.conflicts)
+    world.service.save_draft(world.context, SaveDraftRequest(**_request(update).model_dump(), choices=choices),
                              idempotency_key=key)
     return world.sources.get_update(update.update_id, tenant_id="acme")
 
@@ -197,3 +212,109 @@ def test_a_deleted_held_skill_can_be_held_again(source_world):
         ("expenses", "unchanged"), ("invoices", "awaiting_review")]
     assert world.store.get_skill("invoices", tenant_id="acme").status.value == "held"
     assert world.sources.open_update(INVOICES) is not None
+
+
+# Ruling 1: an Apply that installs nothing would leave an empty skill active and
+# reconciled, the state D6 refuses for Skip and Adopt.
+
+def test_an_apply_that_installs_nothing_is_refused(source_world):
+    world = source_world
+    update = _keep_all_but(world, _held_card(world), "keep-everything")
+    world.policy.held_skills = set()
+    with pytest.raises(SourceConflict) as refused:
+        _apply(world, update, key="apply-nothing")
+    assert refused.value.code == "held_install_requires_content"
+    assert world.store.get_skill("invoices", tenant_id="acme").status.value == "held"
+    assert world.sources.open_update(INVOICES) == update
+    binding = world.sources.get_binding(INVOICES)
+    assert binding.baseline is None and binding.first_reconciliation
+
+
+@pytest.mark.parametrize("taken", ["field:description", "section"])
+def test_an_apply_that_installs_one_part_is_allowed(source_world, taken):
+    # Content is any selected part with a known incoming value other than the
+    # identity fields (name and domain): a rule, section, example, file, or a
+    # field such as the description.
+    world = source_world
+    update = _held_card(world)
+    part = taken if taken.startswith("field:") else next(
+        row.part_id for row in update.plan.conflicts if row.part_id.startswith(taken + ":"))
+    update = _keep_all_but(world, update, "keep-all-but-one", taken={part})
+    world.policy.held_skills = set()
+    assert _apply(world, update, key="apply-one").state == "complete"
+    assert world.store.get_skill("invoices", tenant_id="acme").status.value == "active"
+
+
+def test_an_active_skill_may_apply_a_card_that_keeps_everything(source_world):
+    # The refusal is for held skills only. A curated description makes the
+    # upstream change a conflict; keeping it leaves nothing to write.
+    from dataclasses import replace
+    world = source_world
+    world.install()
+
+    def curate(store, queue):
+        store.upsert_skill(replace(store.get_skill("expenses", tenant_id="acme"), curated=frozenset({"description"})))
+    world.repository.atomic("curate", "acme", curate)
+    update = world.sources.get_update(world.check().outcomes[0].update_id, tenant_id="acme")
+    assert [change.part_id for change in update.plan.changes if change.action != "keep"] == ["field:description"]
+    update = _keep_all_but(world, update, "keep-active")
+    assert _apply(world, update, key="apply-active").state == "complete"
+    assert world.description() == "First description"
+
+
+# Ruling 2: undoing the apply that activated a held install holds the skill again.
+
+def test_undoing_the_apply_of_a_held_install_holds_the_skill_again(source_world):
+    from oms.publish.catalogue import SkillCatalogue
+    from oms.publish.publisher import Publisher
+    from oms.sources.models import UndoRequest
+    world = source_world
+    # The document mode is kept: the empty held skill has none, so its prior
+    # value is unknown, and undo refuses to restore a write it cannot screen
+    # (`write_evidence_unavailable`), whatever the status.
+    update = _choose_every_conflict(world, _held_card(world), "draft-held", kept={"field:document_mode"})
+    world.policy.held_skills = set()
+    result = _apply(world, update)
+    receipt = world.sources.get_undo(result.operation_id + ":undo", tenant_id="acme")
+    assert receipt.previous_skill_status.value == "held"
+    publisher = Publisher(world.store)
+    assert "invoices" in [skill.id for skill, _ in publisher.publishable_skills("acme")]
+    request = UndoRequest(undo_id=receipt.undo_id, skill=INVOICES, expected_generations=receipt.expected_generations,
+                          policy_version=receipt.policy_version)
+    assert world.service.undo_status(world.context, receipt.undo_id).available
+    undone = world.service.undo(world.context, request, idempotency_key="undo-held")
+    assert undone.committed
+    skill = world.store.get_skill("invoices", tenant_id="acme")
+    assert skill.status.value == "held"
+    assert not world.store.rules_for_skill("invoices", tenant_id="acme")
+    published = [skill.id for skill, _ in publisher.publishable_skills("acme")]
+    assert "invoices" not in published and "expenses" in published
+    listed = [row.id for row in SkillCatalogue(world.store, publisher).list_skills("acme")]
+    assert "invoices" not in listed and "expenses" in listed
+    binding = world.sources.get_binding(INVOICES)
+    assert binding.baseline is None and binding.first_reconciliation
+    # Undo does not reopen the card it reverted; the person can delete the
+    # skill and install it again.
+    assert world.sources.open_update(INVOICES) is None
+
+
+# Ruling 3: the inbox list marks held installs as the card view does.
+
+def test_the_inbox_list_marks_held_installs(source_world):
+    from oms.sources.reads import SourceReads
+    world = source_world
+    held = _held_card(world)
+    ordinary = world.sources.get_update(world.check().outcomes[0].update_id, tenant_id="acme")
+    rows = SourceReads(world.service, world.blobs).updates(world.context).items
+    assert {row.update_id: row.held_install for row in rows} == {held.update_id: True, ordinary.update_id: False}
+    dumped = {row["update_id"]: row["held_install"] for row in
+              SourceReads(world.service, world.blobs).updates(world.context).model_dump(mode="json")["items"]}
+    assert dumped == {held.update_id: True, ordinary.update_id: False}
+
+
+def test_the_inbox_and_card_routes_carry_held_install(source_api):
+    client, world, _ = source_api
+    held = _held_card(world)
+    rows = client.get("/api/skill-updates").json()["items"]
+    assert [(row["update_id"], row["held_install"]) for row in rows] == [(held.update_id, True)]
+    assert client.get("/api/skill-updates/" + held.update_id).json()["held_install"] is True
