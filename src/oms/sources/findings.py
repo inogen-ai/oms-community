@@ -3,6 +3,10 @@
 A finding keeps a place (file or part, line) and a category. It never keeps the
 matched text (spec D5), so a stored plan cannot leak what the sanitiser removed.
 """
+from collections.abc import Iterable
+
+from oms.domain.redaction import Redaction
+from oms.ports.injection_screen import ScreenResult
 from oms.sources.models import CheckFinding
 
 _LABELS = {
@@ -42,7 +46,7 @@ def describe_hold(findings: tuple[CheckFinding, ...]) -> str:
     return f"{text} (and {more} more)" if more else text
 
 
-def text_findings(text: str, redactions, screened, *, path: str | None = None,
+def text_findings(text: str, redactions: Iterable[Redaction], screened: ScreenResult, *, path: str | None = None,
                   part_id: str | None = None) -> tuple[CheckFinding, ...]:
     found: list[CheckFinding] = []
     shift = 0

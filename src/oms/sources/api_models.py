@@ -167,6 +167,14 @@ class SkillSourceSummary(Body):
     ref_name: str
 
 
+class CheckFindingView(Body):
+    path: str | None = None
+    part_id: str | None = None
+    line: int | None = None
+    category: str
+    summary: str
+
+
 class UpdateView(Update):
     part_fingerprints: dict[str, str]
     ownership: dict[str, Literal["source", "shared", "local", "unknown"]]
@@ -175,8 +183,9 @@ class UpdateView(Update):
 
     @computed_field
     @property
-    def check_findings(self) -> tuple[dict, ...]:
-        return tuple({**finding.model_dump(exclude={"format_version"}), "summary": describe_finding(finding)}
+    def check_findings(self) -> tuple[CheckFindingView, ...]:
+        return tuple(CheckFindingView(path=finding.path, part_id=finding.part_id, line=finding.line,
+                                      category=finding.category, summary=describe_finding(finding))
                      for finding in self.plan.check_findings)
 
 

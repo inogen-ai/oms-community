@@ -23,6 +23,8 @@ from oms.sources.models import CheckFinding, CheckResult, ManifestEntry, MergePl
 
 logger = logging.getLogger(__name__)
 
+MAX_FINDINGS = 100
+
 
 @dataclass(frozen=True)
 class SafetyRestriction:
@@ -126,41 +128,50 @@ def screen_snapshot(snapshot: SourceSnapshot, blobs: BlobStore,
     # Every file and part is checked so the review can name each one that held.
     first: CheckResult | None = None
     unavailable = False
-    findings: list[CheckFinding] = []
+    # Per-file state is derived from the findings, so the invariant is: a file
+    # that did not pass always contributes a finding naming its path, and those
+    # are kept ahead of the display cap. If even they overflow the cap, the
+    # result says "findings_truncated" and every file takes the whole result.
+    guaranteed: list[CheckFinding] = []
+    extra: list[CheckFinding] = []
 
-    def note(result: CheckResult) -> None:
-        nonlocal first
-        if result.state != "passed" and first is None:
+    def note(result: CheckResult, *, path: str | None = None, part_id: str | None = None) -> CheckResult:
+        nonlocal first, unavailable
+        if result.state == "passed":
+            return result
+        unavailable = unavailable or result.state == "unavailable"
+        found = result.findings
+        if not found:
+            category = (f"check_unavailable:{result.code}" if result.state == "unavailable"
+                        else f"policy:{result.code}")
+            found = (CheckFinding(path=path, part_id=part_id, category=category),)
+        if first is None:
             first = result
-        findings.extend(result.findings)
+        if path is not None:
+            guaranteed.append(found[0])
+            extra.extend(found[1:])
+        else:
+            extra.extend(found)
+        return result
 
     for entry in snapshot.manifest:
         try:
             body = verified_bytes(blobs, entry)
         except (SourceConflict, OSError):
-            unavailable = True
-            note(CheckResult(state="unavailable", code="package_custody_unavailable", findings=(
-                CheckFinding(path=entry.path, category="check_unavailable:package_custody_unavailable"),)))
+            note(CheckResult(state="unavailable", code="package_custody_unavailable"), path=entry.path)
             continue
-        result = checks.check_file(body, path=entry.path)
-        if result.state == "unavailable":
-            unavailable = True
-            result = result.model_copy(update={"findings": result.findings or (
-                CheckFinding(path=entry.path, category=f"check_unavailable:{result.code}"),)})
-        note(result)
+        note(checks.check_file(body, path=entry.path), path=entry.path)
     for part in snapshot.effective_projection:
         if part.evidence.kind == "known":
             for text in texts(part.evidence.value):
-                result = checks.check_text(text, part_id=part.part_id)
-                if result.state == "unavailable":
-                    unavailable = True
-                    result = result.model_copy(update={"findings": result.findings or (
-                        CheckFinding(part_id=part.part_id, category=f"check_unavailable:{result.code}"),)})
-                note(result)
+                note(checks.check_text(text, part_id=part.part_id), part_id=part.part_id)
     if first is None:
         return CheckResult(state="passed", code="package_bytes_checked")
+    truncated = len(guaranteed) > MAX_FINDINGS
+    findings = (guaranteed + extra)[:MAX_FINDINGS]
+    reasons = first.reasons + (("findings_truncated",) if truncated else ())
     return CheckResult(state="unavailable" if unavailable else "held", code=first.code,
-                       reasons=first.reasons, findings=tuple(findings[:100]))
+                       reasons=reasons, findings=tuple(findings))
 
 
 def texts(value):

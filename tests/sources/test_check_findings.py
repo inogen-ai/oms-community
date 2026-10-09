@@ -80,3 +80,102 @@ def test_one_held_file_leaves_the_other_files_choosable(tmp_path):
                                          history_evidence="initial")
     states = {row.part_id: row.result.state for row in policy.file_checks}
     assert states["file:a.md"] == "held" and states["file:b.md"] == "passed"
+
+
+class _Scripted(SourceSafety):
+    """A safety check whose per-file answers are scripted by path."""
+    def __init__(self, answers):
+        super().__init__()
+        object.__setattr__(self, "answers", answers)
+
+    def check_file(self, body, *, path=None, maximum_bytes=10 * 1024 * 1024):
+        answer = self.answers.get(path)
+        return answer if answer is not None else super().check_file(body, path=path)
+
+
+def _snapshot(tmp_path, files):
+    builder, package, origin = acquired(tmp_path, "---\nname: expenses\n---\n## Rules\n- Keep receipts.\n",
+                                        files=files)
+    return builder.build(package, origin, snapshot_id="snapshot")
+
+
+def test_the_finding_cap_never_hides_a_held_file(tmp_path):
+    from oms.sources.safety import screen_snapshot
+    many = b"\n".join(b"Call +44 20 7946 0958." for _ in range(150))
+    snapshot = _snapshot(tmp_path, {"a.md": many, "b.md": b"Mail ada@example.com.", "c.md": b"Fine."})
+    result = screen_snapshot(snapshot, FileBlobStore(tmp_path))
+    assert len(result.findings) == 100
+    assert {"a.md", "b.md"} <= {f.path for f in result.findings}
+    assert "findings_truncated" not in result.reasons
+
+
+def test_more_held_files_than_the_cap_make_every_file_take_the_whole_result(tmp_path):
+    from oms.sources.models import CheckResult
+    from oms.sources.safety import screen_snapshot
+    from oms.sources.service import _file_result
+    files = {f"f{i}.md": b"Call +44 20 7946 0958." for i in range(120)}
+    files["clean.md"] = b"Fine."
+    result = screen_snapshot(_snapshot(tmp_path, files), FileBlobStore(tmp_path))
+    assert len(result.findings) == 100 and "findings_truncated" in result.reasons
+    assert _file_result(result, "clean.md").state == "held"
+    assert _file_result(result, "f119.md").state == "held"
+    assert isinstance(result, CheckResult)
+
+
+def test_a_held_file_with_no_findings_still_gets_a_finding_with_its_path(tmp_path):
+    from oms.sources.models import CheckResult
+    from oms.sources.safety import screen_snapshot
+    scripted = _Scripted({"a.md": CheckResult(state="held", code="source_text_hold")})
+    result = screen_snapshot(_snapshot(tmp_path, {"a.md": b"x", "b.md": b"y"}), FileBlobStore(tmp_path), scripted)
+    assert CheckFinding(path="a.md", category="policy:source_text_hold") in result.findings
+
+
+def test_unavailable_wins_over_held_and_names_the_file(tmp_path):
+    from oms.sources.models import CheckResult
+    from oms.sources.safety import screen_snapshot
+    scripted = _Scripted({"a.md": CheckResult(state="held", code="source_text_hold"),
+                          "b.md": CheckResult(state="unavailable", code="text_check_limit")})
+    result = screen_snapshot(_snapshot(tmp_path, {"a.md": b"x", "b.md": b"y"}), FileBlobStore(tmp_path), scripted)
+    assert result.state == "unavailable"
+    assert CheckFinding(path="b.md", category="check_unavailable:text_check_limit") in result.findings
+
+
+def test_file_result_branches():
+    from oms.sources.models import CheckResult
+    from oms.sources.service import _file_result
+    unavailable = CheckResult(state="unavailable", code="x")
+    assert _file_result(unavailable, "a.md") is unavailable
+    no_findings = CheckResult(state="held", code="x")
+    assert _file_result(no_findings, "a.md") is no_findings
+    held = CheckResult(state="held", code="x", findings=(CheckFinding(path="a.md", category="phone"),))
+    assert _file_result(held, "a.md").state == "held"
+    assert _file_result(held, "b.md") == CheckResult(state="passed", code="file_checked")
+
+
+def test_the_plan_carries_findings_and_falls_back_to_a_policy_reason():
+    from dataclasses import replace
+    from oms.sources.models import CheckResult
+    from tests.sources.merge_cases import merge_case
+    case = merge_case()
+    finding = CheckFinding(path="a.md", line=2, category="phone")
+    held = CheckResult(state="held", code="source_text_hold", findings=(finding,))
+    assert case.plan(policy=replace(case.policy, required_checks=(held,))).check_findings == (finding,)
+    bare = CheckResult(state="unavailable", code="package_manifest_unavailable")
+    plan = case.plan(policy=replace(case.policy, required_checks=(bare,)))
+    assert plan.check_findings == (CheckFinding(category="policy:package_manifest_unavailable"),)
+
+
+def test_the_update_view_lists_findings_with_a_summary():
+    from dataclasses import replace
+    from oms.sources.api_models import UpdateView
+    from oms.sources.models import CheckResult, Update
+    from tests.sources.merge_cases import merge_case
+    case = merge_case()
+    finding = CheckFinding(path="a.md", line=2, category="phone")
+    plan = case.plan(policy=replace(case.policy, required_checks=(
+        CheckResult(state="held", code="source_text_hold", findings=(finding,)),)))
+    update = Update(update_id="u", plan=plan, generation=1, status="open", review_item_id="r")
+    view = UpdateView(**update.model_dump(), stale=False, ownership={}, part_fingerprints={})
+    dumped = view.model_dump(mode="json")["check_findings"]
+    assert dumped == [{"path": "a.md", "part_id": None, "line": 2, "category": "phone",
+                       "summary": "a.md, line 2: looks like a phone number"}]
