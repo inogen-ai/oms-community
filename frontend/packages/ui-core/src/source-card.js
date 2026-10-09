@@ -1,4 +1,4 @@
-import { createElement as h } from "react";
+import { createElement as h, Fragment } from "react";
 import { Button, EmptyState, Notice, Panel } from "./primitives.js";
 import { boundedSourceText } from "./source-files.js";
 import { SourceStatus, sourceFlagLabels } from "./source-status.js";
@@ -13,6 +13,14 @@ const sameChoices = (a, b) => a.length === b.length && a.every(choice => b.some(
 const allowedChoices = (change, conflict) => (conflict?.allowed_choices ?? ["keep_oms", "use_upstream"])
   .filter(choice => Object.hasOwn(CHOICES, choice) && (choice !== "merged_text" || ["section", "rule", "example"].includes(change.kind)));
 const TAKEN_KINDS = ["rule", "section", "example", "file"];
+// A change row's element id. Every character outside [A-Za-z0-9-] is escaped, so two parts never share one.
+const changeId = partId => "oms-source-change-" + [...partId].map(c => /[A-Za-z0-9-]/.test(c) ? c : `_${c.codePointAt(0).toString(16)}_`).join("");
+// A button, not a fragment link: the paid console routes on the URL hash.
+const showChange = partId => () => {
+  const target = globalThis.document?.getElementById(changeId(partId));
+  target?.scrollIntoView?.({ block: "start" });
+  target?.focus?.({ preventScroll: true });
+};
 const removes = change => change.action === "remove" || (change.incoming.kind === "absent" && change.local.kind !== "absent");
 
 export function initialSourceDraft(update) {
@@ -99,7 +107,12 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
     h(SourceStatus, { status: closed ? update.status : "awaiting_review", flags: closed ? [] : update.plan.flags, ref }),
     closed && update.plan.flags.length ? h("p", null, "Flags recorded at review: ", update.plan.flags.map(flag => Object.hasOwn(sourceFlagLabels, flag) ? sourceFlagLabels[flag] : flag.replaceAll("_", " ")).join("; ")) : null,
     heldInstall && !closed ? h("section", { className: "oms-source-held", "aria-label": "Why this is held" }, h("h4", null, "Why this is held"),
-      update.check_findings?.length ? h("ul", null, update.check_findings.map((finding, index) => h("li", { key: `${finding.part_id}-${finding.line}-${index}` }, finding.summary))) : h("p", null, "Required checks hold this new skill."),
+      update.check_findings?.length ? h("ul", null, update.check_findings.map((finding, index) => {
+        // A finding in a supporting file opens that file's change row, where its preview is (spec 7.4).
+        const file = finding.path && update.plan.changes.some(change => change.part_id === `file:${finding.path}`) ? `file:${finding.path}` : null;
+        return h("li", { key: `${finding.part_id}-${finding.line}-${index}` }, finding.summary,
+          file ? h(Fragment, null, " ", h(Button, { variant: "secondary", "aria-label": `Show ${finding.path} on this card`, onClick: showChange(file) }, "Show file")) : null);
+      })) : h("p", null, "Required checks hold this new skill."),
       h("p", null, "Choose the parts to install and apply, or delete this skill. It is not live until you apply."),
       !state.taken ? h("p", { role: "status" }, "Choose at least one part to install, or delete this skill.") : null) : null,
     h("p", null, closed ? "Recorded historical comparison. The OMS side shows content at review time. This update no longer accepts decisions."
@@ -124,7 +137,7 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
       const identified = !!partFingerprints[change.part_id];
       const removable = removes(change) || change.linked_removals?.includes(change.part_id);
       const editable = canEdit && identified;
-      return h("section", { key: change.part_id, className: "oms-source-part", "aria-label": `Change ${change.part_id}` },
+      return h("section", { key: change.part_id, id: changeId(change.part_id), tabIndex: -1, className: "oms-source-part", "aria-label": `Change ${change.part_id}` },
         h("h3", null, change.part_id), h("p", null, `${change.kind} · ${change.action}`),
         h("p", null, Object.hasOwn(OWNERSHIP, ownership[change.part_id]) ? OWNERSHIP[ownership[change.part_id]] : OWNERSHIP.unknown),
         conflict ? h("p", null, conflict.reason) : null,

@@ -357,3 +357,27 @@ test("a held install card explains why it is held and offers no skip or adopt", 
   assert.ok(button(tree, "Skip this version")); assert.ok(button(tree, "Keep all current OMS content and adopt this revision"));
   assert.doesNotMatch(text(tree), /Why this is held/);
 });
+test("a finding with a path takes the reviewer to that file's change on the card", () => {
+  // Spec 7.4: a row with a path opens that file's preview, which sits in the
+  // file's change row. A button, not a fragment link: the paid console routes on the hash.
+  const findings = [
+    { path: "guide.md", part_id: null, line: 4, category: "phone", summary: "guide.md, line 4: looks like a phone number" },
+    { path: null, part_id: "section:intro", line: null, category: "email", summary: "SKILL.md text: looks like an email address" },
+    { path: "SKILL.md", part_id: null, line: 9, category: "phone", summary: "SKILL.md, line 9: looks like a phone number" },
+  ];
+  const base = update({ conflicts: [], flags: ["safety_hold"], changes: [change("section:intro", { action: "add" }),
+    change("file:guide.md", { kind: "file", action: "add" })] });
+  const tree = component("SourceUpdateCard", { update: { ...base, held_install: true, check_findings: findings }, title: "Visual",
+    partFingerprints: { "section:intro": "p", "file:guide.md": "f" } });
+  const shows = nodes(tree).filter(node => node.type === "button" && /^Show /.test(node.props["aria-label"] ?? ""));
+  // SKILL.md and a projected part have no file change row, so only guide.md gets one.
+  assert.deepEqual(shows.map(node => node.props["aria-label"]), ["Show guide.md on this card"]);
+  const row = nodes(tree).find(node => node.type === "section" && node.props["aria-label"] === "Change file:guide.md");
+  assert.ok(row.props.id); assert.equal(row.props.tabIndex, -1);
+  const other = nodes(tree).find(node => node.type === "section" && node.props["aria-label"] === "Change section:intro");
+  assert.notEqual(other.props.id, row.props.id);
+  const calls = [];
+  globalThis.document = { getElementById: id => id === row.props.id ? { scrollIntoView: () => calls.push("scroll"), focus: () => calls.push("focus") } : null };
+  try { shows[0].props.onClick(); } finally { delete globalThis.document; }
+  assert.deepEqual(calls, ["scroll", "focus"]);
+});
