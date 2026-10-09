@@ -421,3 +421,51 @@ def test_the_inbox_and_card_routes_carry_held_install(source_api):
     rows = client.get("/api/skill-updates").json()["items"]
     assert [(row["update_id"], row["held_install"]) for row in rows] == [(held.update_id, True)]
     assert client.get("/api/skill-updates/" + held.update_id).json()["held_install"] is True
+
+
+# "Use upstream everywhere": the reviewer takes upstream wherever the card
+# allows it, with no special case for parts that are absent on both sides
+# (a package with no licence). Nothing absent on both sides needs removal
+# consent, since there is nothing to remove.
+
+def test_taking_upstream_wherever_allowed_applies_a_held_card(source_world):
+    world = source_world
+    update = _held_card(world)
+    choices = tuple(DraftChoice(part_id=conflict.part_id,
+                                choice="use_upstream" if "use_upstream" in conflict.allowed_choices else "keep_oms",
+                                part_fingerprint=part_fingerprint(update, conflict.part_id))
+                    for conflict in update.plan.conflicts)
+    world.service.save_draft(world.context, SaveDraftRequest(**_request(update).model_dump(), choices=choices),
+                             idempotency_key="upstream-everywhere")
+    update = world.sources.get_update(update.update_id, tenant_id="acme")
+    world.policy.held_skills = set()
+    assert _apply(world, update, key="apply-upstream-everywhere").state == "complete"
+    assert world.store.get_skill("invoices", tenant_id="acme").status.value == "active"
+
+
+def test_a_part_absent_on_both_sides_is_not_a_conflict_on_a_held_card(source_world):
+    update = _held_card(source_world)
+    licence = next(change for change in update.plan.changes if change.part_id == "field:license")
+    assert (licence.local.kind, licence.incoming.kind) == ("absent", "absent")
+    assert licence.action == "keep"
+    assert "field:license" not in {conflict.part_id for conflict in update.plan.conflicts}
+
+
+def test_taking_upstream_for_a_part_absent_on_both_sides_needs_no_consent(source_world):
+    # A card stored before the fix still lists such a part as a conflict, and a
+    # client may send use_upstream for it. Absent upstream and absent locally
+    # writes nothing, so it is not a removal.
+    world = source_world
+    update = _held_card(world)
+    taken = {conflict.part_id for conflict in update.plan.conflicts
+             if conflict.part_id.startswith(("rule:", "section:"))}
+    choices = tuple(DraftChoice(part_id=part_id, choice="use_upstream" if part_id in taken else "keep_oms",
+                                part_fingerprint=part_fingerprint(update, part_id))
+                    for part_id in sorted({conflict.part_id for conflict in update.plan.conflicts} - {"field:license"}))
+    choices += (DraftChoice(part_id="field:license", choice="use_upstream",
+                            part_fingerprint=part_fingerprint(update, "field:license")),)
+    world.service.save_draft(world.context, SaveDraftRequest(**_request(update).model_dump(), choices=choices),
+                             idempotency_key="upstream-licence")
+    update = world.sources.get_update(update.update_id, tenant_id="acme")
+    world.policy.held_skills = set()
+    assert _apply(world, update, key="apply-upstream-licence").state == "complete"

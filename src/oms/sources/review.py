@@ -218,6 +218,11 @@ def selected_writes(update: Update, incoming: SourceSnapshot, local: LocalState,
                 evidence=Evidence(kind="known", value=value, policy_version=incoming.policy_version))
             manual.add(change.part_id)
         elif change.incoming.kind == "absent":
+            # Absent upstream and absent here writes nothing, so it is not a
+            # removal and needs no consent (a card stored before equal evidence
+            # was kept may still list such a part).
+            if change.local.kind == "absent":
+                continue
             if not preview and change.part_id not in removal_consents:
                 raise SourceConflict("consent_required", "removal consent required")
             part = ProjectionPart(part_id=change.part_id, kind=change.kind, evidence=change.incoming)

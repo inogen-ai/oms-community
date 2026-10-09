@@ -247,6 +247,12 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
         else:
             decision = compare_prose(before, current, after, independently_owned=independent,
                                      identity_known=identity_known)
+        # Without a base the comparison is two-way, but equal evidence on the two
+        # sides we can see (absent on both, or the same known value) leaves
+        # nothing to choose. Otherwise a held install's card would ask the
+        # reviewer to remove a licence that neither side has.
+        if before.kind == 'unknown' and same_value(current, after):
+            decision = UnitDecision('already_matches')
         if kind not in (PartKind.FIELD, PartKind.FILE) and b is not None and u is not None:
             if key in reordered and (l is None or key in unmatched):
                 decision = UnitDecision('review', tuple(dict.fromkeys((*decision.reasons, 'changed_order'))))

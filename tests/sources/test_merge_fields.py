@@ -100,3 +100,33 @@ def test_partial_unknown_baseline_requires_first_manual_reconciliation():
     unknown_part = case.base.effective_projection[0].model_copy(update={'evidence': unknown()})
     plan = case.plan(base=case.base.model_copy(update={'effective_projection': (unknown_part,)}))
     assert PlanFlag.FIRST_RECONCILIATION in plan.flags
+
+
+# Without a base there is no three-way comparison, but equal evidence on the
+# two sides we can see leaves nothing to choose: a field absent locally and
+# upstream, or known with the same value on both, is kept, not a conflict. A
+# held install has no base, and every package without a licence would
+# otherwise ask the reviewer to "remove" a licence that does not exist.
+
+def _absent_part(identifier):
+    from oms.sources.models import ProjectionPart
+    return ProjectionPart(part_id=identifier, kind='field', evidence=absent(), owner_origins=('origin',))
+
+
+def test_equal_evidence_without_a_base_is_kept():
+    case = merge_case(part('field:description', 'same'), _absent_part('field:license'))
+    plan = case.plan(base=None)
+    actions = {change.part_id: change.action for change in plan.changes}
+    assert actions == {'field:description': 'keep', 'field:license': 'keep'}
+    assert not plan.conflicts
+    assert PlanFlag.FIRST_RECONCILIATION in plan.flags
+    assert PlanFlag.DELETION_CONSENT not in plan.flags
+
+
+def test_different_evidence_without_a_base_is_still_a_conflict():
+    case = merge_case(part('field:description', 'mine'), _absent_part('field:license'))
+    incoming = case.incoming.model_copy(update={'effective_projection': (
+        part('field:description', 'theirs'), part('field:license', 'MIT'))})
+    plan = case.plan(base=None, incoming=incoming)
+    assert {conflict.part_id: conflict.reason for conflict in plan.conflicts} == {
+        'field:description': 'unknown_base', 'field:license': 'unknown_base'}
