@@ -12,6 +12,7 @@ const sameChoices = (a, b) => a.length === b.length && a.every(choice => b.some(
   && (choice.merged_text ?? null) === (other.merged_text ?? null)));
 const allowedChoices = (change, conflict) => (conflict?.allowed_choices ?? ["keep_oms", "use_upstream"])
   .filter(choice => Object.hasOwn(CHOICES, choice) && (choice !== "merged_text" || ["section", "rule", "example"].includes(change.kind)));
+const TAKEN_KINDS = ["rule", "section", "example", "file"];
 const removes = change => change.action === "remove" || (change.incoming.kind === "absent" && change.local.kind !== "absent");
 
 export function initialSourceDraft(update) {
@@ -54,9 +55,12 @@ export function sourceCardState(update, draft = initialSourceDraft(update), part
   const held = update.resolved_check
     ? update.resolved_check.state !== "passed"
     : update.plan.flags.some(flag => ["safety_hold", "required_check_unavailable"].includes(flag));
-  return { stale, validChoices, resolved, groups, consented, saved, held,
+  // A held new skill needs at least one saved rule, section, example or file part taken; the server refuses an empty apply anyway.
+  const taken = update.held_install === true ? (update.drafts ?? []).some(choice => choice.choice !== "keep_oms"
+    && TAKEN_KINDS.includes(changes.get(choice.part_id)?.kind)) : true;
+  return { stale, validChoices, resolved, groups, consented, saved, held, taken,
     canSave: update.status === "open" && !stale && validChoices && !saved,
-    canApply: update.status === "open" && !stale && validChoices && resolved && consented && saved && !held };
+    canApply: update.status === "open" && !stale && validChoices && resolved && consented && saved && !held && taken };
 }
 function Evidence({ title, evidence }) {
   const value = evidence.kind === "known" ? (typeof evidence.value === "string" ? evidence.value : JSON.stringify(evidence.value, null, 2))
@@ -89,9 +93,15 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
     edit({ ...draft, choices, removal_consents: draft.removal_consents.filter(id => id !== part_id) });
   };
   const action = (callback, enabled, payload) => () => { if (!disabled && enabled && callback) callback(payload); };
-  return h(Panel, { title: title || update.plan.skill.skill_id, className: "oms-source-card", "aria-busy": busy },
+  const heldInstall = update.held_install === true;
+  const name = title || update.plan.skill.skill_id;
+  return h(Panel, { title: heldInstall ? `New skill held for review: ${name}` : name, className: "oms-source-card", "aria-busy": busy },
     h(SourceStatus, { status: closed ? update.status : "awaiting_review", flags: closed ? [] : update.plan.flags, ref }),
     closed && update.plan.flags.length ? h("p", null, "Flags recorded at review: ", update.plan.flags.map(flag => Object.hasOwn(sourceFlagLabels, flag) ? sourceFlagLabels[flag] : flag.replaceAll("_", " ")).join("; ")) : null,
+    heldInstall && !closed ? h("section", { className: "oms-source-held", "aria-label": "Why this is held" }, h("h4", null, "Why this is held"),
+      update.check_findings?.length ? h("ul", null, update.check_findings.map((finding, index) => h("li", { key: `${finding.part_id}-${finding.line}-${index}` }, finding.summary))) : h("p", null, "Required checks hold this new skill."),
+      h("p", null, "Choose the parts to install and apply, or delete this skill. It is not live until you apply."),
+      !state.taken ? h("p", { role: "status" }, "Choose at least one part to install, or delete this skill.") : null) : null,
     h("p", null, closed ? "Recorded historical comparison. The OMS side shows content at review time. This update no longer accepts decisions."
       : "Review the whole skill. Local name and domain stay unchanged. Saving choices does not change live content; publishing is separate."),
     h("dl", { className: "oms-source-metadata" },
@@ -138,11 +148,11 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
       state.groups.map((group, index) => h("label", { key: group.join("|"), className: "oms-source-check" }, h("input", { type: "checkbox", checked: group.every(id => draft.removal_consents.includes(id)),
         "aria-label": `Consent to remove group ${index + 1}`, onChange: event => edit({ ...draft, removal_consents: event.target.checked
           ? [...new Set([...draft.removal_consents, ...group])] : draft.removal_consents.filter(id => !group.includes(id)) }) }), `Remove group ${index + 1}: ${group.join(", ")}`))) : null,
-    !closed && onAdopt ? h("p", null, "Keep-current-and-adopt advances only this source baseline. Current content and existing safety holds are preserved.") : null,
+    !closed && !heldInstall && onAdopt ? h("p", null, "Keep-current-and-adopt advances only this source baseline. Current content and existing safety holds are preserved.") : null,
     !closed ? h("div", { className: "oms-source-actions" },
       onSaveDraft ? h(Button, { variant: "secondary", disabled: disabled || !state.canSave, onClick: action(onSaveDraft, state.canSave, { ...body, choices: draft.choices }) }, "Save choices") : null,
       onApply ? h(Button, { disabled: disabled || !state.canApply, onClick: action(onApply, state.canApply, { ...body, removal_consents: draft.removal_consents }) }, "Apply whole skill") : null,
       onRecheck ? h(Button, { variant: "secondary", disabled: recheckDisabled, onClick: () => { if (!recheckDisabled) onRecheck(body); } }, "Recheck safety") : null,
-      onSkip ? h(Button, { variant: "secondary", disabled, onClick: action(onSkip, true, body) }, "Skip this version") : null,
-      onAdopt ? h(Button, { variant: "secondary", disabled, onClick: action(onAdopt, true, body) }, "Keep all current OMS content and adopt this revision") : null) : null);
+      onSkip && !heldInstall ? h(Button, { variant: "secondary", disabled, onClick: action(onSkip, true, body) }, "Skip this version") : null,
+      onAdopt && !heldInstall ? h(Button, { variant: "secondary", disabled, onClick: action(onAdopt, true, body) }, "Keep all current OMS content and adopt this revision") : null) : null);
 }

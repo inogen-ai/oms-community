@@ -40,6 +40,8 @@ export interface SourceUpdate extends SourceRecord {
   readonly update_id: string; readonly plan: SourceMergePlan; readonly generation: number;
   readonly status: "open" | "applied" | "skipped" | "adopted" | "superseded" | "closed";
   readonly review_item_id: string; readonly drafts: readonly SourceDraftChoice[]; readonly operation_id: string | null;
+  /** True for a new skill held at install; the list and the card both say so. */
+  readonly held_install?: boolean;
 }
 export interface SourceStatus extends SourceRecord {
   readonly state: "unchecked" | "up_to_date" | "updates_available" | "failed" | "missing" | "redirect";
@@ -84,7 +86,7 @@ export interface SourceDiscovery {
 export type SourceOperationState = "fetching" | "planning" | "awaiting_review" | "applying" | "complete" | "blocked" | "failed";
 export interface SourceOperation {
   readonly operation_id: string; readonly state: SourceOperationState; readonly committed: boolean;
-  readonly outcomes: readonly { readonly skill_id: string; readonly state: "applied" | "awaiting_review" | "blocked" | "failed" | "unchanged"; readonly update_id: string | null; readonly code: string | null }[];
+  readonly outcomes: readonly { readonly skill_id: string; readonly state: "applied" | "awaiting_review" | "blocked" | "failed" | "unchanged"; readonly update_id: string | null; readonly code: string | null; readonly detail?: string | null }[];
   readonly source_id?: string | null;
   readonly discovery_id?: string | null;
 }
@@ -119,6 +121,8 @@ export interface SourceUpdateView extends SourceUpdate {
   readonly part_fingerprints: Readonly<Record<string, string>>;
   readonly ownership: Readonly<Record<string, "source" | "shared" | "local" | "unknown">>;
   readonly stale: boolean;
+  /** Why a held install is held: a summary only, never the matched text. */
+  readonly check_findings?: readonly { readonly path: string; readonly part_id: string | null; readonly line: number | null; readonly category: string; readonly summary: string }[];
   readonly resolved_check: SourceResolvedCheck;
 }
 export interface SourceUpdateBody { skill_id: string; fingerprint: PlanFingerprint }

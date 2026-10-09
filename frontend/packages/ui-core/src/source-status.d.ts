@@ -1,15 +1,18 @@
 import type { ReactNode } from "react";
 import type { SourceCardUpdate } from "./source-card.js";
 export interface SourceRefDisplay { kind: "branch" | "tag" | "commit"; name: string; commit?: string }
+export interface SourceOutcomeDisplay { skill_id: string; state: string; code?: string | null; update_id?: string | null; detail?: string | null }
 export interface SourceOperationDisplay {
   operation_id: string; state: string; committed: boolean;
-  outcomes?: readonly { skill_id: string; state: string; code?: string | null }[];
+  outcomes?: readonly SourceOutcomeDisplay[];
 }
 export const sourceFlagLabels: Readonly<Record<string, string>>;
 export function SourceStatus(props: {
   status?: string | { state: string; code?: string | null }; message?: string; flags?: readonly string[]; retryNeeded?: boolean;
   firstReconciliation?: boolean; ref?: SourceRefDisplay; operation?: SourceOperationDisplay | null;
   exclusions?: readonly { skill_id: string; reasons: readonly string[] }[];
+  /** Where an edition links one outcome (for example its held skill review card); return null for no link. */
+  outcomeLink?: (outcome: SourceOutcomeDisplay) => { href: string; label: string } | null;
 }): ReactNode;
 export function sourceBulkExclusions(update: SourceCardUpdate): string[];
 export interface SourceUndoGuard {

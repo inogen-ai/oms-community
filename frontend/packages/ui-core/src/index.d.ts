@@ -49,7 +49,7 @@ export * from "./source-discovery.js";
 export * from "./source-card.js";
 export * from "./source-files.js";
 export { SourceStatus, SourceUndo, sourceBulkExclusions } from "./source-status.js";
-export type { SourceRefDisplay, SourceOperationDisplay, SourceUndoGuard } from "./source-status.js";
+export type { SourceRefDisplay, SourceOperationDisplay, SourceOutcomeDisplay, SourceUndoGuard } from "./source-status.js";
 export * from "./source-lookup.js";
 export * from "./source-confirm.js";
 export * from "./github-mark.js";

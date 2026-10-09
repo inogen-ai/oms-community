@@ -1,12 +1,13 @@
 "use client";
+import type { ComponentProps } from "react";
 import Link from "next/link";
 import { Notice, SourcePendingNotice, SourceStatus, sourcePendingSubject, type SourcePendingSubject } from "@inogen/oms-ui-core";
 import { type PendingSourceRequest, type SourceOperation } from "@inogen/oms-client";
 import { useWorkspace } from "@/lib/workspace";
 import { useSourceAction, useSourceResource } from "@/lib/source-state";
 
-export function SourceActionFeedback({ action, subject = "request" }: { action: ReturnType<typeof useSourceAction>; subject?: SourcePendingSubject }) {
-  return <>{action.error && <Notice kind="error">{action.error}</Notice>}{action.busy && <p role="status">Processing source request…</p>}{action.operation && <SourceStatus status={action.operation.state} operation={action.operation} />}
+export function SourceActionFeedback({ action, subject = "request", outcomeLink }: { action: ReturnType<typeof useSourceAction>; subject?: SourcePendingSubject; outcomeLink?: ComponentProps<typeof SourceStatus>["outcomeLink"] }) {
+  return <>{action.error && <Notice kind="error">{action.error}</Notice>}{action.busy && <p role="status">Processing source request…</p>}{action.operation && <SourceStatus status={action.operation.state} operation={action.operation} outcomeLink={outcomeLink} />}
     {action.recoveryKey && <SourcePendingNotice subject={subject} busy={action.busy} onCheck={() => void action.recover()}>
       {action.canRetryOriginalInput && <label className="oms-source-check"><input type="checkbox" disabled={action.busy} checked={action.retryOriginalInput} onChange={event => action.selectOriginalInputRetry(event.target.checked)} />Retry with the exact original input on the next submission</label>}
     </SourcePendingNotice>}</>;

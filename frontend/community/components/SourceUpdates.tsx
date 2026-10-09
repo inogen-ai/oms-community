@@ -44,7 +44,7 @@ export default function SourceUpdates({ selectedId, skillId, origin, headingless
     <SourceActionFeedback action={{ ...action, operation: null }} />
     {batchResults.filter(row => row.scope === sources.scope).map((row, index) => <SourceStatus key={`${row.operation.operation_id}:${index}`} operation={row.operation} status={row.operation.state} />)}
     <div className="stack">{updates.map(update => <article key={update.update_id} className="record">
-      <div className="record-heading"><h3>{names.get(update.plan.skill.skill_id) || update.plan.skill.skill_id}</h3><Button variant="secondary" aria-expanded={open === update.update_id} onClick={() => setOpen(current => current === update.update_id ? null : update.update_id)}>Review source update</Button></div>
+      <div className="record-heading"><h3>{update.held_install ? "New skill held for review: " : ""}{names.get(update.plan.skill.skill_id) || update.plan.skill.skill_id}</h3><Button variant="secondary" aria-expanded={open === update.update_id} onClick={() => setOpen(current => current === update.update_id ? null : update.update_id)}>Review source update</Button></div>
       <p>{update.plan.origin.kind === "github" ? "GitHub source" : "Local package"}{drafts[update.update_id] ? " · Draft retained" : ""}</p>
       <Link href={updateTarget(update.plan.origin.kind, update.update_id)}>Copyable update link</Link>
       {open === update.update_id && <SourceReview id={update.update_id} title={names.get(update.plan.skill.skill_id)} draft={drafts[update.update_id]} onDraftChange={draft => setDrafts(current => {

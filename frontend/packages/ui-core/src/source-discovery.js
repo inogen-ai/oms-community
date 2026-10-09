@@ -3,13 +3,13 @@ import { Button, EmptyState, Notice, Panel } from "./primitives.js";
 import { SourceStatus } from "./source-status.js";
 
 // Match oms.domain.ids.slug so display-name differences cannot hide an ID collision.
-const skillId = name => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+export const sourceSkillId = name => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 
 function selectionFor(pkg, selected, existingNames, domain) {
-  const used = new Set([...existingNames, ...selected.map(row => row.local_name)].map(skillId));
+  const used = new Set([...existingNames, ...selected.map(row => row.local_name)].map(sourceSkillId));
   const stem = (pkg.upstream_name || pkg.path.split("/").at(-1) || "Skill").slice(0, 190);
   let name = stem, suffix = 2;
-  while (used.has(skillId(name))) name = `${stem} ${suffix++}`;
+  while (used.has(sourceSkillId(name))) name = `${stem} ${suffix++}`;
   return { package_path: pkg.path, local_name: name, domain };
 }
 export function initialSourceSelections(discovery, { defaultDomain = "", existingNames = [] } = {}) {
@@ -31,10 +31,10 @@ export function SourceDiscovery({ discovery, selections, onSelectionsChange, onI
   const selected = selections ?? initialSourceSelections(discovery, { defaultDomain, existingNames });
   const disabled = busy || !!error || !onSelectionsChange;
   const known = new Map(packages.map(pkg => [pkg.path, pkg]));
-  const used = new Set(existingNames.map(skillId));
+  const used = new Set(existingNames.map(sourceSkillId));
   const seenPaths = new Set();
   const invalid = selected.some(row => {
-    const name = skillId(row.local_name);
+    const name = sourceSkillId(row.local_name);
     const duplicate = used.has(name) || seenPaths.has(row.package_path);
     used.add(name); seenPaths.add(row.package_path);
     return duplicate || !known.get(row.package_path)?.valid || !name || name.startsWith("repo-") || row.local_name.length > 200
@@ -49,7 +49,7 @@ export function SourceDiscovery({ discovery, selections, onSelectionsChange, onI
     const display = row.package_path || "repository root";
     const field = (label, key) => ({ value: row[key], disabled, "aria-label": `${label} for ${display}`, onChange: event => edit(row.package_path, key, event.target.value) });
     return h("div", { key: row.package_path }, h("strong", null, display), h("div", { className: "oms-source-fields" },
-      h("label", null, "Local name", h("input", { ...field("Local name", "local_name"), maxLength: 200 }), h("small", null, `Skill ID: ${skillId(row.local_name) || "No usable ID"}`)),
+      h("label", null, "Local name", h("input", { ...field("Local name", "local_name"), maxLength: 200 }), h("small", null, `Skill ID: ${sourceSkillId(row.local_name) || "No usable ID"}`)),
       h("label", null, "Domain", domains.length ? h("select", field("Domain", "domain"), h("option", { value: "" }, "Choose a domain"), domains.map(domain => h("option", { key: domain, value: domain }, domain)))
         : h("input", { ...field("Domain", "domain"), maxLength: 200 }))));
   };

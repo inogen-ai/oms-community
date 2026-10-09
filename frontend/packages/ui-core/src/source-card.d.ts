@@ -14,6 +14,7 @@ export type SourceCardChoice = { part_id: string; part_fingerprint: string } & (
 );
 export interface SourceCardUpdate {
   update_id: string; generation: number; status: string; drafts: readonly SourceCardChoice[]; stale?: boolean;
+  held_install?: boolean; check_findings?: readonly { path: string; part_id: string | null; line: number | null; category: string; summary: string }[];
   resolved_check?: { readonly state: "passed" | "held" | "unavailable" };
   plan: {
     skill: { skill_id: string }; origin: { kind: string }; base: { snapshot_id: string } | null; incoming: { snapshot_id: string };
@@ -26,7 +27,7 @@ export interface SourceCardAction { skill_id: string; fingerprint: SourceCardFin
 export function initialSourceDraft(update: SourceCardUpdate): SourceCardDraft;
 export function sourceCardState(update: SourceCardUpdate, draft?: SourceCardDraft, partFingerprints?: Readonly<Record<string, string>>): {
   stale: boolean; validChoices: boolean; resolved: boolean; groups: string[][]; consented: boolean;
-  saved: boolean; held: boolean; canSave: boolean; canApply: boolean;
+  saved: boolean; held: boolean; taken: boolean; canSave: boolean; canApply: boolean;
 };
 export function SourceUpdateCard(props: {
   update?: SourceCardUpdate | null; title?: string; draft?: SourceCardDraft;

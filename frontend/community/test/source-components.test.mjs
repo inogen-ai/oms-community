@@ -303,3 +303,39 @@ test("the selection count is out of the packages found, and the request limit sh
   shown = text(component("SourceDiscovery", { ...props, discovery: partial }));
   assert.match(shown, /0 of 3 loaded packages selected\. Install at most 100 packages per request\./);
 });
+
+test("source status shows the install summary, per-skill detail and an edition link", () => {
+  const operation = { operation_id: "op", state: "awaiting_review", committed: true, outcomes: [
+    { skill_id: "good", state: "applied", update_id: null, code: null, detail: null },
+    { skill_id: "held-one", state: "awaiting_review", update_id: "update-1", code: "safety_review_required", detail: "Held: visual-companion.md, line 214: looks like a phone number" },
+    { skill_id: "bad", state: "failed", update_id: null, code: "package_unreadable", detail: "SKILL.md is missing" },
+  ] };
+  const tree = component("SourceStatus", { status: "awaiting_review", operation, outcomeLink: outcome => outcome.update_id ? { href: "/x/" + outcome.update_id, label: "Open in review inbox" } : null });
+  const shown = text(tree);
+  assert.match(shown, /1 installed, 1 held for review, 1 failed/);
+  assert.match(shown, /line 214: looks like a phone number/); assert.match(shown, /SKILL\.md is missing/);
+  assert.equal(nodes(tree).find(node => node.type === "a" && node.props.href === "/x/update-1") !== undefined, true);
+  assert.equal(nodes(tree).filter(node => node.type === "a").length, 1);
+  assert.doesNotMatch(text(component("SourceStatus", { status: "complete", operation: { ...operation, outcomes: [] } })), /installed/);
+});
+test("a held install card explains why it is held and offers no skip or adopt", () => {
+  const findings = [{ path: "SKILL.md", part_id: "section:intro", line: 3, category: "pii", summary: "Looks like a phone number" }, { path: "a.md", part_id: "file:a.md", line: 9, category: "secret", summary: "Looks like a key" }];
+  const base = update({ conflicts: [], flags: [], changes: [change("section:intro", { action: "add" })] });
+  const props = { update: { ...base, held_install: true, check_findings: findings }, title: "Visual", partFingerprints: { "section:intro": "p" }, onSkip() {}, onAdopt() {}, onApply() {}, onSaveDraft() {} };
+  let tree = component("SourceUpdateCard", props);
+  const shown = text(tree);
+  assert.match(shown, /New skill held for review: Visual/); assert.match(shown, /Why this is held/);
+  assert.match(shown, /Looks like a phone number/); assert.match(shown, /Looks like a key/);
+  assert.equal(button(tree, "Skip this version"), undefined);
+  assert.equal(button(tree, "Keep all current OMS content and adopt this revision"), undefined);
+  assert.match(shown, /Choose at least one part to install, or delete this skill\./);
+  assert.equal(button(tree, "Apply whole skill").props.disabled, true);
+  const kept = { part_id: "section:intro", part_fingerprint: "p", choice: "keep_oms", merged_text: null };
+  const taken = { ...kept, choice: "use_upstream" };
+  const fresh = drafts => component("SourceUpdateCard", { ...props, update: { ...props.update, drafts }, draft: { fingerprint, choices: drafts, removal_consents: [] } });
+  assert.match(text(fresh([kept])), /Choose at least one part/);
+  assert.doesNotMatch(text(fresh([taken])), /Choose at least one part/);
+  tree = component("SourceUpdateCard", { ...props, update: update(), onSkip() {}, onAdopt() {} });
+  assert.ok(button(tree, "Skip this version")); assert.ok(button(tree, "Keep all current OMS content and adopt this revision"));
+  assert.doesNotMatch(text(tree), /Why this is held/);
+});

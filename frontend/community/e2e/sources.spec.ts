@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { sourceFixture } from "./source-fixture";
+import type { SourceOperation } from "@inogen/oms-client";
 
 const openAddSource = async (page: Page) => {
   await page.goto("/skills/");
@@ -344,6 +345,29 @@ test("a confirmed failed installation allows an identical explicit retry with a 
   await expect.poll(() => keys.length).toBe(2);
   expect(keys[1]).not.toBe(keys[0]);
   await expect(page.getByText("Operation complete", { exact: true }).first()).toBeVisible();
+  expect(state.violations).toEqual([]);
+});
+
+test("an install result lists each skill, counts held ones and links to the held skill's review card", async ({ page }) => {
+  const state = await sourceFixture(page);
+  await page.route("**/api/skill-source-installations", async route => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const key = route.request().headers()["idempotency-key"];
+    const operation: SourceOperation = { operation_id: key, state: "complete", committed: true, outcomes: [
+      { skill_id: "expenses-incoming", state: "applied", update_id: null, code: null, detail: null },
+      { skill_id: "orders", state: "awaiting_review", update_id: "update-held", code: "safety_review_required", detail: "Held: guide.md, line 4: looks like a phone number" }] };
+    state.operations.set(key, operation);
+    await route.fulfill({ json: operation, headers: { "Access-Control-Allow-Origin": `http://127.0.0.1:${process.env.OMS_COMMUNITY_UI_PORT || "4318"}` } });
+  });
+  await openAddSource(page);
+  await page.getByLabel("GitHub repository or skill folder URL").fill("https://github.com/fixture/skills");
+  await page.getByRole("button", { name: "Discover packages", exact: true }).click();
+  await page.getByLabel("Select expenses", { exact: true }).check();
+  await page.getByLabel("Select orders", { exact: true }).check();
+  await page.getByRole("button", { name: "Install selected skills" }).click();
+  await expect(page.getByText("1 installed, 1 held for review, 0 failed", { exact: true })).toBeVisible();
+  await expect(page.getByText(/line 4: looks like a phone number/)).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open in review" })).toHaveAttribute("href", "/import/?github=sources&update=update-held");
   expect(state.violations).toEqual([]);
 });
 

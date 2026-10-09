@@ -1,4 +1,4 @@
-import { createElement as h } from "react";
+import { createElement as h, Fragment } from "react";
 import { Badge, Button, Notice } from "./primitives.js";
 
 const STATES = {
@@ -18,8 +18,14 @@ export const sourceFlagLabels = Object.freeze({
 const label = (values, key) => Object.hasOwn(values, key) ? values[key] : String(key).replaceAll("_", " ");
 const OUTCOMES = { applied: "Applied", awaiting_review: "Awaiting review", blocked: "Blocked", failed: "Failed", unchanged: "Unchanged" };
 
+function installSummary(outcomes) {
+  if (!outcomes?.length) return "";
+  const count = state => outcomes.filter(row => row.state === state).length;
+  return `${count("applied")} installed, ${count("awaiting_review")} held for review, ${count("failed")} failed`;
+}
+
 export function SourceStatus({ status = "unchecked", message, flags = [], retryNeeded = false,
-  firstReconciliation = false, ref, operation, exclusions = [] }) {
+  firstReconciliation = false, ref, operation, exclusions = [], outcomeLink }) {
   const state = typeof status === "string" ? status : status?.state ?? "unchecked";
   const code = typeof status === "string" ? null : status?.code;
   return h("div", { className: "oms-source-status", role: "status", "aria-live": "polite", "aria-atomic": true },
@@ -33,7 +39,13 @@ export function SourceStatus({ status = "unchecked", message, flags = [], retryN
     ref ? h("p", { className: "oms-source-ref" }, ref.kind === "branch" ? "Branch: " : "Pinned ", `${ref.kind === "branch" ? "" : `${ref.kind}: `}${ref.name}`, ref.commit ? h("code", null, ref.commit) : null) : null,
     operation ? h("div", { className: "oms-source-operation" },
       h("p", null, label(STATES, operation.state), operation.committed ? ". Committed results are retained." : ". No committed content is reported."),
-      h("ul", null, operation.outcomes?.map((row, index) => h("li", { key: `${row.skill_id}-${index}` }, `${row.skill_id}: ${label(OUTCOMES, row.state)}`, row.code ? ` — ${row.code.replaceAll("_", " ")}` : "")))) : null,
+      installSummary(operation.outcomes) ? h("p", { className: "oms-source-summary" }, installSummary(operation.outcomes)) : null,
+      h("ul", null, operation.outcomes?.map((row, index) => {
+        const link = outcomeLink?.(row);
+        return h("li", { key: `${row.skill_id}-${index}` }, `${row.skill_id}: ${label(OUTCOMES, row.state)}`,
+          row.detail ? ` - ${row.detail}` : row.code ? ` - ${row.code.replaceAll("_", " ")}` : "",
+          link ? h(Fragment, null, " ", h("a", { href: link.href }, link.label)) : null);
+      }))) : null,
     exclusions.length ? h("div", null, h("h4", null, "Excluded from bulk Apply"), h("ul", null,
       exclusions.map(row => h("li", { key: row.skill_id }, `${row.skill_id}: ${row.reasons.join("; ")}`)))) : null);
 }

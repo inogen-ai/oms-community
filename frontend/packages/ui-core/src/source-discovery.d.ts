@@ -8,6 +8,8 @@ export interface SourceDiscoveryDisplay {
   discovery_id: string; resolved_ref: SourceRefDisplay; preselected_path: string | null;
   packages: { items: readonly SourcePackageDisplay[]; next_cursor: string | null };
 }
+/** The skill id OMS gives a local name (matches oms.domain.ids.slug). */
+export function sourceSkillId(name: string): string;
 export interface SourceSelection { package_path: string; local_name: string; domain: string }
 export function initialSourceSelections(discovery: SourceDiscoveryDisplay | null | undefined, options?: {
   defaultDomain?: string; existingNames?: readonly string[];
