@@ -469,3 +469,26 @@ def test_taking_upstream_for_a_part_absent_on_both_sides_needs_no_consent(source
     update = world.sources.get_update(update.update_id, tenant_id="acme")
     world.policy.held_skills = set()
     assert _apply(world, update, key="apply-upstream-licence").state == "complete"
+
+
+# One hit in SKILL.md is found twice: by the check of the file, with the file's
+# line, and by the check of the projected part that holds it, with a line
+# within that part. The card and the outcome show it once, at the file's line;
+# the part still keeps its own hold.
+
+def test_one_phone_number_in_skill_md_is_one_finding_at_its_file_line(community_world):
+    from oms.sources.reads import SourceReads
+    world = community_world
+    phone = world.package("a", "Invoices description", rule="Call +44 20 7946 0958 about receipts.").model_copy(
+        update={"package_path": "invoices"})
+    result = world.install_packages("expenses", "invoices", key="phone-once", packages={"invoices": phone})
+    held = next(row for row in result.outcomes if row.skill.skill_id == "invoices")
+    assert held.state == "awaiting_review"
+    assert held.detail == "Held: SKILL.md, line 7: looks like a phone number"
+    update = world.sources.open_update(INVOICES)
+    view = SourceReads(world.service, world.blobs).update(world.context, update.update_id)
+    assert [row.summary for row in view.check_findings] == ["SKILL.md, line 7: looks like a phone number"]
+    assert "7946" not in str(view.model_dump(mode="json")["check_findings"]) and "7946" not in held.detail
+    rule = next(row for row in update.plan.conflicts if row.part_id.startswith("rule:"))
+    assert "use_upstream" not in rule.allowed_choices
+    assert "source_text_hold" in rule.reason

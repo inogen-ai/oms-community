@@ -179,3 +179,27 @@ def test_the_update_view_lists_findings_with_a_summary():
     dumped = view.model_dump(mode="json")["check_findings"]
     assert dumped == [{"path": "a.md", "part_id": None, "line": 2, "category": "phone",
                        "summary": "a.md, line 2: looks like a phone number"}]
+
+
+def test_a_part_finding_is_shown_only_when_skill_md_has_no_finding_of_its_category():
+    from oms.sources.findings import distinct_findings
+    file_phone = CheckFinding(path="SKILL.md", line=9, category="phone")
+    part_phone = CheckFinding(part_id="rule:a", line=1, category="phone")
+    part_email = CheckFinding(part_id="rule:a", line=1, category="email")
+    other_phone = CheckFinding(path="notes.md", line=3, category="phone")
+    assert distinct_findings((file_phone, part_phone, part_email, other_phone, file_phone)) == (
+        file_phone, part_email, other_phone)
+    assert distinct_findings((part_phone,)) == (part_phone,)
+
+
+def test_the_update_view_shows_a_stored_skill_md_hit_once():
+    # A plan stored before findings were made distinct lists the hit twice.
+    from oms.sources.api_models import UpdateView
+    from oms.sources.models import Update
+    from tests.sources.merge_cases import merge_case
+    stored = merge_case().plan().model_copy(update={"check_findings": (
+        CheckFinding(path="SKILL.md", line=9, category="phone"),
+        CheckFinding(part_id="rule:a", line=1, category="phone"))})
+    update = Update(update_id="u", plan=stored, generation=1, status="open", review_item_id="r")
+    view = UpdateView(**update.model_dump(), stale=False, ownership={}, part_fingerprints={})
+    assert [row.summary for row in view.check_findings] == ["SKILL.md, line 9: looks like a phone number"]

@@ -13,6 +13,7 @@ from typing import Literal
 from oms.sources.compare import UnitDecision, compare_field, compare_prose, compare_rule, compare_unit, same_value
 from oms.sources.identity import align_projection as _align, moved_parts, sequence_key
 from oms.sources.files import compare_file, file_evidence, script_change
+from oms.sources.findings import distinct_findings
 from oms.sources.models import (
     Change, CheckFinding, CheckResult, Conflict, Evidence, GraphMapping, LocalState, MergePlan,
     PartKind, PlanFingerprint, PlanFlag, ProjectionPart, SourceSnapshot,
@@ -368,4 +369,4 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                      changes=tuple(changes[key] for key in ordered),
                      conflicts=tuple(conflicts[key] for key in sorted(conflicts)),
                      flags=tuple(sorted(flags, key=lambda flag: flag.value)),
-                     check_findings=tuple(dict.fromkeys(check_findings))[:MAX_FINDINGS])
+                     check_findings=distinct_findings(check_findings)[:MAX_FINDINGS])

@@ -38,6 +38,21 @@ def describe_finding(finding: CheckFinding) -> str:
     return f"{place}: {label}" if place else label[:1].upper() + label[1:]
 
 
+def distinct_findings(findings: Iterable[CheckFinding]) -> tuple[CheckFinding, ...]:
+    """The findings to show, each hit once.
+
+    A hit in SKILL.md is found twice: by the file check, at the file's line, and
+    by the check of the projected part that holds it, at a line within that part.
+    The file's finding is the one to show, so a part finding is dropped when
+    SKILL.md has a finding of the same category. Only the list shown changes;
+    each part keeps its own check result.
+    """
+    found = tuple(dict.fromkeys(findings))
+    in_skill = {finding.category for finding in found if finding.path == "SKILL.md"}
+    return tuple(finding for finding in found
+                 if not (finding.path is None and finding.part_id is not None and finding.category in in_skill))
+
+
 def describe_hold(findings: tuple[CheckFinding, ...]) -> str:
     if not findings:
         return "Held for safety review"

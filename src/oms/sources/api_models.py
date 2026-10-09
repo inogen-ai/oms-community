@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from oms.domain.models import SkillVersion
-from oms.sources.findings import describe_finding
+from oms.sources.findings import describe_finding, distinct_findings
 from oms.sources.models import CheckResult, DraftChoice, OperationResult, Page, SourceStatus, Update
 from oms.sources.primitives import DiscoveredPackage, Generation, PlanFingerprint, ResolvedRef
 
@@ -194,7 +194,9 @@ class UpdateView(Update):
     def check_findings(self) -> tuple[CheckFindingView, ...]:
         return tuple(CheckFindingView(path=finding.path, part_id=finding.part_id, line=finding.line,
                                       category=finding.category, summary=describe_finding(finding))
-                     for finding in self.plan.check_findings)
+                     # A card stored before findings were made distinct still lists a
+                     # SKILL.md hit twice; show it once there too.
+                     for finding in distinct_findings(self.plan.check_findings))
 
 
 class UndoView(UndoBody):
