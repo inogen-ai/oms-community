@@ -6,14 +6,16 @@ import { type PendingSourceRequest, type SourceOperation } from "@inogen/oms-cli
 import { useWorkspace } from "@/lib/workspace";
 import { useSourceAction, useSourceResource } from "@/lib/source-state";
 
-export function SourceActionFeedback({ action, subject = "request", outcomeLink }: { action: ReturnType<typeof useSourceAction>; subject?: SourcePendingSubject; outcomeLink?: ComponentProps<typeof SourceStatus>["outcomeLink"] }) {
-  return <>{action.error && <Notice kind="error">{action.error}</Notice>}{action.busy && <p role="status">Processing source request…</p>}{action.operation && <SourceStatus status={action.operation.state} operation={action.operation} outcomeLink={outcomeLink} />}
+/** `summary="install"` adds the install counts; only the GitHub install screen passes it. */
+export function SourceActionFeedback({ action, subject = "request", outcomeLink, summary }: { action: ReturnType<typeof useSourceAction>; subject?: SourcePendingSubject; outcomeLink?: ComponentProps<typeof SourceStatus>["outcomeLink"]; summary?: ComponentProps<typeof SourceStatus>["summary"] }) {
+  return <>{action.error && <Notice kind="error">{action.error}</Notice>}{action.busy && <p role="status">Processing source request…</p>}{action.operation && <SourceStatus status={action.operation.state} operation={action.operation} outcomeLink={outcomeLink} summary={summary} />}
     {action.recoveryKey && <SourcePendingNotice subject={subject} busy={action.busy} onCheck={() => void action.recover()}>
       {action.canRetryOriginalInput && <label className="oms-source-check"><input type="checkbox" disabled={action.busy} checked={action.retryOriginalInput} onChange={event => action.selectOriginalInputRetry(event.target.checked)} />Retry with the exact original input on the next submission</label>}
     </SourcePendingNotice>}</>;
 }
-/** Shows a "Check result" notice for each pending request this place can start; `match` narrows them (default: all). */
-export function SourceRecovery({ match = () => true }: { match?: (row: PendingSourceRequest) => boolean }) {
+/** Shows a "Check result" notice for each pending request this place can start; `match` narrows them (default: all).
+ * Pass `summary="install"` only when `match` admits install requests alone. */
+export function SourceRecovery({ match = () => true, summary }: { match?: (row: PendingSourceRequest) => boolean; summary?: ComponentProps<typeof SourceStatus>["summary"] }) {
   const { sources } = useWorkspace();
   const pending = useSourceResource(() => sources!.requests.pending(), [sources]);
   const action = useSourceAction();
@@ -27,7 +29,7 @@ export function SourceRecovery({ match = () => true }: { match?: (row: PendingSo
     }, `recover:${row.key}`)}>
       {row.requires_body && !row.operation_id && <p>Private input was not stored. Recovery checks the server receipt using the original request identity.</p>}
     </SourcePendingNotice>)}
-    <SourceActionFeedback action={{ ...action, recoveryKey: null }} />
+    <SourceActionFeedback action={{ ...action, recoveryKey: null }} summary={summary} />
     {action.operation && <p className="muted">This is the recorded result of the original request. Current source state is refreshed separately.</p>}
     {action.operation && "discovery_id" in action.operation && typeof action.operation.discovery_id === "string" && <Link href={`/skills/?github=add&discovery=${encodeURIComponent(action.operation.discovery_id)}`}>Open recovered discovery</Link>}
   </>;

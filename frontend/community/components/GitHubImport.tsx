@@ -38,7 +38,7 @@ export default function GitHubImport({ discoveryId, onInstalled }: { discoveryId
     if (result.committed || done.size) onInstalled();
   }
   return <>
-    <SourceRecovery match={row => installations(row) && row.key !== action.recoveryKey} /><SourceActionFeedback action={action} subject="import" outcomeLink={outcomeLink} />{error && <Notice kind="error">{error}</Notice>}
+    <SourceRecovery match={row => installations(row) && row.key !== action.recoveryKey} summary="install" /><SourceActionFeedback action={action} subject="import" outcomeLink={outcomeLink} summary="install" />{error && <Notice kind="error">{error}</Notice>}
     <SourceDiscoveryForm onDiscovered={discovered} subject="import" />
     {discovery && <SourceDiscovery discovery={discovery} selections={selections} domains={domains} defaultDomain="general" existingNames={(skills.data ?? []).flatMap(skill => [skill.id, skill.name])}
       onSelectionsChange={setSelections} onInstall={body => void install(body)} busy={action.busy} onLoadMore={cursor => {

@@ -13,6 +13,8 @@ export function SourceStatus(props: {
   exclusions?: readonly { skill_id: string; reasons: readonly string[] }[];
   /** Where an edition links one outcome (for example its held skill review card); return null for no link. */
   outcomeLink?: (outcome: SourceOutcomeDisplay) => { href: string; label: string } | null;
+  /** "install" shows the install counts ("2 installed, 1 held for review, 0 failed"); only install screens pass it. */
+  summary?: "install";
 }): ReactNode;
 export function sourceBulkExclusions(update: SourceCardUpdate): string[];
 export interface SourceUndoGuard {

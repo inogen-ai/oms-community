@@ -18,16 +18,22 @@ export const sourceFlagLabels = Object.freeze({
 const label = (values, key) => Object.hasOwn(values, key) ? values[key] : String(key).replaceAll("_", " ");
 const OUTCOMES = { applied: "Applied", awaiting_review: "Awaiting review", blocked: "Blocked", failed: "Failed", unchanged: "Unchanged" };
 
+// Install words only: other operations (apply, check, undo, bulk apply, local
+// import) use the same outcome rows, so a screen opts in with summary="install".
+// A skill that was already installed is counted only when there is one.
 function installSummary(outcomes) {
   if (!outcomes?.length) return "";
   const count = state => outcomes.filter(row => row.state === state).length;
-  return `${count("applied")} installed, ${count("awaiting_review")} held for review, ${count("failed")} failed`;
+  const unchanged = count("unchanged");
+  return [`${count("applied")} installed`, unchanged ? `${unchanged} already installed` : null,
+    `${count("awaiting_review")} held for review`, `${count("failed")} failed`].filter(Boolean).join(", ");
 }
 
 export function SourceStatus({ status = "unchecked", message, flags = [], retryNeeded = false,
-  firstReconciliation = false, ref, operation, exclusions = [], outcomeLink }) {
+  firstReconciliation = false, ref, operation, exclusions = [], outcomeLink, summary }) {
   const state = typeof status === "string" ? status : status?.state ?? "unchecked";
   const code = typeof status === "string" ? null : status?.code;
+  const counted = summary === "install" ? installSummary(operation?.outcomes) : "";
   return h("div", { className: "oms-source-status", role: "status", "aria-live": "polite", "aria-atomic": true },
     h("div", { className: "oms-source-badges" }, h(Badge, null, label(STATES, state)),
       retryNeeded ? h(Badge, null, "Retry needed") : null,
@@ -39,7 +45,7 @@ export function SourceStatus({ status = "unchecked", message, flags = [], retryN
     ref ? h("p", { className: "oms-source-ref" }, ref.kind === "branch" ? "Branch: " : "Pinned ", `${ref.kind === "branch" ? "" : `${ref.kind}: `}${ref.name}`, ref.commit ? h("code", null, ref.commit) : null) : null,
     operation ? h("div", { className: "oms-source-operation" },
       h("p", null, label(STATES, operation.state), operation.committed ? ". Committed results are retained." : ". No committed content is reported."),
-      installSummary(operation.outcomes) ? h("p", { className: "oms-source-summary" }, installSummary(operation.outcomes)) : null,
+      counted ? h("p", { className: "oms-source-summary" }, counted) : null,
       h("ul", null, operation.outcomes?.map((row, index) => {
         const link = outcomeLink?.(row);
         return h("li", { key: `${row.skill_id}-${index}` }, `${row.skill_id}: ${label(OUTCOMES, row.state)}`,

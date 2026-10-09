@@ -35,6 +35,14 @@ test("a copied source deep link survives reload and Check now carries source gua
   expect(state.violations).toEqual([]);
 });
 
+test("a check result lists its outcomes without install counts", async ({ page }) => {
+  await sourceFixture(page);
+  await page.goto("/import/?github=sources&source=source-1");
+  await page.getByRole("button", { name: "Check source now", exact: true }).click();
+  await expect(page.getByText("expenses: Awaiting review", { exact: true })).toBeVisible();
+  await expect(page.getByText(/held for review|\d+ installed/)).toHaveCount(0);
+});
+
 test("repository discovery starts unselected and preserves local installation names", async ({ page }) => {
   const state = await sourceFixture(page);
   await openAddSource(page);
@@ -317,6 +325,8 @@ test("a lost GitHub installation response recovers retained selections with the 
   await page.reload();
   await page.getByRole("button", { name: "Check result" }).click();
   await expect(page.getByRole("button", { name: "Check result" })).toHaveCount(0);
+  // The recovered result of an install request gets the install counts too.
+  await expect(page.getByText("0 installed, 1 already installed, 0 held for review, 0 failed", { exact: true })).toBeVisible();
   const installs = state.requests.filter(row => row.path === "/api/skill-source-installations");
   expect(installs).toHaveLength(2); expect(installs[0].key).toEqual(installs[1].key); expect(installs[0].body).toEqual(installs[1].body);
 });

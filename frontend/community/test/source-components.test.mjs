@@ -310,13 +310,31 @@ test("source status shows the install summary, per-skill detail and an edition l
     { skill_id: "held-one", state: "awaiting_review", update_id: "update-1", code: "safety_review_required", detail: "Held: visual-companion.md, line 214: looks like a phone number" },
     { skill_id: "bad", state: "failed", update_id: null, code: "package_unreadable", detail: "SKILL.md is missing" },
   ] };
-  const tree = component("SourceStatus", { status: "awaiting_review", operation, outcomeLink: outcome => outcome.update_id ? { href: "/x/" + outcome.update_id, label: "Open in review inbox" } : null });
+  const tree = component("SourceStatus", { status: "awaiting_review", operation, summary: "install", outcomeLink: outcome => outcome.update_id ? { href: "/x/" + outcome.update_id, label: "Open in review inbox" } : null });
   const shown = text(tree);
   assert.match(shown, /1 installed, 1 held for review, 1 failed/);
   assert.match(shown, /line 214: looks like a phone number/); assert.match(shown, /SKILL\.md is missing/);
   assert.equal(nodes(tree).find(node => node.type === "a" && node.props.href === "/x/update-1") !== undefined, true);
   assert.equal(nodes(tree).filter(node => node.type === "a").length, 1);
-  assert.doesNotMatch(text(component("SourceStatus", { status: "complete", operation: { ...operation, outcomes: [] } })), /installed/);
+  assert.doesNotMatch(text(component("SourceStatus", { status: "complete", summary: "install", operation: { ...operation, outcomes: [] } })), /installed/);
+  // A skill that was already installed is counted, and only when there is one.
+  const again = { ...operation, outcomes: [...operation.outcomes, { skill_id: "same", state: "unchanged", update_id: null, code: "already_installed", detail: null }] };
+  assert.match(text(component("SourceStatus", { status: "awaiting_review", summary: "install", operation: again })),
+    /1 installed, 1 already installed, 1 held for review, 1 failed/);
+});
+test("source status shows no install summary unless the screen asks for it", () => {
+  // Apply, check, undo, bulk apply, local import and recovery results use the same
+  // outcome rows, and "installed" or "held for review" would misname them.
+  const results = {
+    apply: { operation_id: "a", state: "complete", committed: true, outcomes: [{ skill_id: "s", state: "applied", update_id: null, code: null }] },
+    check: { operation_id: "c", state: "awaiting_review", committed: false, outcomes: [{ skill_id: "s", state: "awaiting_review", update_id: "u", code: null }] },
+    bulk: { operation_id: "b", state: "failed", committed: true, outcomes: [{ skill_id: "s", state: "applied", update_id: null, code: null }, { skill_id: "t", state: "failed", update_id: null, code: "stale" }] },
+  };
+  for (const [name, operation] of Object.entries(results)) {
+    const shown = text(component("SourceStatus", { status: operation.state, operation }));
+    assert.doesNotMatch(shown, /installed|held for review/, name);
+    assert.match(shown, /s: /, name);
+  }
 });
 test("a held install card explains why it is held and offers no skip or adopt", () => {
   const findings = [{ path: "SKILL.md", part_id: "section:intro", line: 3, category: "pii", summary: "Looks like a phone number" }, { path: "a.md", part_id: "file:a.md", line: 9, category: "secret", summary: "Looks like a key" }];
