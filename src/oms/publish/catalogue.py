@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from oms.domain.models import Skill, UsageEvent
 from oms.domain.repo import is_repo_skill
-from oms.domain.types import SourceRuntime
+from oms.domain.types import SkillStatus, SourceRuntime
 from oms.ports.blob_store import BlobStore
 from oms.ports.repositories import CatalogueRepository
 from oms.publish.publisher import Publisher
@@ -160,6 +160,9 @@ class SkillCatalogue:
                 # this is not a preference or a permission: a bundle is not a
                 # member of this list at all.
                 continue
+            if skill.status is SkillStatus.HELD:
+                # Held by the install safety check: not served to agents.
+                continue
             if not selection.can_read(skill):
                 continue
             if not selection.can_list(skill):
@@ -264,6 +267,9 @@ class SkillCatalogue:
         wanted = _key(name)
         for skill in self._store.skills_for_tenant(tenant_id):
             if _key(skill.id) != wanted and _key(skill.name) != wanted:
+                continue
+            if skill.status is SkillStatus.HELD:
+                # Same result as an unknown id.
                 continue
             if not selection.can_read(skill):
                 # `continue`, not `break`. Matching is on id OR display name and

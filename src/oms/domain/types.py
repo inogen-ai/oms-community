@@ -81,6 +81,10 @@ class SkillStatus(str, Enum):
     # lineage of whatever was anchored to it, survive. Distinct from FLAGGED:
     # flagged means nobody has looked yet, and those publish normally.
     REJECTED = "rejected"
+    # An installed skill whose safety check held it. The skill exists as an
+    # empty record so the person can see why, but it is never published and
+    # never served to agents.
+    HELD = "held"
 
 
 class SkillOrigin(str, Enum):

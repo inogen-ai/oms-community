@@ -622,6 +622,10 @@ class Publisher:
                 logger.info("publish: skipping %s, which was rejected at review",
                             skill.id)
                 continue
+            if skill.status is SkillStatus.HELD:
+                # The install safety check held this skill. It is never published.
+                logger.info("publish: skipping %s, which is held", skill.id)
+                continue
             body = self._render(skill)
             if has_nothing_to_say(body.skill_md):
                 logger.info("publish: skipping %s, which has no content yet", skill.id)
