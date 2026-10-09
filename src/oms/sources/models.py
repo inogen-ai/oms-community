@@ -108,6 +108,14 @@ class Conflict(Record):
     allowed_choices: tuple[Literal["keep_oms", "use_upstream", "merged_text"], ...]
 
 
+class CheckFinding(Record):
+    """Where a safety check held and why. It never carries the matched text."""
+    path: str | None = None
+    part_id: str | None = None
+    line: int | None = None
+    category: NonEmpty
+
+
 class MergePlan(Record):
     skill: SkillRef
     origin: OriginRef
@@ -117,6 +125,7 @@ class MergePlan(Record):
     changes: tuple[Change, ...] = ()
     conflicts: tuple[Conflict, ...] = ()
     flags: tuple[PlanFlag, ...] = ()
+    check_findings: tuple[CheckFinding, ...] = ()
 
     @model_validator(mode="after")
     def same_origin(self) -> Self:
@@ -144,6 +153,7 @@ class CheckResult(Record):
     state: Literal["passed", "held", "unavailable"]
     code: NonEmpty
     reasons: tuple[str, ...] = ()
+    findings: tuple[CheckFinding, ...] = ()
 
     def __bool__(self) -> bool:
         raise TypeError("Inspect check.state explicitly")

@@ -27,7 +27,7 @@ from oms.sources.links import parse_link
 from oms.sources.local_projection import project_local
 from oms.sources.merge import MergePolicy, build_plan
 from oms.sources.models import (
-    ActionContext, ApplyRequest, BulkApplyRequest, CheckRequest, CreateSourceRequest, DiscoveryRequest,
+    ActionContext, CheckResult, ApplyRequest, BulkApplyRequest, CheckRequest, CreateSourceRequest, DiscoveryRequest,
     DiscoveryResult, InstallRequest, LocalImportRequest, LocalBatchRequest, LinkRequest, RetargetRequest,
     UnlinkRequest, RelocateSourceRequest, RemoveSourceRequest, AutomationRequest, ScheduleRequest, UndoRequest,
     UndoStatus, SaveDraftRequest, UpdateRequest, Binding, DurableEvent, Evidence, Generations, LocalState,
@@ -40,6 +40,15 @@ from oms.sources.safety import FileCheck
 from oms.sources import review
 
 logger = logging.getLogger(__name__)
+
+
+def _file_result(check, path):
+    if check.state == "unavailable" or (check.state == "held" and not check.findings):
+        return check
+    findings = tuple(finding for finding in check.findings if finding.path == path)
+    if findings:
+        return CheckResult(state="held", code=check.code, findings=findings)
+    return CheckResult(state="passed", code="file_checked")
 
 
 class SourceService:
@@ -179,7 +188,8 @@ class SourceService:
     def _merge_policy(self, snapshot, check, **options):
         return MergePolicy(policy_version=self.builder.policy_version,
             projection_version=self.builder.projection_version, required_checks=(check,),
-            file_checks=tuple(FileCheck("file:" + entry.path, entry.digest, check) for entry in snapshot.manifest),
+            file_checks=tuple(FileCheck("file:" + entry.path, entry.digest, _file_result(check, entry.path))
+                              for entry in snapshot.manifest),
             **options)
 
     def install(self, context: ActionContext, request: InstallRequest, *, idempotency_key: str) -> OperationResult:

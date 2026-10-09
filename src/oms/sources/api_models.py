@@ -6,9 +6,10 @@ which workspace they act in comes from the edition's admission, never from the b
 from typing import Annotated, Literal
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from oms.domain.models import SkillVersion
+from oms.sources.findings import describe_finding
 from oms.sources.models import CheckResult, DraftChoice, OperationResult, Page, SourceStatus, Update
 from oms.sources.primitives import DiscoveredPackage, Generation, PlanFingerprint, ResolvedRef
 
@@ -171,6 +172,12 @@ class UpdateView(Update):
     ownership: dict[str, Literal["source", "shared", "local", "unknown"]]
     stale: bool
     resolved_check: CheckResult = CheckResult(state="unavailable", code="review_not_evaluated")
+
+    @computed_field
+    @property
+    def check_findings(self) -> tuple[dict, ...]:
+        return tuple({**finding.model_dump(exclude={"format_version"}), "summary": describe_finding(finding)}
+                     for finding in self.plan.check_findings)
 
 
 class UndoView(UndoBody):

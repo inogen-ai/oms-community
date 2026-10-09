@@ -14,7 +14,7 @@ from oms.sources.compare import UnitDecision, compare_field, compare_prose, comp
 from oms.sources.identity import align_projection as _align, moved_parts, sequence_key
 from oms.sources.files import compare_file, file_evidence, script_change
 from oms.sources.models import (
-    Change, CheckResult, Conflict, Evidence, GraphMapping, LocalState, MergePlan,
+    Change, CheckFinding, CheckResult, Conflict, Evidence, GraphMapping, LocalState, MergePlan,
     PartKind, PlanFingerprint, PlanFlag, ProjectionPart, SourceSnapshot,
 )
 from oms.sources.safety import FileCheck, SafetyRestriction, SourceSafety
@@ -192,9 +192,11 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
     file_checks = {check.part_id: check for check in policy.file_checks}
     if len(file_checks) != len(policy.file_checks):
         raise ValueError('duplicate file checks')
+    check_findings = []
     for check in policy.required_checks:
         if check.state != 'passed':
             flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
+            check_findings.extend(check.findings or (CheckFinding(category=f'policy:{check.code}'),))
     keys = sorted(prior.keys() | upstream.keys() | live.keys())
     # Order is compared as rank among shared siblings, not as absolute index, so
     # an upstream insertion that shifts everything below it is not a hundred
@@ -356,4 +358,5 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                          candidate_digest=_digest(incoming)),
                      changes=tuple(changes[key] for key in ordered),
                      conflicts=tuple(conflicts[key] for key in sorted(conflicts)),
-                     flags=tuple(sorted(flags, key=lambda flag: flag.value)))
+                     flags=tuple(sorted(flags, key=lambda flag: flag.value)),
+                     check_findings=tuple(dict.fromkeys(check_findings)))

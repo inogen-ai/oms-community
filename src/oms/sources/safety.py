@@ -18,7 +18,8 @@ from oms.security.constraint_patterns import shared_danger, targets_the_system
 from oms.security.injection import DeterministicScreen
 from oms.sources.errors import SourceConflict
 from oms.sources.files import verified_bytes
-from oms.sources.models import CheckResult, ManifestEntry, MergePlan, PartKind, PlanFlag, ProjectionPart, SourceSnapshot
+from oms.sources.findings import text_findings
+from oms.sources.models import CheckFinding, CheckResult, ManifestEntry, MergePlan, PartKind, PlanFlag, ProjectionPart, SourceSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class SourceSafety:
         if type(self.max_text_chars) is not int or self.max_text_chars <= 0:
             raise ValueError('text check budget must be a positive integer')
 
-    def check_text(self, text: str) -> CheckResult:
+    def check_text(self, text: str, *, path: str | None = None, part_id: str | None = None) -> CheckResult:
         # Exact types, not isinstance: a subclass of either could be backed by
         # a model, and the promise that a source check never infers anything
         # (spec §7.7) is kept by refusing to run with anything but these two.
@@ -66,12 +67,16 @@ class SourceSafety:
             reasons.append('text_requires_sanitisation')
         if screened.score >= 0.5:
             reasons.append('injection_screen_hold')
-        return (CheckResult(state='held', code='source_text_hold', reasons=tuple(reasons)) if reasons
-                else CheckResult(state='passed', code='source_text_checked'))
+        if not reasons:
+            return CheckResult(state='passed', code='source_text_checked')
+        findings = text_findings(text, clean.redactions, screened, path=path, part_id=part_id)
+        return CheckResult(state='held', code='source_text_hold', reasons=tuple(reasons), findings=findings)
 
-    def check_file(self, body: bytes, *, maximum_bytes: int = 10 * 1024 * 1024) -> CheckResult:
+    def check_file(self, body: bytes, *, path: str | None = None,
+                   maximum_bytes: int = 10 * 1024 * 1024) -> CheckResult:
         if len(body) > maximum_bytes:
-            return CheckResult(state='held', code='file_size_limit')
+            return CheckResult(state='held', code='file_size_limit',
+                               findings=(CheckFinding(path=path, category='file_size'),))
         # A binary file gets size and structure checks only; the code says so,
         # and the preview shows it, instead of implying its content was read.
         try:
@@ -80,7 +85,7 @@ class SourceSafety:
             return CheckResult(state='passed', code='binary_structure_only')
         if '\x00' in text:
             return CheckResult(state='passed', code='binary_structure_only')
-        return self.check_text(text)
+        return self.check_text(text, path=path)
 
 
 def eligibility(plan: MergePlan, *, mode: Literal['manual', 'automatic', 'bulk'],
@@ -118,21 +123,44 @@ def screen_snapshot(snapshot: SourceSnapshot, blobs: BlobStore,
     # The bytes are read back from custody and verified against the manifest
     # digest before anything looks at them, so what a pass attests is the
     # retained package itself, not whatever was in memory at fetch time.
+    # Every file and part is checked so the review can name each one that held.
+    first: CheckResult | None = None
+    unavailable = False
+    findings: list[CheckFinding] = []
+
+    def note(result: CheckResult) -> None:
+        nonlocal first
+        if result.state != "passed" and first is None:
+            first = result
+        findings.extend(result.findings)
+
     for entry in snapshot.manifest:
         try:
             body = verified_bytes(blobs, entry)
         except (SourceConflict, OSError):
-            return CheckResult(state="unavailable", code="package_custody_unavailable")
-        result = checks.check_file(body)
-        if result.state != "passed":
-            return result
+            unavailable = True
+            note(CheckResult(state="unavailable", code="package_custody_unavailable", findings=(
+                CheckFinding(path=entry.path, category="check_unavailable:package_custody_unavailable"),)))
+            continue
+        result = checks.check_file(body, path=entry.path)
+        if result.state == "unavailable":
+            unavailable = True
+            result = result.model_copy(update={"findings": result.findings or (
+                CheckFinding(path=entry.path, category=f"check_unavailable:{result.code}"),)})
+        note(result)
     for part in snapshot.effective_projection:
         if part.evidence.kind == "known":
             for text in texts(part.evidence.value):
-                result = checks.check_text(text)
-                if result.state != "passed":
-                    return result
-    return CheckResult(state="passed", code="package_bytes_checked")
+                result = checks.check_text(text, part_id=part.part_id)
+                if result.state == "unavailable":
+                    unavailable = True
+                    result = result.model_copy(update={"findings": result.findings or (
+                        CheckFinding(part_id=part.part_id, category=f"check_unavailable:{result.code}"),)})
+                note(result)
+    if first is None:
+        return CheckResult(state="passed", code="package_bytes_checked")
+    return CheckResult(state="unavailable" if unavailable else "held", code=first.code,
+                       reasons=first.reasons, findings=tuple(findings[:100]))
 
 
 def texts(value):
@@ -162,14 +190,14 @@ def screen_selected(snapshot: SourceSnapshot, writes: tuple[ProjectionPart, ...]
             if entry is None or part.evidence.source_digest != entry.digest:
                 return CheckResult(state="unavailable", code="file_manifest_mismatch")
             try:
-                result = checks.check_file(verified_bytes(blobs, entry))
+                result = checks.check_file(verified_bytes(blobs, entry), path=entry.path)
             except (SourceConflict, OSError):
                 return CheckResult(state="unavailable", code="package_custody_unavailable")
             if result.state != "passed":
                 return result
         else:
             for text in texts(part.evidence.value):
-                result = checks.check_text(text)
+                result = checks.check_text(text, part_id=part.part_id)
                 if result.state != "passed":
                     return result
     return CheckResult(state="passed", code="resolved_writes_checked")
