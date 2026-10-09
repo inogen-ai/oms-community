@@ -203,3 +203,10 @@ def test_the_update_view_shows_a_stored_skill_md_hit_once():
     update = Update(update_id="u", plan=stored, generation=1, status="open", review_item_id="r")
     view = UpdateView(**update.model_dump(), stale=False, ownership={}, part_fingerprints={})
     assert [row.summary for row in view.check_findings] == ["SKILL.md, line 9: looks like a phone number"]
+
+
+def test_policy_and_unavailable_codes_read_as_words():
+    assert describe_finding(CheckFinding(category="policy:source_constraint_conflict")) == (
+        "Conflicts with a workspace safety rule (source constraint conflict)")
+    assert describe_finding(CheckFinding(path="b.md", category="check_unavailable:text_check_limit")) == (
+        "b.md: a required check could not run (text check limit)")

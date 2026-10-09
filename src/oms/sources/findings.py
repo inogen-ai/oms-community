@@ -23,10 +23,11 @@ def _label(category: str) -> str:
     kind, _, detail = category.partition(":")
     if kind == "injection" and detail:
         return f"looks like an instruction to an AI model ({detail})"
+    # Codes are snake_case; the reviewer reads them as words.
     if kind == "check_unavailable" and detail:
-        return f"a required check could not run ({detail})"
+        return f"a required check could not run ({detail.replace('_', ' ')})"
     if kind == "policy" and detail:
-        return f"conflicts with a workspace safety rule ({detail})"
+        return f"conflicts with a workspace safety rule ({detail.replace('_', ' ')})"
     return f"was held ({category})"
 
 
