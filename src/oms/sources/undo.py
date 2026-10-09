@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from pydantic import TypeAdapter
 
 from oms.domain.models import Artefact, ContentBlock, Edge, Example, Rule, Section
-from oms.domain.types import EdgeType, SkillVersionCause
+from oms.domain.types import EdgeType, SkillStatus, SkillVersionCause
 from oms.sources import operations, review
 from oms.sources.errors import SourceConflict, SourceError, SourceNotFound, SourceForbidden
 from oms.sources.local_projection import project_local
@@ -323,17 +323,18 @@ def validate_retained(graph, undo):
 
 
 def restore_status(graph, undo):
-    """Put back the skill's status from before the apply.
+    """Hold the skill again when the apply being undone activated a held install.
 
     The apply that activated a held install (spec 5.3) is the only apply that
-    changes a status, so its undo holds the skill again: held content is never
-    live without a reviewed apply standing. Any status change since the apply
+    changes a status, so HELD is the only status undo puts back: held content is
+    never live without a reviewed apply standing. A receipt that records any
+    other status leaves the status alone. Any status change since the apply
     advanced the skill's content generation and has already refused this undo.
     """
     ref = undo.origin.skill
     skill = graph.get_skill(ref.skill_id, tenant_id=ref.tenant_id)
-    if undo.previous_skill_status is not None and skill is not None and skill.status != undo.previous_skill_status:
-        graph.upsert_skill(replace(skill, status=undo.previous_skill_status))
+    if undo.previous_skill_status == SkillStatus.HELD and skill is not None and skill.status != SkillStatus.HELD:
+        graph.upsert_skill(replace(skill, status=SkillStatus.HELD))
 
 
 def restore(graph, undo):

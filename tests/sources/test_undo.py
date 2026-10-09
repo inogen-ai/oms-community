@@ -206,3 +206,19 @@ def test_later_historical_supersession_change_disables_undo(source_world, monkey
     source_world.store.attach_edge(Edge(EdgeType.SUPERSEDES, "later-successor", parent.id), tenant_id="acme")
     request = undo_request(source_world, applied)
     assert not source_world.service.undo_status(source_world.context, request.undo_id).available
+
+
+@pytest.mark.parametrize("previous", ["auto", "flagged", "rejected"])
+def test_undo_puts_back_only_a_held_status(source_world, previous):
+    # The apply of a held install is the only apply that changes a status, so
+    # undo restores HELD and nothing else, whatever a receipt records.
+    from types import SimpleNamespace
+    from oms.domain.types import SkillStatus
+    from oms.sources.undo import restore_status
+    world = source_world
+    world.install()
+    origin = SimpleNamespace(skill=world.skill)
+    restore_status(world.store, SimpleNamespace(origin=origin, previous_skill_status=SkillStatus(previous)))
+    assert world.store.get_skill("expenses", tenant_id="acme").status is SkillStatus.ACTIVE
+    restore_status(world.store, SimpleNamespace(origin=origin, previous_skill_status=SkillStatus.HELD))
+    assert world.store.get_skill("expenses", tenant_id="acme").status is SkillStatus.HELD
