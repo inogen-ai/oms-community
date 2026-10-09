@@ -556,26 +556,33 @@ def walk_skill_body_sections(
     if i < n and lines[i].lstrip().startswith("# ") and not lines[i].lstrip().startswith("## "):
         i += 1   # consume the H1
 
+    # A `##` line inside a fenced code block is example text (a SKILL.md
+    # template, say), not a heading, so it neither opens nor ends a section.
+    heading_at: list[bool] = []
+    fenced = False
+    for line in lines:
+        heading_at.append(not fenced and line.lstrip().startswith("## "))
+        if _FENCE.match(line):
+            fenced = not fenced
+
     # Split into (heading, body) segments: the intro, then each `##` block.
     segments: list[tuple[str, str]] = []
     intro_buf: list[str] = []
     while i < n:
-        stripped = lines[i].lstrip()
-        if stripped.startswith("## "):
+        if heading_at[i]:
             break
         intro_buf.append(lines[i])
         i += 1
     if any(line.strip() for line in intro_buf):
         segments.append(("(intro)", "\n".join(intro_buf).strip()))
     while i < n:
-        stripped = lines[i].lstrip()
-        if not stripped.startswith("## "):
+        if not heading_at[i]:
             i += 1
             continue
-        heading = stripped[3:].strip()
+        heading = lines[i].lstrip()[3:].strip()
         i += 1
         body_lines: list[str] = []
-        while i < n and not lines[i].lstrip().startswith("## "):
+        while i < n and not heading_at[i]:
             body_lines.append(lines[i])
             i += 1
         segments.append((heading, "\n".join(body_lines)))

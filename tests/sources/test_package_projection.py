@@ -40,6 +40,19 @@ def test_lossy_heading_collision_is_rejected_before_projection(tmp_path):
         builder.build(package, origin, snapshot_id="snapshot")
 
 
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_a_heading_inside_a_fenced_block_is_example_text_not_a_section(tmp_path, fence):
+    # A skill that shows a SKILL.md template repeats its own headings inside the code block
+    # (obra/superpowers writing-skills does), and those must not split or collide with real sections.
+    text = (f"---\nname: expenses\n---\n## Overview\nFile receipts.\n## Template\n{fence}markdown\n"
+            f"## Overview\nWhat the skill does.\n{fence}\n## Rules\n- Keep receipts.\n")
+    builder, package, origin = acquired(tmp_path, text)
+    snapshot = builder.build(package, origin, snapshot_id="snapshot")
+    sections = [part.evidence.value for part in snapshot.parsed_projection if part.kind == "section"]
+    assert [section["heading"] for section in sections] == ["Overview", "Template", "Rules"]
+    assert "## Overview\nWhat the skill does." in sections[1]["body"]
+
+
 def test_rule_units_use_exact_text_instead_of_lossy_import_id(tmp_path):
     builder, package, origin = acquired(tmp_path, "---\nname: expenses\n---\n## Rules\n- Save café receipts.\n- Save cafe receipts!\n")
     snapshot = builder.build(package, origin, snapshot_id="snapshot")
