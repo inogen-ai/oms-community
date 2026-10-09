@@ -17,7 +17,28 @@ from oms.domain.redaction import Redaction
 from oms.ingestion.schema import ExecutionContext, clip_context_fields
 
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
-_PHONE = re.compile(r"(?<!\w)(\+?\d[\d\s()-]{7,}\d)(?!\w)")
+_PHONE_CANDIDATE = re.compile(r"(?<![\w/])(\+?\d[\d \t()-]{7,}\d)(?![\w/])")
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T[\d:.]+)?")
+_RANGE = re.compile(r"[1-9]\d*-\d+")
+
+
+class _PhonePattern:
+    """Phone candidates minus shapes that are never phone numbers.
+
+    A number does not run across a line, and a date, a plain range (`300000-600000`,
+    `2019-2024`) or a path segment (`/12345-1706000000/`) is not a phone number. Real
+    numbers keep a leading `+` or `0`, spaces, brackets or more than one hyphen.
+    """
+
+    def finditer(self, text: str):
+        for match in _PHONE_CANDIDATE.finditer(text):
+            value = match.group(0)
+            if _ISO_DATE.fullmatch(value) or _RANGE.fullmatch(value):
+                continue
+            yield match
+
+
+_PHONE = _PhonePattern()
 
 
 @dataclass(frozen=True)
