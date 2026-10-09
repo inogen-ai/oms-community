@@ -323,10 +323,11 @@ def validate_retained(graph, undo):
 
 
 def restore_status(graph, undo):
-    """Put back the skill's status from before the apply (ruling 2 on spec 5.3).
+    """Put back the skill's status from before the apply.
 
-    The apply that activated a held install is the only apply that changes a
-    status, so its undo holds the skill again. Any status change since the apply
+    The apply that activated a held install (spec 5.3) is the only apply that
+    changes a status, so its undo holds the skill again: held content is never
+    live without a reviewed apply standing. Any status change since the apply
     advanced the skill's content generation and has already refused this undo.
     """
     ref = undo.origin.skill

@@ -306,12 +306,13 @@ CONTENT_KINDS = frozenset({PartKind.RULE, PartKind.SECTION, PartKind.EXAMPLE, Pa
 
 
 def installs_content(selected: tuple[ProjectionPart, ...]) -> bool:
-    """Whether an apply writes any content, as a held install needs (spec D6, rulings 1 and 7).
+    """Whether an apply writes any content, as the apply of a held install must (spec 5.3, D6).
 
-    A selected rule, section, example or file part counts when it carries a known
-    value, upstream's or the reviewer's merged text. Fields do not count: a skill
-    with only a description or tags is still empty to the publisher. Nor does a
-    removal.
+    An apply that writes none would leave an empty skill active and reconciled,
+    the state Skip and Adopt are refused for. A selected rule, section, example
+    or file part counts when it carries a known value, upstream's or the
+    reviewer's merged text. Fields do not count: a skill with only a description
+    or tags is still empty to the publisher. Nor does a removal.
     """
     return any(part.kind in CONTENT_KINDS and part.evidence.kind == "known" for part in selected)
 

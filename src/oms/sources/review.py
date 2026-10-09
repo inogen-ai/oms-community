@@ -232,27 +232,29 @@ def selected_writes(update: Update, incoming: SourceSnapshot, local: LocalState,
         if not preview and not unkept.issubset(removal_consents):
             raise SourceConflict("consent_required", "linked removal consent required")
         selected.append(part)
-    require_sections(aligned, local, tuple(selected))
+    require_parents(aligned, local, tuple(selected))
     return aligned, tuple(selected), frozenset(manual)
 
 
-def require_sections(aligned: SourceSnapshot, local: LocalState, selected: tuple[ProjectionPart, ...]) -> None:
-    """Refuse a rule taken into a section that will not exist after the apply.
+def require_parents(aligned: SourceSnapshot, local: LocalState, selected: tuple[ProjectionPart, ...]) -> None:
+    """Refuse a rule or example taken without the part that holds it.
 
-    `apply_parts` places a rule in the section its value names. When the reviewer
-    keeps that section out, as on a card with no base where every section is new,
-    the graph has no such section and the store fails with an untyped KeyError.
-    The sections that exist afterwards are the skill's own, plus the sections
-    taken, minus the sections removed; identities are resolved as `apply_parts`
-    resolves them.
+    `apply_parts` places a rule in the section its value names, and attaches an
+    example to its parent, which the store picks as the section, else the rule,
+    else the skill (`effective_example_parent`). When the reviewer keeps that
+    parent out, as on a card with no base where every part is new, the graph has
+    no such node and the store fails with an untyped KeyError. The sections and
+    rules there afterwards are the skill's own, plus those taken, minus those
+    removed; identities are resolved as `apply_parts` resolves them.
     """
     kinds = {part.part_id: part.kind for part in local.parts}
     live = {row.part_id: row for row in local.graph_mappings}
     mapped = {row.part_id: row for row in aligned.graph_mappings}
-    sections = {row.entity_ids[0] for row in local.graph_mappings
-                if kinds.get(row.part_id) == PartKind.SECTION and len(row.entity_ids) == 1}
+    present = {kind: {row.entity_ids[0] for row in local.graph_mappings
+                      if kinds.get(row.part_id) == kind and len(row.entity_ids) == 1}
+               for kind in (PartKind.SECTION, PartKind.RULE)}
     for part in selected:
-        if part.kind != PartKind.SECTION:
+        if part.kind not in present:
             continue
         known = part.evidence.kind == "known"
         row = (mapped.get(part.part_id) or live.get(part.part_id)) if known else (
@@ -260,10 +262,19 @@ def require_sections(aligned: SourceSnapshot, local: LocalState, selected: tuple
         if row is None or len(row.entity_ids) != 1:
             continue
         if known:
-            sections.add(row.entity_ids[0])
+            present[part.kind].add(row.entity_ids[0])
         else:
-            sections.discard(row.entity_ids[0])
+            present[part.kind].discard(row.entity_ids[0])
+    sections, rules = present[PartKind.SECTION], present[PartKind.RULE]
     for part in selected:
-        if (part.kind == PartKind.RULE and part.evidence.kind == "known" and isinstance(part.evidence.value, dict)
-                and part.evidence.value.get("section_id") and part.evidence.value["section_id"] not in sections):
+        value = part.evidence.value
+        if part.evidence.kind != "known" or not isinstance(value, dict):
+            continue
+        if part.kind == PartKind.RULE and value.get("section_id") and value["section_id"] not in sections:
             raise SourceConflict("rule_requires_section", "take the section that holds this rule as well")
+        if part.kind == PartKind.EXAMPLE:
+            section, rule = value.get("parent_section_id"), value.get("parent_rule_id")
+            if section is not None and section not in sections or section is None and rule is not None \
+                    and rule not in rules:
+                raise SourceConflict("example_requires_parent",
+                                     "take the rule or section that holds this example as well")
