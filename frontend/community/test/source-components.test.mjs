@@ -381,3 +381,20 @@ test("a finding with a path takes the reviewer to that file's change on the card
   try { shows[0].props.onClick(); } finally { delete globalThis.document; }
   assert.deepEqual(calls, ["scroll", "focus"]);
 });
+test("a held install with no hold left is titled as a new skill and drops the hold section", () => {
+  // After a recheck passes, the plan has no hold flag and no findings; the
+  // skill is still not live until Apply, and Skip and Adopt stay hidden.
+  const base = update({ conflicts: [], flags: ["first_reconciliation"], changes: [change("section:intro", { action: "add" })] });
+  const props = { update: { ...base, held_install: true, check_findings: [] }, title: "Visual", partFingerprints: { "section:intro": "p" },
+    onSkip() {}, onAdopt() {}, onApply() {} };
+  const tree = component("SourceUpdateCard", props);
+  const shown = text(tree);
+  assert.match(shown, /New skill from GitHub: Visual/);
+  assert.doesNotMatch(shown, /held for review|Why this is held|Required checks hold this new skill/);
+  assert.match(shown, /It is not live until you apply\./);
+  assert.equal(button(tree, "Skip this version"), undefined);
+  for (const flags of [["safety_hold"], ["required_check_unavailable"]]) {
+    const held = text(component("SourceUpdateCard", { ...props, update: { ...props.update, plan: { ...props.update.plan, flags } } }));
+    assert.match(held, /New skill held for review: Visual/); assert.match(held, /Required checks hold this new skill\./);
+  }
+});

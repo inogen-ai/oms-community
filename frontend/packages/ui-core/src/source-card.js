@@ -102,12 +102,17 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
   };
   const action = (callback, enabled, payload) => () => { if (!disabled && enabled && callback) callback(payload); };
   const heldInstall = update.held_install === true;
+  // After a recheck passes the plan has no hold flag and no findings: the skill
+  // is still new and not live until Apply, but nothing holds it any more.
+  const stillHeld = heldInstall && (!!update.check_findings?.length
+    || update.plan.flags.some(flag => ["safety_hold", "required_check_unavailable"].includes(flag)));
   const name = title || update.plan.skill.skill_id;
-  return h(Panel, { title: heldInstall ? `New skill held for review: ${name}` : name, className: "oms-source-card", "aria-busy": busy },
+  return h(Panel, { title: stillHeld ? `New skill held for review: ${name}` : heldInstall ? `New skill from GitHub: ${name}` : name, className: "oms-source-card", "aria-busy": busy },
     h(SourceStatus, { status: closed ? update.status : "awaiting_review", flags: closed ? [] : update.plan.flags, ref }),
     closed && update.plan.flags.length ? h("p", null, "Flags recorded at review: ", update.plan.flags.map(flag => Object.hasOwn(sourceFlagLabels, flag) ? sourceFlagLabels[flag] : flag.replaceAll("_", " ")).join("; ")) : null,
-    heldInstall && !closed ? h("section", { className: "oms-source-held", "aria-label": "Why this is held" }, h("h4", null, "Why this is held"),
-      update.check_findings?.length ? h("ul", null, update.check_findings.map((finding, index) => {
+    heldInstall && !closed ? h("section", { className: "oms-source-held", "aria-label": stillHeld ? "Why this is held" : "New skill" },
+      stillHeld ? h("h4", null, "Why this is held") : null,
+      !stillHeld ? null : update.check_findings?.length ? h("ul", null, update.check_findings.map((finding, index) => {
         // A finding in a supporting file opens that file's change row, where its preview is (spec 7.4).
         const file = finding.path && update.plan.changes.some(change => change.part_id === `file:${finding.path}`) ? `file:${finding.path}` : null;
         return h("li", { key: `${finding.part_id}-${finding.line}-${index}` }, finding.summary,
