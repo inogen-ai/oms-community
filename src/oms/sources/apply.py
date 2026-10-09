@@ -302,18 +302,18 @@ def remove_part(graph, ref, part, mapping):
         graph.remove_section(identifier, tenant_id=tenant)
 
 
-IDENTITY_FIELDS = frozenset({"field:name", "field:domain"})
+CONTENT_KINDS = frozenset({PartKind.RULE, PartKind.SECTION, PartKind.EXAMPLE, PartKind.FILE})
 
 
 def installs_content(selected: tuple[ProjectionPart, ...]) -> bool:
-    """Whether an apply writes any content, as a held install needs (spec D6, ruling 1).
+    """Whether an apply writes any content, as a held install needs (spec D6, rulings 1 and 7).
 
-    A selected part counts when it carries a known value, upstream's or the
-    reviewer's merged text: a rule, section, example, file, or a field other than
-    the identity fields. A removal does not count, and nor do name and domain,
-    which `apply_parts` never writes.
+    A selected rule, section, example or file part counts when it carries a known
+    value, upstream's or the reviewer's merged text. Fields do not count: a skill
+    with only a description or tags is still empty to the publisher. Nor does a
+    removal.
     """
-    return any(part.evidence.kind == "known" and part.part_id not in IDENTITY_FIELDS for part in selected)
+    return any(part.kind in CONTENT_KINDS and part.evidence.kind == "known" for part in selected)
 
 
 def capture_apply(service, context, request, bound):

@@ -232,4 +232,38 @@ def selected_writes(update: Update, incoming: SourceSnapshot, local: LocalState,
         if not preview and not unkept.issubset(removal_consents):
             raise SourceConflict("consent_required", "linked removal consent required")
         selected.append(part)
+    require_sections(aligned, local, tuple(selected))
     return aligned, tuple(selected), frozenset(manual)
+
+
+def require_sections(aligned: SourceSnapshot, local: LocalState, selected: tuple[ProjectionPart, ...]) -> None:
+    """Refuse a rule taken into a section that will not exist after the apply.
+
+    `apply_parts` places a rule in the section its value names. When the reviewer
+    keeps that section out, as on a card with no base where every section is new,
+    the graph has no such section and the store fails with an untyped KeyError.
+    The sections that exist afterwards are the skill's own, plus the sections
+    taken, minus the sections removed; identities are resolved as `apply_parts`
+    resolves them.
+    """
+    kinds = {part.part_id: part.kind for part in local.parts}
+    live = {row.part_id: row for row in local.graph_mappings}
+    mapped = {row.part_id: row for row in aligned.graph_mappings}
+    sections = {row.entity_ids[0] for row in local.graph_mappings
+                if kinds.get(row.part_id) == PartKind.SECTION and len(row.entity_ids) == 1}
+    for part in selected:
+        if part.kind != PartKind.SECTION:
+            continue
+        known = part.evidence.kind == "known"
+        row = (mapped.get(part.part_id) or live.get(part.part_id)) if known else (
+            live.get(part.part_id) or mapped.get(part.part_id))
+        if row is None or len(row.entity_ids) != 1:
+            continue
+        if known:
+            sections.add(row.entity_ids[0])
+        else:
+            sections.discard(row.entity_ids[0])
+    for part in selected:
+        if (part.kind == PartKind.RULE and part.evidence.kind == "known" and isinstance(part.evidence.value, dict)
+                and part.evidence.value.get("section_id") and part.evidence.value["section_id"] not in sections):
+            raise SourceConflict("rule_requires_section", "take the section that holds this rule as well")

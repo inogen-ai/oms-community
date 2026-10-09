@@ -214,35 +214,73 @@ def test_a_deleted_held_skill_can_be_held_again(source_world):
     assert world.sources.open_update(INVOICES) is not None
 
 
-# Ruling 1: an Apply that installs nothing would leave an empty skill active and
-# reconciled, the state D6 refuses for Skip and Adopt.
+# Rulings 1 and 7: an Apply that installs no content would leave an empty skill
+# active and reconciled, the state D6 refuses for Skip and Adopt. Fields alone
+# are not content: the publisher still treats such a skill as empty.
 
-def test_an_apply_that_installs_nothing_is_refused(source_world):
+@pytest.mark.parametrize("taken", [(), ("field:description",),
+                                   ("field:description", "field:tags", "field:document_mode")],
+                         ids=["nothing", "description", "every-field"])
+def test_an_apply_that_installs_no_content_is_refused(source_world, taken):
     world = source_world
-    update = _keep_all_but(world, _held_card(world), "keep-everything")
+    update = _keep_all_but(world, _held_card(world), "keep-everything", taken=set(taken))
     world.policy.held_skills = set()
     with pytest.raises(SourceConflict) as refused:
         _apply(world, update, key="apply-nothing")
     assert refused.value.code == "held_install_requires_content"
-    assert world.store.get_skill("invoices", tenant_id="acme").status.value == "held"
+    skill = world.store.get_skill("invoices", tenant_id="acme")
+    assert skill.status.value == "held" and skill.description == ""
     assert world.sources.open_update(INVOICES) == update
     binding = world.sources.get_binding(INVOICES)
     assert binding.baseline is None and binding.first_reconciliation
 
 
-@pytest.mark.parametrize("taken", ["field:description", "section"])
-def test_an_apply_that_installs_one_part_is_allowed(source_world, taken):
-    # Content is any selected part with a known incoming value other than the
-    # identity fields (name and domain): a rule, section, example, file, or a
-    # field such as the description.
+def test_an_apply_that_installs_one_section_is_allowed(source_world):
+    # Content is a rule, section, example or file part with a known value.
     world = source_world
     update = _held_card(world)
-    part = taken if taken.startswith("field:") else next(
-        row.part_id for row in update.plan.conflicts if row.part_id.startswith(taken + ":"))
-    update = _keep_all_but(world, update, "keep-all-but-one", taken={part})
+    section = next(row.part_id for row in update.plan.conflicts if row.part_id.startswith("section:"))
+    update = _keep_all_but(world, update, "keep-all-but-one", taken={section})
     world.policy.held_skills = set()
     assert _apply(world, update, key="apply-one").state == "complete"
     assert world.store.get_skill("invoices", tenant_id="acme").status.value == "active"
+
+
+# Ruling 8: a rule taken without the section that holds it is refused before
+# anything is written, with a code the reviewer can act on.
+
+def _rule_and_its_section(world, update):
+    incoming = world.sources.get_snapshot(update.plan.incoming)
+    rule = next(part for part in incoming.effective_projection if part.part_id.startswith("rule:"))
+    section = next(row.part_id for row in incoming.graph_mappings
+                   if row.entity_ids == (rule.evidence.value["section_id"],))
+    return rule.part_id, section
+
+
+def test_taking_a_rule_without_its_section_is_refused(source_world):
+    world = source_world
+    update = _held_card(world)
+    rule, _ = _rule_and_its_section(world, update)
+    update = _keep_all_but(world, update, "rule-only", taken={rule})
+    world.policy.held_skills = set()
+    with pytest.raises(SourceConflict) as refused:
+        _apply(world, update, key="apply-rule-only")
+    assert refused.value.code == "rule_requires_section"
+    assert world.store.get_skill("invoices", tenant_id="acme").status.value == "held"
+    assert not world.store.rules_for_skill("invoices", tenant_id="acme")
+    assert world.sources.open_update(INVOICES) == update
+
+
+def test_taking_a_rule_with_its_section_is_allowed(source_world):
+    world = source_world
+    update = _held_card(world)
+    rule, section = _rule_and_its_section(world, update)
+    update = _keep_all_but(world, update, "rule-and-section", taken={rule, section})
+    world.policy.held_skills = set()
+    assert _apply(world, update, key="apply-rule-and-section").state == "complete"
+    placed = [rule.body for row in world.store.sections_for_skill("invoices", tenant_id="acme")
+              for rule in world.store.rules_for_section(row.id, tenant_id="acme")]
+    assert placed == ["Keep receipts."]
 
 
 def test_an_active_skill_may_apply_a_card_that_keeps_everything(source_world):
