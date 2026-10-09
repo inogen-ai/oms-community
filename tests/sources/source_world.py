@@ -17,6 +17,10 @@ class Policy:
     held = False
     policy_generation = 0
 
+    def __init__(self):
+        # Skills held by id, so one package of a batch can be held and the rest pass.
+        self.held_skills = set()
+
     def revision(self, context, graph, reviews, skills):
         return str(self.policy_generation)
 
@@ -35,7 +39,8 @@ class Policy:
         pass
 
     def screen(self, snapshot, local):
-        return CheckResult(state="held" if self.held else "passed", code="fixture")
+        held = self.held or snapshot.ref.origin.skill.skill_id in self.held_skills
+        return CheckResult(state="held" if held else "passed", code="fixture")
 
     def screen_resolved(self, snapshot, local, writes, *, manifest=None):
         result = self.screen(snapshot, local)
@@ -119,19 +124,79 @@ class SourceWorld:
         return self.case.sources
 
     def package(self, revision, description, *, prose="Keep original documents.", tags=("receipts",), procedure_heading="Procedure", example=None, rule="Keep receipts."):
-        from hashlib import sha256
         example_line = f"  Example: {example}\n" if example is not None else ""
         body = f"---\nname: expenses\ndescription: {description}\ntags: [{", ".join(tags)}]\n---\n## Rules\n- {rule}\n{example_line}\n## {procedure_heading}\n{prose}\n".encode()
+        return self.acquired(body, revision=revision)
+
+    def acquired(self, body, *, revision="a", path=""):
+        from hashlib import sha256
         digest = sha256(body).hexdigest()
         blob = self.blobs.put(body)
         return AcquiredPackage(history_evidence="initial" if revision == "a" else "proven_ancestor",
             resolved_ref=ResolvedRef(canonical_url="https://github.com/example/skills", kind="branch", name="main", commit=revision * 40),
-            package_path="", raw_frontmatter=Evidence(kind="unknown", policy_version="1"),
+            package_path=path, raw_frontmatter=Evidence(kind="unknown", policy_version="1"),
             manifest=(ManifestEntry(path="SKILL.md", blob_ref=blob, digest=digest, size=len(body), mode=0o100644),))
 
     def install(self):
         return self.service.install(self.context, InstallRequest(discovery_id="discovery",
             selections=(InstallSelection(package_path="", local_name="expenses", domain="finance"),)), idempotency_key="install")
+
+    def catalogue_package(self, name):
+        """One package of the example repository, by the local name it installs as.
+
+        "expenses" sits at the repository root, as `install` selects it, so a
+        batch can return it as already installed. "broken" has two headings
+        that project to the same section identity, so it cannot be read.
+        """
+        if name == "expenses":
+            return self.package("a", "First description")
+        if name == "broken":
+            return self.acquired(b"---\nname: broken\ndescription: Broken\n---\n## A & B\nOne.\n\n## A-B\nTwo.\n",
+                                 path="broken")
+        return self.package("a", f"{name.title()} description").model_copy(update={"package_path": name})
+
+    def install_packages(self, *names, key="packages", packages=None):
+        """Install the named catalogue packages from one discovery, in the order given."""
+        from oms.sources.discovery import DiscoveryAccessError
+        chosen = tuple((packages or {}).get(name) or self.catalogue_package(name) for name in names)
+        discovery_id = "discovery-" + key
+        try:
+            self.service.discoveries.get(discovery_id, tenant_id="acme", actor_id="reviewer")
+        except DiscoveryAccessError:
+            self.service.discoveries.save(DiscoveryResult(discovery_id=discovery_id, tenant_id="acme",
+                actor_id="reviewer", resolved_ref=chosen[0].resolved_ref, expires_at=self.now + timedelta(hours=1),
+                packages=tuple(DiscoveredPackage(path=package.package_path, valid=True) for package in chosen),
+                acquired_packages=chosen))
+        return self.service.install(self.context, InstallRequest(discovery_id=discovery_id, selections=tuple(
+            InstallSelection(package_path=package.package_path, local_name=name, domain="finance")
+            for name, package in zip(names, chosen))), idempotency_key=key)
+
+    def install_two(self, key="two"):
+        return self.install_packages("expenses", "invoices", key=key)
+
+    def install_three(self, key="three"):
+        return self.install_packages("expenses", "invoices", "receipts", key=key)
+
+    def install_with_broken(self, key="with-broken"):
+        return self.install_packages("expenses", "broken", key=key)
+
+    def install_after_concurrent_create(self, skill_id):
+        """Install two packages while another writer creates `skill_id` after preparation."""
+        from oms.domain.models import Skill
+        builder = self.service.builder
+        original = builder.build
+
+        def build(*args, **kwargs):
+            snapshot = original(*args, **kwargs)
+            if self.store.get_skill(skill_id, tenant_id="acme") is None:
+                self.store.upsert_skill(Skill(id=skill_id, name="Made elsewhere", description="",
+                                              domain="finance", tenant_id="acme"))
+            return snapshot
+        builder.build = build
+        try:
+            return self.install_two(key="race")
+        finally:
+            del builder.build
 
     def check(self, key="check"):
         binding = self.sources.get_binding(self.skill)

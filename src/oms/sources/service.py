@@ -215,27 +215,36 @@ class SourceService:
             paths = tuple(package.selection.package_path for package in packages)
             installed = self._read(context, "install", (), lambda bound:
                 installation.installed_packages(self, context, source, bound, paths))
+            # An installed package keeps its skill, whatever its content now
+            # projects to; every other package, readable or not, claims the
+            # skill its local name gives it.
             skills = tuple(installed[package.selection.package_path].origin.skill
-                if package.selection.package_path in installed else package.snapshot.ref.origin.skill
+                if package.selection.package_path in installed else package.skill(context.tenant_id)
                 for package in packages)
-            if len(skills) != len(set(skills)):
-                raise SourceConflict("skill_already_exists")
+            claimed = set()
+            for skill in skills:
+                if skill in claimed:
+                    raise SourceConflict("skill_already_exists", f"a skill named {skill.skill_id} already exists")
+                claimed.add(skill)
             guards = tuple(generations.get(skill, Generations(skill=skill, content=0, binding=0)) for skill in skills)
             policy_revision = self._read(context, "install", (),
                 lambda bound: self._policy_revision(context, bound, skills))
-            checks = []
+            # Each readable new package is judged on its own: "passed" installs
+            # it, anything else holds it for review. The check is kept for the
+            # held package's card and reason.
+            verdicts: dict[str, tuple[str, CheckResult]] = {}
             for package, guard in zip(packages, guards):
-                if package.selection.package_path in installed:
-                    checks.append(True)
+                if package.selection.package_path in installed or package.snapshot is None:
                     continue
                 local = LocalState(skill=package.snapshot.ref.origin.skill, content_generation=guard.content,
                                    digest="absent")
                 check = self.policy.screen(package.snapshot, local)
                 plan = build_plan(None, package.snapshot, local,
                     self._merge_policy(package.snapshot, check, history_evidence="initial"))
-                checks.append(check.state == "passed" and not any(flag in plan.flags for flag in
+                passed = (check.state == "passed" and not any(flag in plan.flags for flag in
                     (PlanFlag.SAFETY_HOLD, PlanFlag.REQUIRED_CHECK_UNAVAILABLE))
                     and all(part.evidence.kind != "unknown" for part in package.snapshot.effective_projection))
+                verdicts[package.selection.package_path] = ("passed" if passed else "held", check)
 
             # Everything above ran in separate reads with fetched data in between.
             # The commit re-reads each thing a decision rested on (policy
@@ -252,25 +261,31 @@ class SourceService:
                     tenant_id=context.tenant_id, actor_id=context.actor_id)
                 if installation.installed_packages(self, context, source, bound, paths) != installed:
                     raise StaleMutation("binding_changed", "installation changed")
-                new_skills = tuple(package.snapshot.ref.origin.skill for package in packages
-                                   if package.selection.package_path not in installed)
-                if any(bound.graph.get_skill(skill.skill_id, tenant_id=context.tenant_id) is not None
-                       for skill in new_skills):
-                    raise SourceConflict("skill_already_exists")
-                if not all(checks):
-                    return operations.finish(bound.sources, operation,
-                                             OperationResult(operation_id=operation.operation_id,
-                        state="blocked", committed=False,
-                        outcomes=tuple(SkillOutcome(skill=skill, state="blocked", code="required_check_held")
-                                       for skill in skills)))
-                if new_skills:
+                new = tuple((package, skill, guard) for package, skill, guard in zip(packages, skills, guards)
+                            if package.selection.package_path not in installed)
+                # A name taken since the form was filled refuses the whole
+                # request, unreadable packages included, so the person can
+                # rename before anything is written (spec D3).
+                for _, skill, _ in new:
+                    if bound.graph.get_skill(skill.skill_id, tenant_id=context.tenant_id) is not None:
+                        raise SourceConflict("skill_already_exists", f"a skill named {skill.skill_id} already exists")
+                written = tuple(skill for package, skill, _ in new if package.snapshot is not None)
+                if written:
                     bound.sources.put_source(source)
-                histories, outcomes = [], []
-                for package in packages:
+                histories, outcomes, held = [], {}, []
+                for index, package in enumerate(packages):
                     existing = installed.get(package.selection.package_path)
                     if existing is not None:
-                        outcomes.append(SkillOutcome(skill=existing.origin.skill, state="unchanged",
-                                                     code="already_installed"))
+                        outcomes[index] = SkillOutcome(skill=existing.origin.skill, state="unchanged",
+                                                       code="already_installed")
+                        continue
+                    if package.snapshot is None:
+                        outcomes[index] = SkillOutcome(skill=skills[index], state="failed",
+                                                       code="package_unreadable", detail=package.error)
+                        continue
+                    verdict, check = verdicts[package.selection.package_path]
+                    if verdict != "passed":
+                        held.append((index, package, check))
                         continue
                     ref = package.snapshot.ref.origin.skill
                     bound.graph.upsert_skill(Skill(id=ref.skill_id, name=package.selection.local_name,
@@ -289,15 +304,25 @@ class SourceService:
                         source_revision=snapshot.revision)
                     if history:
                         histories.append(history.id)
-                    outcomes.append(SkillOutcome(skill=ref, state="applied"))
+                    outcomes[index] = SkillOutcome(skill=ref, state="applied")
+                # Held packages go last, after every clean one is written, so
+                # each card's policy digest sees the state apply will compare.
+                for index, package, check in held:
+                    outcomes[index], history_id = installation.hold_package(self, bound, context, operation, source,
+                                                                            package, guards[index], check)
+                    if history_id:
+                        histories.append(history_id)
                 event_ids = ()
-                if new_skills:
+                if written:
                     event_id = operation.operation_id + ":installed"
                     bound.events.append_event(DurableEvent(event_id=event_id, tenant_id=context.tenant_id,
-                        operation_id=operation.operation_id, action="source_install", skills=new_skills))
+                        operation_id=operation.operation_id, action="source_install", skills=written))
                     event_ids = (event_id,)
+                rows = tuple(outcomes[index] for index in range(len(packages)))
+                state = ("failed" if any(row.state == "failed" for row in rows)
+                         else "awaiting_review" if held else "complete")
                 return operations.finish(bound.sources, operation, OperationResult(operation_id=operation.operation_id,
-                    state="complete", committed=bool(new_skills), outcomes=tuple(outcomes)),
+                    state=state, committed=bool(written), outcomes=rows),
                     history_ids=histories, event_ids=event_ids)
             from oms.sources.scoped import with_admission
             protected = with_admission(self,

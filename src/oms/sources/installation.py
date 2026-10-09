@@ -8,13 +8,19 @@ from dataclasses import dataclass
 
 from oms.domain.identity import SkillRef
 from oms.domain.ids import slug
+from oms.domain.models import Skill
 from oms.domain.repo import REPO_ID_PREFIX, ReservedSkillId, reserved_id_refusal
-from oms.sources import operations
+from oms.domain.types import SkillStatus, SkillVersionCause
+from oms.ports.mutation import MutationContext
+from oms.sources import operations, review
 from oms.sources.discovery import Discoveries, DiscoveryAccessError
-from oms.sources.errors import SourceConflict, SourceNotFound
-from oms.sources.models import (AcquiredPackage, ActionContext, DiscoveryResult, DurableEvent, Generations,
-                                InstallRequest,
-    InstallSelection, OperationResult, OriginRef, Source, SourceSnapshot)
+from oms.sources.errors import SourceConflict, SourceError, SourceNotFound
+from oms.sources.findings import describe_hold
+from oms.sources.local_projection import project_local
+from oms.sources.merge import build_plan
+from oms.sources.models import (AcquiredPackage, ActionContext, Binding, CheckResult, DiscoveryResult, DurableEvent,
+                                Generations, InstallRequest, InstallSelection, Operation, OperationResult, OriginRef,
+                                SkillOutcome, Source, SourceSnapshot, SourceStatus)
 from oms.sources.projection import ProjectionBuilder
 from oms.sources.primitives import exact_digest
 from oms.sources.scoped import policy_for, with_admission
@@ -23,13 +29,44 @@ from oms.sources.scoped import policy_for, with_admission
 @dataclass(frozen=True)
 class Installation:
     selection: InstallSelection
-    snapshot: SourceSnapshot
+    snapshot: SourceSnapshot | None
     acquired: AcquiredPackage
+    # A safe reason when the package could not be read; the snapshot is then None.
+    error: str | None = None
+
+    def skill(self, tenant_id: str) -> SkillRef:
+        """The skill this package installs as, named from the local name even when it could not be read."""
+        if self.snapshot is not None:
+            return self.snapshot.ref.origin.skill
+        return SkillRef(tenant_id, slug(self.selection.local_name))
+
+
+# The projection's own messages are fixed strings, but they are matched here and
+# replaced rather than passed on, so no exception text ever reaches the person.
+# SKILL.md is parsed in a child process, so its "not a valid skill document"
+# arrives as the builder's "could not be projected".
+_UNREADABLE = {
+    "Colliding source heading identities": "two sections have headings OMS cannot tell apart",
+    "Package does not contain a valid skill document": "the package has no valid SKILL.md",
+    "Package document could not be projected": "the package has no valid SKILL.md",
+    "Package requires SKILL.md": "the package has no valid SKILL.md",
+}
+
+
+def unreadable_reason(error: ValueError) -> str:
+    return _UNREADABLE.get(str(error), "the package could not be read")
 
 
 def prepare(builder: ProjectionBuilder, discovery: DiscoveryResult, request: InstallRequest,
             context: ActionContext, operation_id: str,
             generations: dict[SkillRef, Generations]) -> tuple[Source, tuple[Installation, ...]]:
+    """Project each selected package on its own.
+
+    A request that cannot be honoured as a whole (a bad selection, a reserved or
+    repeated name, a package from another ref) is refused before anything is
+    built. A package whose content cannot be projected fails alone, with a safe
+    reason, and the rest of the batch carries on (spec 5.1).
+    """
     paths = tuple(selection.package_path for selection in request.selections)
     if not paths or len(set(paths)) != len(paths):
         raise SourceConflict("invalid_package_selection")
@@ -52,9 +89,56 @@ def prepare(builder: ProjectionBuilder, discovery: DiscoveryResult, request: Ins
         acquired = packages[selection.package_path]
         if acquired.resolved_ref != discovery.resolved_ref:
             raise SourceConflict("source_changed", "discovery package ref mismatch")
-        snapshot = builder.build(acquired, origin, snapshot_id="snapshot-" + exact_digest([operation_id, skill_id]))
+        try:
+            snapshot = builder.build(acquired, origin,
+                                     snapshot_id="snapshot-" + exact_digest([operation_id, skill_id]))
+        except SourceError:
+            raise
+        except ValueError as error:
+            result.append(Installation(selection, None, acquired, error=unreadable_reason(error)))
+            continue
         result.append(Installation(selection, snapshot, acquired))
     return source_from_discovery(discovery), tuple(result)
+
+
+def hold_package(service, bound: MutationContext, context: ActionContext, operation: Operation, source: Source,
+                 package: Installation, guard: Generations, check: CheckResult) -> tuple[SkillOutcome, str | None]:
+    """Install a held package as an empty skill marked held, with a review card (spec 5.3).
+
+    Nothing from the package becomes live: the skill has identity fields only,
+    the binding has no baseline, and the content waits on the card until a
+    reviewer applies it. Returns the outcome and the history entry's id.
+    """
+    ref = package.snapshot.ref.origin.skill
+    bound.graph.upsert_skill(Skill(id=ref.skill_id, name=package.selection.local_name, description="",
+        domain=package.selection.domain, tenant_id=ref.tenant_id, status=SkillStatus.HELD))
+    # The card pins the skill as this commit leaves it, because that is what
+    # apply compares against. Creating the skill changes its content, and the
+    # tracker advances a changed skill's content generation by exactly one when
+    # the transaction commits (ContentTracker.advance), so the generation the
+    # card must carry is the guard's plus one. The policy digest is the skill's
+    # own, as apply computes it, and is taken after the batch's other writes.
+    local = project_local(bound.graph, ref, baseline=None, content_generation=guard.content + 1,
+        ownership=bound.sources.ownership_for_skill(ref), policy_version=service.builder.policy_version)
+    plan = build_plan(None, package.snapshot, local, service._merge_policy(package.snapshot, check,
+        update_generation=1, policy_digest=service._policy_revision(context, bound, (ref,)),
+        first_reconciliation=True, history_evidence="initial"))
+    bound.sources.put_binding(Binding(origin=package.snapshot.ref.origin, source_id=source.source_id,
+        package_path=package.selection.package_path,
+        ref=package.acquired.resolved_ref.model_copy(update={"canonical_url": source.canonical_url}),
+        baseline=None, first_reconciliation=True, automatic_apply=service.automatic,
+        automation_actor_id=context.actor_id,
+        status=SourceStatus(state="updates_available", checked_at=service.clock())))
+    outcome = review.stage_update(bound, plan, package.snapshot, operation_id=operation.operation_id,
+                                  actor_id=context.actor_id, action="install")
+    # No source revision: the skill holds none of that revision's content yet.
+    history = bound.history.capture_required(ref.skill_id, ref.tenant_id, cause=SkillVersionCause.SOURCE_INSTALL,
+        actor=context.actor_id, source_operation_id=operation.operation_id,
+        source_origin_id=package.snapshot.ref.origin.origin_id)
+    if outcome.state == "awaiting_review":
+        outcome = outcome.model_copy(update={"code": "safety_review_required",
+                                             "detail": describe_hold(plan.check_findings)})
+    return outcome, history.id if history else None
 
 
 def source_from_discovery(discovery: DiscoveryResult) -> Source:

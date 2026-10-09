@@ -120,6 +120,7 @@ class SkillOutcomeView(Body):
     state: Literal["applied", "awaiting_review", "blocked", "failed", "unchanged"]
     update_id: str | None = None
     code: str | None = None
+    detail: str | None = None
 
 
 class OperationView(Body):
@@ -135,7 +136,7 @@ class OperationView(Body):
         return cls(operation_id=result.operation_id, state=result.state, committed=result.committed,
                    source_id=result.source_id, discovery_id=result.discovery_id,
                    outcomes=tuple(SkillOutcomeView(skill_id=row.skill.skill_id, state=row.state,
-                       update_id=row.update_id, code=row.code) for row in result.outcomes))
+                       update_id=row.update_id, code=row.code, detail=row.detail) for row in result.outcomes))
 
 
 class DiscoveryView(Body):

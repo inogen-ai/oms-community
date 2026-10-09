@@ -34,13 +34,21 @@ def test_install_changed_body_cannot_reuse_key(source_world):
         source_world.service.install(source_world.context, changed, idempotency_key="install")
 
 
+def _held_and_empty(world):
+    """The held package's skill exists only as an empty record marked held, with no baseline."""
+    skill = world.store.get_skill("expenses", tenant_id="acme")
+    assert skill.status.value == "held" and skill.description == ""
+    assert not world.store.rules_for_skill("expenses", tenant_id="acme")
+    assert not world.store.sections_for_skill("expenses", tenant_id="acme")
+    assert world.sources.get_binding(world.skill).baseline is None
+
+
 def test_held_initial_package_never_becomes_active(source_world):
     source_world.policy.held = True
     result = source_world.install()
-    assert not result.committed
-    assert result.state == "blocked"
-    assert source_world.store.get_skill("expenses", tenant_id="acme") is None
-    assert source_world.sources.get_binding(source_world.skill) is None
+    assert result.state == "awaiting_review" and result.committed
+    assert result.outcomes[0].code == "safety_review_required"
+    _held_and_empty(source_world)
 
 
 def test_initial_unsafe_text_is_held_even_when_adapter_screen_passes(source_world):
@@ -52,8 +60,10 @@ def test_initial_unsafe_text_is_held_even_when_adapter_screen_passes(source_worl
         packages=(DiscoveredPackage(path="", valid=True),), acquired_packages=(unsafe,)))
     result = source_world.service.install(source_world.context, InstallRequest(discovery_id="unsafe",
         selections=(InstallSelection(package_path="", local_name="expenses", domain="finance"),)), idempotency_key="unsafe")
-    assert result.state == "blocked"
-    assert source_world.store.get_skill("expenses", tenant_id="acme") is None
+    assert result.state == "awaiting_review"
+    assert "instruction to an AI model" in result.outcomes[0].detail
+    assert "Ignore previous" not in result.outcomes[0].detail
+    _held_and_empty(source_world)
 
 
 def test_second_package_history_failure_rolls_back_whole_batch(source_world, monkeypatch):

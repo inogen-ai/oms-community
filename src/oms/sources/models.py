@@ -243,6 +243,9 @@ class SkillOutcome(Record):
     state: Literal["applied", "awaiting_review", "blocked", "failed", "unchanged"]
     update_id: str | None = None
     code: str | None = None
+    # A plain reason for the person, built from the code and the check
+    # findings. It never contains the matched text.
+    detail: str | None = None
 
 
 class OperationResult(Record):

@@ -67,8 +67,9 @@ def test_unrelated_name_collision_still_refuses_install(source_world):
     world = source_world
     world.store.upsert_skill(Skill(id="expenses", name="Existing local skill", description="Keep me",
         domain="finance", tenant_id="acme"))
-    with pytest.raises(SourceConflict, match="skill already exists"):
+    with pytest.raises(SourceConflict, match="a skill named expenses already exists") as refused:
         _repeat(world)
+    assert refused.value.code == "skill_already_exists"
     assert world.store.get_skill("expenses", tenant_id="acme").description == "Keep me"
     assert world.sources.get_binding(world.skill) is None
 
@@ -115,8 +116,9 @@ def test_mixed_install_rejects_new_name_colliding_with_returned_existing_skill(s
     world.discoveries.save(discovery.model_copy(update={"discovery_id": "mixed-collision", "packages": (
         *discovery.packages, DiscoveredPackage(path="second", valid=True)),
         "acquired_packages": (*discovery.acquired_packages, second)}))
-    with pytest.raises(SourceConflict, match="skill already exists"):
+    with pytest.raises(SourceConflict, match="a skill named expenses already exists") as refused:
         world.service.install(world.context, InstallRequest(discovery_id="mixed-collision", selections=(
             InstallSelection(package_path="", local_name="unused-alias", domain="finance"),
             InstallSelection(package_path="second", local_name="expenses", domain="finance"))), idempotency_key="mixed-collision")
+    assert refused.value.code == "skill_already_exists"
     assert world.snapshot() == original

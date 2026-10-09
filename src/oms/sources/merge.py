@@ -17,7 +17,7 @@ from oms.sources.models import (
     Change, CheckFinding, CheckResult, Conflict, Evidence, GraphMapping, LocalState, MergePlan,
     PartKind, PlanFingerprint, PlanFlag, ProjectionPart, SourceSnapshot,
 )
-from oms.sources.safety import FileCheck, SafetyRestriction, SourceSafety
+from oms.sources.safety import MAX_FINDINGS, FileCheck, SafetyRestriction, SourceSafety
 
 
 @dataclass(frozen=True)
@@ -284,14 +284,17 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                 if type(policy.safety) is not SourceSafety:
                     checks.append(CheckResult(state='unavailable', code='deterministic_checks_unavailable'))
                 else:
-                    checks.extend(policy.safety.check_text(text) for text in _texts(after.value))
+                    checks.extend(policy.safety.check_text(text, part_id=key) for text in _texts(after.value))
         # A check that could not run is not a pass (spec §7.7); it holds the
         # part like a failure does, and taking the unscreened upstream text is
-        # withdrawn from the reviewer's choices in both cases.
+        # withdrawn from the reviewer's choices in both cases. Its findings join
+        # the plan's, so a part held here is named even when the policy's own
+        # screen passed.
         for check in checks:
             if check.state != 'passed':
                 flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
                 reasons.append(check.code)
+                check_findings.extend(check.findings)
                 choices = tuple(choice for choice in choices if choice != 'use_upstream')
         restriction = restrictions.get(key)
         if restriction is not None:
@@ -359,4 +362,4 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                      changes=tuple(changes[key] for key in ordered),
                      conflicts=tuple(conflicts[key] for key in sorted(conflicts)),
                      flags=tuple(sorted(flags, key=lambda flag: flag.value)),
-                     check_findings=tuple(dict.fromkeys(check_findings)))
+                     check_findings=tuple(dict.fromkeys(check_findings))[:MAX_FINDINGS])

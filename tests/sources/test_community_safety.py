@@ -67,8 +67,24 @@ def test_new_source_text_is_checked_against_active_constraint(community_world):
         packages=(DiscoveredPackage(path='', valid=True),), acquired_packages=(unsafe,)))
     result = world.service.install(world.context, InstallRequest(discovery_id='unsafe',
         selections=(InstallSelection(package_path='', local_name='expenses', domain='finance'),)), idempotency_key='unsafe')
-    assert result.state == 'blocked' and not result.committed
-    assert world.store.get_skill('expenses', tenant_id='acme') is None
+    assert result.state == 'awaiting_review' and result.committed
+    assert result.outcomes[0].code == 'safety_review_required'
+    _held_not_live(world)
+
+
+def _held_not_live(world):
+    """The held package's skill is an empty record marked held: nothing from the package is live."""
+    from oms.publish.catalogue import SkillCatalogue
+    from oms.publish.publisher import Publisher
+    skill = world.store.get_skill('expenses', tenant_id='acme')
+    assert skill.status.value == 'held'
+    assert not world.store.rules_for_skill('expenses', tenant_id='acme')
+    assert not world.store.sections_for_skill('expenses', tenant_id='acme')
+    assert world.sources.get_binding(world.skill).baseline is None
+    assert world.sources.open_update(world.skill) is not None
+    publisher = Publisher(world.store, blob_store=world.blobs)
+    assert 'expenses' not in {row.id for row, _ in publisher.publishable_skills('acme')}
+    assert 'expenses' not in {row.id for row in SkillCatalogue(world.store, publisher).list_skills('acme')}
 
 
 def test_rejected_injection_provenance_is_not_reactivated_by_source(community_world):
@@ -211,8 +227,11 @@ def test_unavailable_live_policy_state_holds_initial_install(community_world):
     world = community_world
     world.policy.graph = None
     result = world.install()
-    assert result.state == 'blocked' and not result.committed
-    assert world.store.get_skill('expenses', tenant_id='acme') is None
+    assert result.state == 'awaiting_review' and result.committed
+    assert result.outcomes[0].code == 'safety_review_required'
+    _held_not_live(world)
+    update = world.sources.open_update(world.skill)
+    assert 'required_check_unavailable' in {flag.value for flag in update.plan.flags}
 
 
 def test_rejected_repost_does_not_taint_a_preexisting_active_rule(community_world):
