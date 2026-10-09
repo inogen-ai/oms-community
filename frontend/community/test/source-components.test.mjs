@@ -290,3 +290,16 @@ test("a lone valid package on a complete listing is preselected; several, or an 
   assert.deepEqual(pick(listing([pkg("broken", false)])), []);
   assert.deepEqual(pick(null), []);
 });
+
+test("the selection count is out of the packages found, and the request limit shows only when it can bite", () => {
+  const props = { domains: ["docs"], onSelectionsChange() {} };
+  let shown = text(component("SourceDiscovery", { ...props, discovery }));
+  assert.match(shown, /0 of 3 packages selected\./);
+  assert.doesNotMatch(shown, /at most 100/);
+  const many = { ...discovery, packages: { items: Array.from({ length: 101 }, (_, index) => pkg(`skill-${index}`)), next_cursor: null } };
+  shown = text(component("SourceDiscovery", { ...props, discovery: many }));
+  assert.match(shown, /0 of 101 packages selected\. Install at most 100 packages per request\./);
+  const partial = { ...discovery, packages: { ...discovery.packages, next_cursor: "more" } };
+  shown = text(component("SourceDiscovery", { ...props, discovery: partial }));
+  assert.match(shown, /0 of 3 loaded packages selected\. Install at most 100 packages per request\./);
+});

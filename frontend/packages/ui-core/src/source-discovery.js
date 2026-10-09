@@ -56,10 +56,14 @@ export function SourceDiscovery({ discovery, selections, onSelectionsChange, onI
   const atLimit = selected.length >= 100;
   const overLimit = selected.length > 100;
   const cannotInstall = disabled || invalid || overLimit || !selected.length || !onInstall;
+  // Out of the packages found, so the count is never read as the size of the repository. The request limit is
+  // mentioned only where it can bite: more packages than that, or more still to load.
+  const partial = !!discovery.packages.next_cursor;
+  const limit = packages.length > 100 || partial ? " Install at most 100 packages per request." : "";
   return h(Panel, { title: "Discovered skill packages", className: "oms-source-discovery", "aria-busy": busy },
     h(SourceStatus, { status: "complete", ref: discovery.resolved_ref }),
     h("p", null, "Select packages to install. Local names must produce unique skill IDs; each selected package needs a domain."),
-    h("p", { role: "status" }, `${selected.length} of 100 packages selected. Install at most 100 packages per request.`),
+    h("p", { role: "status" }, `${selected.length} of ${packages.length}${partial ? " loaded" : ""} packages selected.${limit}`),
     overLimit ? h(Notice, { kind: "error" }, "Select at most 100 packages before installing. Remove packages or clear the selection.") : null,
     error ? h(Notice, { kind: "error" }, error) : null,
     h("div", { className: "oms-source-actions" }, h(Button, { variant: "secondary", disabled: disabled || atLimit, onClick: () => {
