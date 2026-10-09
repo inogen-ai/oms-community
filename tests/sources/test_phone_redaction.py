@@ -21,6 +21,7 @@ def test_numbers_are_still_redacted(number):
 
 
 @pytest.mark.parametrize("text", ["In session 2025-10-03, we found it.", "Logged at 2025-10-03T09:00:00.",
+                                  "Logged at 2025-10-03 09:00:00.", "Started 2025-10-03 9:05, done.",
                                   "Wait 300000-600000 ms.", "Seen 2019-2024.",
                                   "Path /brainstorm/12345-1706000000/content here."])
 def test_dates_ranges_and_path_segments_are_kept(text):
@@ -34,3 +35,9 @@ def test_a_range_broken_across_a_line_is_kept():
 
 def test_two_numbers_on_one_line_get_distinct_placeholders():
     assert scrub("call 07700 900123 or 07700 900456") == "call <PHONE_1> or <PHONE_2>"
+
+
+def test_a_number_after_a_date_is_still_redacted():
+    # Only a time after the date makes it a date-time; digits that are not a time
+    # are not excused by the date before them.
+    assert "900123" not in scrub("On 2025-10-03 07700 900123 rang.")

@@ -10,6 +10,7 @@ two methods, a caller that wanted redactions and called the old one would
 silently get none, and that failure is invisible.
 """
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -18,22 +19,25 @@ from oms.ingestion.schema import ExecutionContext, clip_context_fields
 
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _PHONE_CANDIDATE = re.compile(r"(?<![\w/])(\+?\d[\d \t()-]{7,}\d)(?![\w/])")
-_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T[\d:.]+)?")
+# A date, or a date and a time after a space or a `T`. The time is matched from
+# the candidate's start in the text, since the candidate itself stops at the colon.
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d+)?)?")
 _RANGE = re.compile(r"[1-9]\d*-\d+")
 
 
 class _PhonePattern:
     """Phone candidates minus shapes that are never phone numbers.
 
-    A number does not run across a line, and a date, a plain range (`300000-600000`,
-    `2019-2024`) or a path segment (`/12345-1706000000/`) is not a phone number. Real
-    numbers keep a leading `+` or `0`, spaces, brackets or more than one hyphen.
+    A number does not run across a line, and a date or date-time (`2025-10-03`,
+    `2025-10-03 09:00:00`), a plain range (`300000-600000`, `2019-2024`) or a path
+    segment (`/12345-1706000000/`) is not a phone number. Real numbers keep a
+    leading `+` or `0`, spaces, brackets or more than one hyphen.
     """
 
-    def finditer(self, text: str):
+    def finditer(self, text: str) -> Iterator[re.Match[str]]:
         for match in _PHONE_CANDIDATE.finditer(text):
-            value = match.group(0)
-            if _ISO_DATE.fullmatch(value) or _RANGE.fullmatch(value):
+            date = _ISO_DATE.match(text, match.start())
+            if date is not None and date.end() >= match.end() or _RANGE.fullmatch(match.group(0)):
                 continue
             yield match
 
