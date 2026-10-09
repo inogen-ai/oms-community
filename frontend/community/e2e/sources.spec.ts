@@ -50,6 +50,20 @@ test("repository discovery starts unselected and preserves local installation na
   expect(state.requests.find(row => row.path === "/api/skill-source-installations")!.body).toEqual({ discovery_id: "discovery-1", selections: [{ package_path: "orders", local_name: "Local purchase guidance", domain: "general" }] });
 });
 
+// The name box carries its skill ID under it; the domain box has nothing below it. Both boxes still line up.
+test("a selected package's local name and domain boxes line up", async ({ page }) => {
+  await sourceFixture(page);
+  await openAddSource(page);
+  await page.getByLabel("GitHub repository or skill folder URL").fill("https://github.com/fixture/skills");
+  await page.getByRole("button", { name: "Discover packages", exact: true }).click();
+  await page.getByLabel("Select orders", { exact: true }).check();
+  await page.getByText("Edit names and areas").click();
+  const name = (await page.getByLabel("Local name for orders").boundingBox())!;
+  const domain = (await page.getByLabel("Domain for orders").boundingBox())!;
+  expect(Math.abs(name.y - domain.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(name.height - domain.height)).toBeLessThanOrEqual(1);
+});
+
 test("merged choices survive save revisions and a lost Apply response recovers the same request", async ({ page }) => {
   const state = await sourceFixture(page, { loseApply: true });
   await page.goto("/import/?github=sources&update=update-1");
