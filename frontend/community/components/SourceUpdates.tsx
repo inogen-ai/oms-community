@@ -21,6 +21,9 @@ export default function SourceUpdates({ selectedId, skillId, origin, headingless
   // Follow-up C: "<skill> installed." once a card here installed or applied its update. It stays through the read
   // that drops that card from the list, and goes with the reader's next action or a later read that changes the list.
   const [installed, setInstalled] = useState<{ message: string; id: string; list: string | null } | null>(null);
+  // Updates installed or applied here. Kept after the confirmation goes: a deep link to one of them must not bring
+  // its card back as "no longer in the open queue" once the list drops it.
+  const [installedHere, setInstalledHere] = useState<ReadonlySet<string>>(() => new Set());
   useEffect(() => {
     if (action.operation && sources) setBatchResults(current => [
       ...current.filter(row => row.scope !== sources.scope || row.operation.operation_id !== action.operation!.operation_id),
@@ -59,9 +62,12 @@ export default function SourceUpdates({ selectedId, skillId, origin, headingless
       <Link href={updateTarget(update.plan.origin.kind, update.update_id)}>Copyable update link</Link>
       {open === update.update_id && <SourceReview id={update.update_id} title={names.get(update.plan.skill.skill_id)} draft={drafts[update.update_id]} onDraftChange={draft => setDrafts(current => {
         const next = { ...current }; if (draft) next[update.update_id] = draft; else delete next[update.update_id]; return next;
-      })} onInstalled={message => setInstalled({ message, id: update.update_id, list: null })} />}
+      })} onInstalled={message => {
+        setInstalled({ message, id: update.update_id, list: null });
+        setInstalledHere(current => new Set(current).add(update.update_id));
+      }} />}
     </article>)}</div>
     {elsewhere && <Notice>This update is for the other kind of source. <Link href={updateTarget(elsewhere.plan.origin.kind, elsewhere.update_id)}>Open it where it belongs</Link>.</Notice>}
-    {selectedId && !resource.loading && !elsewhere && !updates.some(update => update.update_id === selectedId) && <><Notice>This update is no longer in the open queue. Its recorded state is shown below.</Notice><SourceReview id={selectedId} /></>}
+    {selectedId && !resource.loading && !elsewhere && !installedHere.has(selectedId) && !updates.some(update => update.update_id === selectedId) && <><Notice>This update is no longer in the open queue. Its recorded state is shown below.</Notice><SourceReview id={selectedId} /></>}
   </section>;
 }

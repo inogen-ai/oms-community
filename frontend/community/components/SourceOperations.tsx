@@ -8,8 +8,11 @@ import { useSourceAction, useSourceResource } from "@/lib/source-state";
 
 /** `summary="install"` adds the install counts; only the GitHub install screen passes it. */
 export function SourceActionFeedback({ action, subject = "request", outcomeLink, summary }: { action: ReturnType<typeof useSourceAction>; subject?: SourcePendingSubject; outcomeLink?: ComponentProps<typeof SourceStatus>["outcomeLink"]; summary?: ComponentProps<typeof SourceStatus>["summary"] }) {
-  return <>{action.error && <Notice kind="error">{action.error}</Notice>}{action.busy && <p role="status">Processing source request…</p>}{action.operation && <SourceStatus status={action.operation.state} operation={action.operation} outcomeLink={outcomeLink} summary={summary} />}
-    {action.recoveryKey && <SourcePendingNotice subject={subject} busy={action.busy} onCheck={() => void action.recover()}>
+  // While a flow runs (the one-step install) the card's own line is the only progress text: not the busy line, not
+  // the answer to its first request and not a "Check result" for a request still in flight (follow-up C).
+  const flowing = action.flowing;
+  return <>{action.error && <Notice kind="error">{action.error}</Notice>}{action.busy && !flowing && <p role="status">Processing source request…</p>}{action.operation && !flowing && <SourceStatus status={action.operation.state} operation={action.operation} outcomeLink={outcomeLink} summary={summary} />}
+    {action.recoveryKey && !flowing && <SourcePendingNotice subject={subject} busy={action.busy} onCheck={() => void action.recover()}>
       {action.canRetryOriginalInput && <label className="oms-source-check"><input type="checkbox" disabled={action.busy} checked={action.retryOriginalInput} onChange={event => action.selectOriginalInputRetry(event.target.checked)} />Retry with the exact original input on the next submission</label>}
     </SourcePendingNotice>}</>;
 }

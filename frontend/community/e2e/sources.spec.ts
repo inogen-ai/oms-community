@@ -154,13 +154,18 @@ test("Install says it is running, reads nothing again between the draft and the 
   state.update.held_install = true;
   const api = `http://127.0.0.1:${process.env.OMS_COMMUNITY_API_PORT || "4317"}`;
   const gate = () => { let release!: () => void; const opened = new Promise<void>(done => { release = done; }); return { opened, release, seen: false }; };
-  const draft = gate(), apply = gate();
+  const draft = gate(), apply = gate(), readBack = gate();
   for (const [action, held] of [["draft", draft], ["apply", apply]] as const) {
     await page.route(`${api}/api/skill-updates/update-1/${action}`, async route => {
       if (route.request().method() === "POST") { held.seen = true; await held.opened; }
       return route.fallback();
     });
   }
+  // The read-back after the draft waits too: the draft has answered "awaiting_review" by then.
+  await page.route(`${api}/api/skill-updates/update-1`, async route => {
+    if (route.request().method() === "GET" && draft.seen) { readBack.seen = true; await readBack.opened; }
+    return route.fallback();
+  });
   const lists = () => state.requests.filter(row => row.method === "GET" && row.path === "/api/skill-updates").length;
   await page.goto("/import/?github=sources&update=update-1");
   await page.getByLabel("Take GitHub's version for section:intro").check();
@@ -175,13 +180,27 @@ test("Install says it is running, reads nothing again between the draft and the 
   await expect(page.getByLabel("Take GitHub's version for section:intro")).toBeDisabled();
   await expect(page.getByRole("button", { name: "Check safety again" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Discard local choices" })).toBeDisabled();
+  // The card's line is the only progress text: no generic busy line and no "Check result" for a request still in flight.
+  const otherProgress = async () => {
+    await expect(page.getByText("Processing source request…")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Check result" })).toHaveCount(0);
+  };
+  await otherProgress();
   const before = state.requests.length;
   draft.release();
+  await expect.poll(() => readBack.seen).toBe(true);
+  // The draft has answered (this fixture says "complete", the server says "awaiting_review"); neither is shown while the install runs.
+  await page.waitForTimeout(300);
+  await expect(installing).toBeVisible();
+  await expect(page.getByText(/^(Awaiting review|Operation complete)$/)).toHaveCount(0);
+  await otherProgress();
+  readBack.release();
   await expect.poll(() => apply.seen).toBe(true);
   // Anything a refresh would read again has had time to go out; only the one read-back of the card may have.
   await page.waitForTimeout(500);
   expect(state.requests.slice(before).map(row => `${row.method} ${row.path}`)).toEqual(["POST /api/skill-updates/update-1/draft", "GET /api/skill-updates/update-1"]);
   await expect(installing).toBeVisible();
+  await otherProgress();
   apply.release();
   await expect(page.getByRole("status").filter({ hasText: "Expense review installed." })).toBeVisible();
   await expect(installing).toHaveCount(0);
@@ -191,6 +210,29 @@ test("Install says it is running, reads nothing again between the draft and the 
   await page.waitForTimeout(500);
   expect(lists()).toBe(listsOnLoad * 2);
   expect(state.violations).toEqual([]);
+});
+
+test("after an install from its deep link, only the confirmation shows, and the card does not come back after the next click", async ({ page }) => {
+  // "Open in review" on an install result links here. Another update stays in the list, so there is something to click next.
+  const state = await sourceFixture(page, { script: true });
+  state.update.held_install = true;
+  await page.goto("/import/?github=sources&update=update-1");
+  await page.getByLabel("Take GitHub's version for section:intro").check();
+  await page.getByRole("button", { name: "Install skill" }).click();
+  await expect(page.getByText("Expense review installed.")).toBeVisible();
+  const cardBack = async () => {
+    await expect(page.getByText("This update is no longer in the open queue. Its recorded state is shown below.")).toHaveCount(0);
+    await expect(page.getByText(/Recorded historical comparison/)).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "New skill from GitHub: Expense review" })).toHaveCount(0);
+  };
+  await expect(page.getByRole("button", { name: "Review source update" })).toHaveCount(1);
+  await cardBack();
+  // The next action clears the confirmation; the installed card still does not come back.
+  await page.getByRole("button", { name: "Review source update" }).click();
+  await expect(page.getByText("Expense review installed.")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Update from GitHub: scripts" })).toBeVisible();
+  await cardBack();
+  expect(state.decisions).toEqual(["apply"]);
 });
 
 test("a stopped Install unlocks the card and confirms nothing", async ({ page }) => {
