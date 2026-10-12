@@ -119,12 +119,30 @@ export interface SourceAutomationBody extends SourceBindingBody { enabled: boole
 export interface SourceResolvedCheck extends SourceRecord {
   readonly state: "passed" | "held" | "unavailable"; readonly code: string; readonly reasons: readonly string[];
 }
+export type SourceRiskCode = "personal_data" | "injection" | "check_failed" | "check_unavailable" | "your_edits"
+  | "removed_upstream" | "unclear_identity" | "script";
+/** Where a check held and why: never the matched text. `path` is null for a SKILL.md part. */
+export interface SourceCheckFinding { readonly path: string | null; readonly part_id: string | null; readonly line: number | null; readonly category: string; readonly summary: string }
+export interface SourcePartReview extends SourceRecord {
+  readonly part_id: string; readonly kind: SourcePartKind; readonly label: string;
+  readonly attention: "decide" | "safe" | "automatic"; readonly risks: readonly SourceRiskCode[];
+  readonly default: "use_upstream" | null; readonly overridable: readonly ("phone" | "email")[];
+  readonly findings: readonly SourceCheckFinding[];
+}
+export interface SourceReviewSummary extends SourceRecord {
+  readonly decide: number; readonly safe: number; readonly automatic: number;
+  readonly risks: Readonly<Partial<Record<SourceRiskCode, number>>>;
+  /** Findings that name no part: they hold the whole skill. */
+  readonly whole_skill: readonly SourceCheckFinding[];
+}
 export interface SourceUpdateView extends SourceUpdate {
   readonly part_fingerprints: Readonly<Record<string, string>>;
   readonly ownership: Readonly<Record<string, "source" | "shared" | "local" | "unknown">>;
   readonly stale: boolean;
   /** Why a held install is held: a summary only, never the matched text. `path` is null for a SKILL.md part. */
-  readonly check_findings?: readonly { readonly path: string | null; readonly part_id: string | null; readonly line: number | null; readonly category: string; readonly summary: string }[];
+  readonly check_findings?: readonly SourceCheckFinding[];
+  readonly parts?: Readonly<Record<string, SourcePartReview>>;
+  readonly summary?: SourceReviewSummary;
   readonly resolved_check: SourceResolvedCheck;
 }
 export interface SourceUpdateBody { skill_id: string; fingerprint: PlanFingerprint }

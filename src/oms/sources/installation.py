@@ -15,7 +15,7 @@ from oms.ports.mutation import MutationContext
 from oms.sources import operations, review
 from oms.sources.discovery import Discoveries, DiscoveryAccessError
 from oms.sources.errors import SourceConflict, SourceError, SourceNotFound
-from oms.sources.findings import describe_hold
+from oms.sources.findings import describe_hold, distinct_findings
 from oms.sources.local_projection import project_local
 from oms.sources.merge import build_plan
 from oms.sources.models import (AcquiredPackage, ActionContext, Binding, CheckResult, DiscoveryResult, DurableEvent,
@@ -137,7 +137,7 @@ def hold_package(service, bound: MutationContext, context: ActionContext, operat
         source_origin_id=package.snapshot.ref.origin.origin_id)
     if outcome.state == "awaiting_review":
         outcome = outcome.model_copy(update={"code": "safety_review_required",
-                                             "detail": describe_hold(plan.check_findings)})
+                                             "detail": describe_hold(distinct_findings(plan.check_findings))})
     return outcome, history.id if history else None
 
 

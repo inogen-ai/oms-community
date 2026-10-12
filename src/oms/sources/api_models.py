@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from oms.domain.models import SkillVersion
-from oms.sources.findings import describe_finding, distinct_findings
+from oms.sources.findings import CheckFindingView, distinct_findings, finding_view
 from oms.sources.models import CheckResult, DraftChoice, OperationResult, Page, SourceStatus, Update
 from oms.sources.primitives import DiscoveredPackage, Generation, PlanFingerprint, ResolvedRef
+from oms.sources.triage import PartReview, ReviewSummary, review_parts, review_summary
 
 Identifier = Annotated[str, Field(min_length=1, max_length=1000)]
 
@@ -168,14 +169,6 @@ class SkillSourceSummary(Body):
     ref_name: str
 
 
-class CheckFindingView(Body):
-    path: str | None = None
-    part_id: str | None = None
-    line: int | None = None
-    category: str
-    summary: str
-
-
 class UpdateListItem(Update):
     """One row of the review inbox: the update, and whether it is a held install's card."""
     held_install: bool = False
@@ -192,11 +185,20 @@ class UpdateView(Update):
     @computed_field
     @property
     def check_findings(self) -> tuple[CheckFindingView, ...]:
-        return tuple(CheckFindingView(path=finding.path, part_id=finding.part_id, line=finding.line,
-                                      category=finding.category, summary=describe_finding(finding))
-                     # A card stored before findings were made distinct still lists a
-                     # SKILL.md hit twice; show it once there too.
-                     for finding in distinct_findings(self.plan.check_findings))
+        # A card stored before findings were made distinct still lists a
+        # SKILL.md hit twice; show it once there too.
+        return tuple(finding_view(finding) for finding in distinct_findings(self.plan.check_findings))
+
+    @computed_field
+    @property
+    def parts(self) -> dict[str, PartReview]:
+        # Computed at read time from the stored plan (spec D1): nothing new is persisted.
+        return review_parts(self.plan, held_install=self.held_install)
+
+    @computed_field
+    @property
+    def summary(self) -> ReviewSummary:
+        return review_summary(self.plan, self.parts)
 
 
 class UndoView(UndoBody):

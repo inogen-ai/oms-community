@@ -13,7 +13,6 @@ from typing import Literal
 from oms.sources.compare import UnitDecision, compare_field, compare_prose, compare_rule, compare_unit, same_value
 from oms.sources.identity import align_projection as _align, moved_parts, sequence_key
 from oms.sources.files import compare_file, file_evidence, script_change
-from oms.sources.findings import distinct_findings
 from oms.sources.models import (
     Change, CheckFinding, CheckResult, Conflict, Evidence, GraphMapping, LocalState, MergePlan,
     PartKind, PlanFingerprint, PlanFlag, ProjectionPart, SourceSnapshot,
@@ -100,6 +99,15 @@ def _digest(snapshot):
                           ('graph_mappings', 'part_id'), ('manifest', 'path')):
         value[key] = sorted(value[key], key=lambda part: part[identity])
     return sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+
+
+def _located(finding: CheckFinding, key: str, kind: PartKind) -> CheckFinding:
+    """A part check's finding, naming the part it is about when the check did not say."""
+    if kind == PartKind.FILE and finding.path is None:
+        return finding.model_copy(update={'path': key.removeprefix('file:')})
+    if kind != PartKind.FILE and finding.part_id is None and finding.path is None:
+        return finding.model_copy(update={'part_id': key})
+    return finding
 
 
 def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
@@ -193,7 +201,7 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
     file_checks = {check.part_id: check for check in policy.file_checks}
     if len(file_checks) != len(policy.file_checks):
         raise ValueError('duplicate file checks')
-    check_findings = []
+    check_findings, part_findings = [], []
     for check in policy.required_checks:
         if check.state != 'passed':
             flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
@@ -295,13 +303,13 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
         # A check that could not run is not a pass (spec §7.7); it holds the
         # part like a failure does, and taking the unscreened upstream text is
         # withdrawn from the reviewer's choices in both cases. Its findings join
-        # the plan's, so a part held here is named even when the policy's own
-        # screen passed.
+        # the plan's own list, so a part held here is named even when the policy's
+        # screen passed, and each part keeps its own findings.
         for check in checks:
             if check.state != 'passed':
                 flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
                 reasons.append(check.code)
-                check_findings.extend(check.findings)
+                part_findings.extend(_located(finding, key, kind) for finding in check.findings)
                 choices = tuple(choice for choice in choices if choice != 'use_upstream')
         restriction = restrictions.get(key)
         if restriction is not None:
@@ -357,6 +365,8 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
     # The fingerprint pins everything the plan was computed from. At commit the
     # live state is digested again and compared against it, so a reviewer's
     # decision is only ever applied to the state it was made about.
+    required = tuple(dict.fromkeys(check_findings))[:MAX_FINDINGS]
+    own = tuple(dict.fromkeys(part_findings))[:MAX_FINDINGS]
     return MergePlan(skill=local.skill, origin=incoming.ref.origin, base=base.ref if base else None,
                      incoming=incoming.ref,
                      fingerprint=PlanFingerprint(
@@ -369,4 +379,4 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                      changes=tuple(changes[key] for key in ordered),
                      conflicts=tuple(conflicts[key] for key in sorted(conflicts)),
                      flags=tuple(sorted(flags, key=lambda flag: flag.value)),
-                     check_findings=distinct_findings(check_findings)[:MAX_FINDINGS])
+                     check_findings=tuple(dict.fromkeys((*required, *own))))

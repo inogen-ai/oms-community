@@ -5,6 +5,8 @@ matched text (spec D5), so a stored plan cannot leak what the sanitiser removed.
 """
 from collections.abc import Iterable
 
+from pydantic import BaseModel, ConfigDict
+
 from oms.domain.redaction import Redaction
 from oms.ports.injection_screen import ScreenResult
 from oms.sources.models import CheckFinding
@@ -15,6 +17,17 @@ _LABELS = {
     "file_size": "is larger than 10 MB",
 }
 _INJECTION_THRESHOLD = 0.5
+PERSONAL_DATA: frozenset[str] = frozenset({"phone", "email"})
+
+
+class CheckFindingView(BaseModel):
+    """A finding as the card shows it: place, line, category and a plain summary, never the matched text."""
+    model_config = ConfigDict(extra="forbid")
+    path: str | None = None
+    part_id: str | None = None
+    line: int | None = None
+    category: str
+    summary: str
 
 
 def _label(category: str) -> str:
@@ -37,6 +50,11 @@ def describe_finding(finding: CheckFinding) -> str:
         place = f"{place}, line {finding.line}" if place else f"line {finding.line}"
     label = _label(finding.category)
     return f"{place}: {label}" if place else label[:1].upper() + label[1:]
+
+
+def finding_view(finding: CheckFinding) -> CheckFindingView:
+    return CheckFindingView(path=finding.path, part_id=finding.part_id, line=finding.line,
+                            category=finding.category, summary=describe_finding(finding))
 
 
 def distinct_findings(findings: Iterable[CheckFinding]) -> tuple[CheckFinding, ...]:
