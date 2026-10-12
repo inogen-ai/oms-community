@@ -122,7 +122,7 @@
     },
     "frontend/community/README.md": {
       "mode": 420,
-      "sha256": "281a378e8ab10548602c6326f4e38561db81d3c32ad9f18b7264883489f62f08"
+      "sha256": "f2c26560aa99702abdb49ab0fa5b7c399d7aa43e467b095e171ee15434241f8e"
     },
     "frontend/community/app/globals.css": {
       "mode": 420,
@@ -366,15 +366,15 @@
     },
     "frontend/community/next.config.ts": {
       "mode": 420,
-      "sha256": "f8608992352844b00c347d77105930d1d9d08f81293d9e247020fb00cd701c44"
+      "sha256": "0e843482a83ca2d460e7896e6167e377880bd46005b0a197acea47ac8e9100b6"
     },
     "frontend/community/package-lock.json": {
       "mode": 420,
-      "sha256": "de8bf84b86d598a5690908b1c8cdb1ac199e5020ff3745d310ba3367f5cc2daa"
+      "sha256": "fcc3f10c609184b62839c7aaba77655e79c7459ceb4eccfcb7cc3b7639a60a62"
     },
     "frontend/community/package.json": {
       "mode": 420,
-      "sha256": "870d4f58782f72beb291dee3d51c73d49920bac31c569fb1274b3d7e9798571f"
+      "sha256": "afcd24cebf5a03abec779348986e6ced0d2523c39956d282bce86726022080b2"
     },
     "frontend/community/playwright.config.ts": {
       "mode": 420,
@@ -430,7 +430,7 @@
     },
     "frontend/packages/client/package.json": {
       "mode": 420,
-      "sha256": "107173b3358d0b66691f20fb8eee6c7beab40b669cec271b239843697efdb99c"
+      "sha256": "d916bb624813b1d160f9b075544552cc0fa331b97b1921b18d4782736ece5883"
     },
     "frontend/packages/client/src/index.d.ts": {
       "mode": 420,
@@ -486,7 +486,7 @@
     },
     "frontend/packages/ui-core/package.json": {
       "mode": 420,
-      "sha256": "2ad1af0c1aea6ada53ae6d538d6f1c8a64c0a11e4c24d094c948e8263021d9c1"
+      "sha256": "c8f75e941f8f0af93ace5e69f9fbfa6a9bde7c2c2f4b18305e63565b3b2c00e9"
     },
     "frontend/packages/ui-core/src/assets/GitHub_Invertocat_Black.svg": {
       "mode": 420,
@@ -742,7 +742,7 @@
     },
     "pyproject.toml": {
       "mode": 420,
-      "sha256": "4ae4b929201514c970d0ac1c22f45d6465767e77a36f4c5f2588813107c462f3"
+      "sha256": "08594c9842358567fcbeff8968bc270f2262cb771a74a1daa5ea0a821fcb2b4d"
     },
     "release/__init__.py": {
       "mode": 420,
@@ -1174,7 +1174,7 @@
     },
     "src/oms/publish/render.py": {
       "mode": 420,
-      "sha256": "9e8aae9b7fe76dea77c4fde920c7ba4fc4d9d00205bf9806f3410e7d29d3d343"
+      "sha256": "0c901b9f7c4004e500726179a664faa3380f9e8285073e0f703c4b313f2543ce"
     },
     "src/oms/publish/urls.py": {
       "mode": 420,
@@ -1194,7 +1194,7 @@
     },
     "src/oms/schema/metadata.py": {
       "mode": 420,
-      "sha256": "21870d8acb3b53fccb4217409b4a83204b7221ac91ceb7aab3aaee9c94a87602"
+      "sha256": "c30312f10daa99ffd3a179e9ecf9562429e9e6a0c9f7a4485aa368473bf423f0"
     },
     "src/oms/schema/migrations/source_identity.py": {
       "mode": 420,
@@ -1510,7 +1510,7 @@
     },
     "tests/community/test_install_contribution_mode.py": {
       "mode": 420,
-      "sha256": "9592fffff7e89033f38d5d41800abd491881f9476c6ad5dbfc0479da761e6e85"
+      "sha256": "be4d52bb0aebdba42ff8424ad3184e2571ddf6d413d816821c629882aa4d565e"
     },
     "tests/community/test_install_sources.py": {
       "mode": 420,
@@ -1870,7 +1870,7 @@
     },
     "uv.lock": {
       "mode": 420,
-      "sha256": "fbe8b754ba0296acbd7202cac3fa6fd6b861f5ce003933988898d10073ffc8fe"
+      "sha256": "8e9bbcac1fd98b75e18d2ecba4e9c0dae96e819bc4d232b651e0b04622fc4f9d"
     }
   },
   "schema_version": 1
