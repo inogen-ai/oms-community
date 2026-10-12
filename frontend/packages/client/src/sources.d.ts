@@ -169,6 +169,13 @@ export interface SourceReviewedChoices extends SourceUpdateBody {
 }
 /** The host's action runner: it gives each request its own idempotency key and recovery, and returns null on failure. */
 export type SourceActionRun = (job: (key: string) => Promise<SourceOperation>, identity: string) => Promise<SourceOperation | null>;
+/**
+ * Why the one-step apply stopped after saving: "unavailable" (the card could not be read back),
+ * "stale" (the card is out of date), "changed" (someone else saved other choices) or "held"
+ * (the saved selection did not pass the required checks).
+ */
+export type SourceReviewStop = "changed" | "held" | "stale" | "unavailable";
+export interface SourceReviewOptions { onStopped?: (reason: SourceReviewStop) => void }
 export interface SourceBulkApplyBody { updates: readonly (SourceApplyBody & { update_id: string })[] }
 export interface SourceSkillGeneration { skill_id: string; content: number; binding: number }
 export interface SourceUndoBody { undo_id: string; skill_id: string; expected_generations: readonly SourceSkillGeneration[]; policy_version: string }
@@ -222,8 +229,9 @@ export interface SourcesClient {
 }
 export function createSourcesClient(options: { request: SourceRequest; requestBytes: SourceByteRequest; context?: SourceRequestContext }): SourcesClient;
 /**
- * Save (only when body.save), read the card back, stop (null) when the save failed or the card is stale or
- * not passed, then apply with the fresh fingerprint. `run` is the host's action.run, so each request keeps its own key.
+ * Save (only when body.save), read the card back, stop (null) when the save failed, or when the card is
+ * unreadable, stale, holds other choices than `body.choices` or did not pass (each calls `options.onStopped`),
+ * then apply with the fresh fingerprint. `run` is the host's action.run, so each request keeps its own key.
  */
 export function applyReviewedChoices(client: Pick<SourcesClient, "saveDraft" | "update" | "apply">, run: SourceActionRun,
-                                     updateId: string, body: SourceReviewedChoices): Promise<SourceOperation | null>;
+                                     updateId: string, body: SourceReviewedChoices, options?: SourceReviewOptions): Promise<SourceOperation | null>;

@@ -159,7 +159,8 @@ test("reviewed choices are saved, read back and applied, and stop when the card 
   const { applyReviewedChoices } = clientModule;
   const given = { content_generation: 1, binding_generation: 1, update_generation: 1, policy_version: "p", local_digest: "l", candidate_digest: "c" };
   const fresh = { ...given, update_generation: 2 };
-  let view = { stale: false, resolved_check: { state: "passed" }, plan: { fingerprint: fresh } };
+  const choices = [{ part_id: "p", part_fingerprint: "f", choice: "use_upstream", merged_text: null, acknowledged: ["phone"] }];
+  let view = { stale: false, resolved_check: { state: "passed" }, plan: { fingerprint: fresh }, drafts: choices };
   const calls = [];
   const client = {
     saveDraft: async (id, body, key) => { calls.push(["draft", id, body, key]); return { state: "awaiting_review" }; },
@@ -168,7 +169,6 @@ test("reviewed choices are saved, read back and applied, and stop when the card 
   };
   const identities = []; let keys = 0;
   const run = async (job, identity) => { identities.push(JSON.parse(identity)[0]); return job(`key-${++keys}`); };
-  const choices = [{ part_id: "p", part_fingerprint: "f", choice: "use_upstream", merged_text: null, acknowledged: ["phone"] }];
   const body = { skill_id: "s", fingerprint: given, choices, removal_consents: ["r"], save: true };
   assert.deepEqual(await applyReviewedChoices(client, run, "u", body), { state: "complete" });
   assert.deepEqual(identities, ["draft", "apply"]);
@@ -185,4 +185,40 @@ test("reviewed choices are saved, read back and applied, and stop when the card 
   assert.deepEqual(calls, []);
   assert.deepEqual(await applyReviewedChoices(client, run, "u", { ...body, save: false }), { state: "complete" });
   assert.deepEqual(calls.map(row => [row[0], row[2].fingerprint]), [["apply", given]]);
+});
+
+test("the one-step apply applies only the choices this reviewer saved, and says why it stopped", async () => {
+  // Ruling T6-2: drafts are one shared record. If another reviewer saves between this save and the
+  // read-back, applying would commit their selection in this reviewer's name, so the helper stops.
+  const { applyReviewedChoices } = clientModule;
+  const fingerprint = { content_generation: 1, binding_generation: 1, update_generation: 1, policy_version: "p", local_digest: "l", candidate_digest: "c" };
+  const choices = [{ part_id: "a", part_fingerprint: "fa", choice: "use_upstream", merged_text: null, acknowledged: ["phone", "email"] },
+    { part_id: "b", part_fingerprint: "fb", choice: "merged_text", merged_text: "Mine" }];
+  // The server keeps each choice with its format version and sorted acknowledgements, in any order.
+  const stored = [{ format_version: 1, ...choices[1], acknowledged: [] }, { format_version: 1, ...choices[0], acknowledged: ["email", "phone"] }];
+  const passed = { stale: false, resolved_check: { state: "passed" }, plan: { fingerprint: { ...fingerprint, update_generation: 2 } }, drafts: stored };
+  const body = { skill_id: "s", fingerprint, choices, removal_consents: [], save: true };
+  const attempt = async (read, run = async job => job("key")) => {
+    const stops = [], applied = [];
+    const client = { saveDraft: async () => ({ state: "awaiting_review" }), update: read,
+      apply: async (id, sent) => { applied.push(sent); return { state: "complete" }; } };
+    const result = await applyReviewedChoices(client, run, "u", body, { onStopped: reason => stops.push(reason) });
+    return [result, stops, applied.length];
+  };
+  assert.deepEqual(await attempt(async () => passed), [{ state: "complete" }, [], 1]);
+  const cases = [
+    [async () => ({ ...passed, drafts: [stored[1], { ...stored[0], merged_text: "Theirs" }] }), "changed"],
+    [async () => ({ ...passed, drafts: [stored[1]] }), "changed"],
+    [async () => ({ ...passed, drafts: [stored[0], { ...stored[1], acknowledged: ["phone"] }] }), "changed"],
+    [async () => ({ ...passed, drafts: [stored[0], { ...stored[1], part_fingerprint: "other" }] }), "changed"],
+    [async () => ({ ...passed, stale: true }), "stale"],
+    [async () => ({ ...passed, resolved_check: { state: "held" } }), "held"],
+    [async () => ({ ...passed, resolved_check: { state: "unavailable" } }), "held"],
+    [async () => { throw new Error("offline"); }, "unavailable"],
+  ];
+  for (const [read, reason] of cases) assert.deepEqual(await attempt(read), [null, [reason], 0], reason);
+  // A failed save is reported by the host's own run, with its recovery; it is not a stop.
+  assert.deepEqual(await attempt(async () => passed, async () => null), [null, [], 0]);
+  // The callback is optional.
+  assert.deepEqual(await applyReviewedChoices({ saveDraft: async () => ({ state: "complete" }), update: async () => ({ ...passed, stale: true }) }, async job => job("k"), "u", body), null);
 });

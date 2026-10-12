@@ -106,6 +106,24 @@ test("Skip and keep-current/adopt use distinct actions and do not claim an apply
   expect(state.requests.filter(row => row.path.endsWith("/apply"))).toHaveLength(0);
 });
 
+test("Apply stops when someone else saved other choices, says so and shows their choices", async ({ page }) => {
+  // Ruling T6-2: drafts are one shared record; another reviewer's selection is never applied in this reviewer's name.
+  const state = await sourceFixture(page);
+  const api = `http://127.0.0.1:${process.env.OMS_COMMUNITY_API_PORT || "4317"}`;
+  const headers = { "Access-Control-Allow-Origin": `http://127.0.0.1:${process.env.OMS_COMMUNITY_UI_PORT || "4318"}` };
+  await page.route(`${api}/api/skill-updates/update-1`, async route => {
+    if (route.request().method() !== "GET" || !state.requests.some(row => row.path.endsWith("/draft"))) return route.fallback();
+    const theirs = state.update.drafts.map(choice => ({ ...choice, choice: "use_upstream" as const, merged_text: null }));
+    await route.fulfill({ headers, json: { ...structuredClone(state.update), drafts: theirs, resolved_check: { format_version: 1, state: "passed", code: "resolved_writes_checked", reasons: [] } } });
+  });
+  await page.goto("/import/?github=sources&update=update-1");
+  await page.getByLabel("Keep yours for section:intro").check();
+  await page.getByRole("button", { name: "Apply update" }).click();
+  await expect(page.getByText("Someone else changed the choices. Check them and try again.")).toBeVisible();
+  expect(state.requests.filter(row => row.path.endsWith("/apply"))).toHaveLength(0);
+  await expect(page.getByLabel("Take GitHub's version for section:intro")).toBeChecked();
+});
+
 test("a removal is one choice, and keeping it sends no consent", async ({ page }) => {
   const state = await sourceFixture(page, { removal: true });
   await page.goto("/import/?github=sources&update=update-1");

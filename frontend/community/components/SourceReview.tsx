@@ -1,11 +1,19 @@
 "use client";
 import { useEffect, useState } from "react";
-import { applyReviewedChoices, type SourceChange, type SourceFilePreview } from "@inogen/oms-client";
+import { applyReviewedChoices, type SourceChange, type SourceFilePreview, type SourceReviewStop } from "@inogen/oms-client";
 import { Button, Notice, SkillDeleteConfirmation, SourceFileComparison, SourceUpdateCard, type SourceCardDraft, type SourceFileSide, type SourceFileSidePreview } from "@inogen/oms-ui-core";
 import { useWorkspace, useAction, Feedback, ResourceStatus, message } from "@/lib/workspace";
 import { useSourceAction, useSourceResource } from "@/lib/source-state";
 import { saveSourceDownload } from "@/lib/sources";
 import { SourceActionFeedback } from "./SourceOperations";
+
+// Why the one-step Apply stopped after it saved the choices (ruling T6-2).
+const STOPPED: Record<SourceReviewStop, string> = {
+  changed: "Someone else changed the choices. Check them and try again.",
+  held: "A safety check still holds these choices.",
+  stale: "This card is out of date. Check safety again.",
+  unavailable: "The card could not be read back. Try again.",
+};
 
 export default function SourceReview({ id, title, draft, onDraftChange }: { id: string; title?: string; draft?: SourceCardDraft; onDraftChange?: (draft?: SourceCardDraft) => void }) {
   const { api, sources, sourceRevision, refreshSources } = useWorkspace();
@@ -16,7 +24,13 @@ export default function SourceReview({ id, title, draft, onDraftChange }: { id: 
   const action = useSourceAction();
   const deletion = useAction();
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [stopped, setStopped] = useState<SourceReviewStop | null>(null);
   const skillName = title ?? resource.data?.plan.skill.skill_id ?? "";
+  const stop = (reason: SourceReviewStop) => {
+    setStopped(reason);
+    // Show the choices someone else saved, so "Check them" means those.
+    if (reason === "changed") changeDraft(undefined);
+  };
   useEffect(() => {
     const update = resource.data;
     if (!currentDraft || !update || update.stale || JSON.stringify(currentDraft.fingerprint) === JSON.stringify(update.plan.fingerprint)) return;
@@ -27,9 +41,10 @@ export default function SourceReview({ id, title, draft, onDraftChange }: { id: 
   // Retain local prose only when the server proves the same part and permitted choice.
   }, [resource.data, currentDraft]);
   return <><ResourceStatus resource={resource} /><SourceActionFeedback action={action} />
+    {stopped && <Notice kind="error">{STOPPED[stopped]}</Notice>}
     {resource.data && <><SourceUpdateCard update={resource.data} title={title} draft={currentDraft} partFingerprints={resource.data.part_fingerprints} ownership={resource.data.ownership}
-      busy={action.busy || resource.loading || deletion.busy} onDraftChange={changeDraft}
-      onApply={body => void applyReviewedChoices(sources!.client, action.run, id, body)}
+      busy={action.busy || resource.loading || deletion.busy} onDraftChange={value => { setStopped(null); changeDraft(value); }}
+      onApply={body => { setStopped(null); void applyReviewedChoices(sources!.client, action.run, id, body, { onStopped: stop }); }}
       onSkip={body => void action.run(key => sources!.client.skip(id, body, key), JSON.stringify(["skip", id, body]))}
       onAdopt={body => void action.run(key => sources!.client.adopt(id, body, key), JSON.stringify(["adopt", id, body]))}
       onRecheck={body => void action.run(key => sources!.client.recheck(id, body, key), JSON.stringify(["recheck", id, body]))}

@@ -8,7 +8,8 @@ const FP_FIELDS = ["content_generation", "binding_generation", "update_generatio
 const sameFingerprint = (a, b) => !!a && !!b && FP_FIELDS.every(key => (a[key] ?? null) === (b[key] ?? null));
 const TAKEN_KINDS = ["rule", "section", "example", "file"];
 // A change row's element id. Every character outside [A-Za-z0-9-] is escaped, so two parts never share one.
-const changeId = partId => "oms-source-change-" + [...partId].map(c => /[A-Za-z0-9-]/.test(c) ? c : `_${c.codePointAt(0).toString(16)}_`).join("");
+const escapeId = value => [...value].map(c => /[A-Za-z0-9-]/.test(c) ? c : `_${c.codePointAt(0).toString(16)}_`).join("");
+const changeId = partId => "oms-source-change-" + escapeId(partId);
 const removes = change => change.action === "remove" || (change.incoming.kind === "absent" && change.local.kind !== "absent");
 
 export const SOURCE_RISK_ORDER = Object.freeze(["injection", "check_failed", "check_unavailable", "personal_data", "removed_upstream", "your_edits", "unclear_identity", "script"]);
@@ -146,12 +147,16 @@ export function sourceGroupOptions(update, group) {
   const conflicts = new Map(update.plan.conflicts.map(conflict => [conflict.part_id, conflict]));
   const per = group.parts.map(part => sourceChoiceOptions(update, changes.get(part.part_id), part, conflicts.get(part.part_id)));
   const fresh = group.parts.every(part => update.held_install === true || changes.get(part.part_id).local.kind === "absent");
+  // Taking a replacement removes the parts it replaces; the group says so, not only "Choose each" (ruling T6-4).
+  const linked = new Set(group.parts.flatMap(part => changes.get(part.part_id).linked_removals ?? []));
   return ["use_upstream", "keep_oms"].filter(choice => per.every(options => options.some(option => option.choice === choice)))
     .map(choice => {
       const first = per[0].find(option => option.choice === choice);
       // Every "anyway" form shows the note, the group's as well as each item's.
       return { choice, label: groupLabel(group.risk, choice, group.parts.length, fresh, !!first.acknowledged),
-        ...(first.note ? { note: first.note } : {}), optionFor: index => per[index].find(option => option.choice === choice) };
+        ...(first.note ? { note: first.note } : {}),
+        ...(choice === "use_upstream" && linked.size ? { removalNote: `This also removes ${plural(linked.size, "part", "parts")} in OMS.` } : {}),
+        optionFor: index => per[index].find(option => option.choice === choice) };
     });
 }
 
@@ -164,11 +169,15 @@ export function sourceSafeSummary(update, choices) {
   return `${listed} passed the checks. ${safe.length === 1 ? "It" : "They"} will be ${update.held_install === true ? "installed" : "applied"}.${left ? ` ${left} left out.` : ""}`;
 }
 
+// Ruling T6-1: "Ready" only when the primary action is enabled; otherwise the first reason it is not.
 export function sourceStatusSentence(update, state) {
-  if (state.waiting) return `${plural(state.waiting, "item needs", "items need")} you.`;
   const verb = update.held_install === true ? "install" : "apply";
-  if (update.summary?.whole_skill?.length) return `Held: see the reasons below before you ${verb}.`;
-  return update.held_install === true ? "Ready to install." : "Ready to apply.";
+  if (state.stale) return "This card is out of date. Check safety again before deciding.";
+  if (state.waiting) return `${plural(state.waiting, "item needs", "items need")} you.`;
+  if (state.held || update.summary?.whole_skill?.length) return `Held: see the reasons below before you ${verb}.`;
+  if (update.held_install === true && !state.taken) return "Choose at least one part to install, or delete this skill.";
+  if (state.canApply) return `Ready to ${verb}.`;
+  return `Not ready to ${verb}. See the notes below.`;
 }
 
 export function sourceCardState(update, draft = initialSourceDraft(update), partFingerprints = {}) {
@@ -206,8 +215,12 @@ function evidence(title, side) {
   return h("section", { className: "oms-source-side" }, h("h5", null, title),
     h("pre", { tabIndex: 0, "aria-label": title }, preview.text), preview.truncated ? h("p", null, "Bounded excerpt") : null);
 }
-function choiceLabel(option) {
-  return [option.label, option.note ? h("span", { className: "oms-source-note" }, option.note) : null];
+// A choice's label and notes; each note has an id its radio names in aria-describedby (ruling T6-4).
+function choiceNotes(option, idBase) {
+  const notes = [["note", option.note], ["removal", option.removalNote]].filter(([, note]) => note)
+    .map(([kind, note]) => ({ id: `${idBase}-${kind}`, note }));
+  return { describedBy: notes.length ? notes.map(row => row.id).join(" ") : undefined,
+    children: [option.label, ...notes.map(row => h("span", { key: row.id, id: row.id, className: "oms-source-note" }, row.note))] };
 }
 
 export function SourceUpdateCard({ update, title, draft: controlledDraft, partFingerprints = {}, ownership = {}, ref, now,
@@ -278,10 +291,13 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
       reasons.length ? h("ul", { className: "oms-source-reasons" }, reasons.map(reason => h("li", { key: reason }, reason))) : null,
       h("details", { className: "oms-source-show" }, h("summary", null, "Show"), comparison(change)),
       h("fieldset", { className: "oms-source-choices", role: "radiogroup", "aria-label": `Decision for ${part.part_id}` },
-        optionsFor(part).map(option => h("label", { key: option.choice, className: "oms-source-check" },
-          h("input", { type: "radio", name: `choice-${update.update_id}-${changeId(part.part_id)}`, "aria-label": `${option.label} for ${part.label}`,
-            checked: isOption(chosen, option), disabled: !editable, onChange: () => decide(part.part_id, option) }),
-          ...choiceLabel(option)))),
+        optionsFor(part).map(option => {
+          const notes = choiceNotes(option, `${changeId(part.part_id)}-${escapeId(update.update_id)}-${option.choice}`);
+          return h("label", { key: option.choice, className: "oms-source-check" },
+            h("input", { type: "radio", name: `choice-${update.update_id}-${changeId(part.part_id)}`, "aria-label": `${option.label} for ${part.label}`,
+              "aria-describedby": notes.describedBy, checked: isOption(chosen, option), disabled: !editable, onChange: () => decide(part.part_id, option) }),
+            ...notes.children);
+        })),
       chosen?.choice === "merged_text" ? h("label", { className: "oms-source-field" }, "Your text", h("textarea", {
         "aria-label": `Text for ${part.label}`, value: chosen.merged_text ?? "", rows: 6, disabled: !editable,
         onChange: event => decide(part.part_id, { choice: "merged_text" }, event.target.value) })) : null,
@@ -294,11 +310,14 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
       h("h4", null, `${row.label} (${members.length})`),
       h("ul", null, members.map(part => h("li", { key: part.part_id }, part.label))),
       h("fieldset", { className: "oms-source-choices", role: "radiogroup", "aria-label": `Decision for every item in ${row.label}` },
-        sourceGroupOptions(update, row).map(option => h("label", { key: option.choice, className: "oms-source-check" },
-          h("input", { type: "radio", name: `group-${update.update_id}-${row.risk}`, "aria-label": option.label, disabled: !canEdit,
-            checked: members.every((part, index) => isOption(effective.get(part.part_id), option.optionFor(index))),
-            onChange: () => decideMany(members, option.optionFor) }),
-          ...choiceLabel(option)))),
+        sourceGroupOptions(update, row).map(option => {
+          const notes = choiceNotes(option, `oms-source-group-${escapeId(update.update_id)}-${row.risk}-${option.choice}`);
+          return h("label", { key: option.choice, className: "oms-source-check" },
+            h("input", { type: "radio", name: `group-${update.update_id}-${row.risk}`, "aria-label": option.label, "aria-describedby": notes.describedBy,
+              disabled: !canEdit, checked: members.every((part, index) => isOption(effective.get(part.part_id), option.optionFor(index))),
+              onChange: () => decideMany(members, option.optionFor) }),
+            ...notes.children);
+        })),
       h("details", { className: "oms-source-each" }, h("summary", null, "Choose each"), members.map(item)));
   };
 
@@ -333,13 +352,13 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
     className: "oms-source-card", "aria-busy": busy },
     github ? h(SourceRepositoryLine, { repository: update.repository ?? null, now }) : null,
     closed ? h("p", null, "Recorded historical comparison. The OMS side shows content at review time. This update no longer accepts decisions.")
-      : h("p", { role: "status", className: "oms-source-sentence" }, sourceStatusSentence(update, state)),
+      // The sentence carries the out-of-date and nothing-taken wording, so neither repeats below it.
+      : h("p", { role: "status", className: "oms-source-sentence" }, sourceStatusSentence(update,
+        { ...state, stale: state.stale || freshness === "stale", canApply: state.canApply && freshness === "fresh" && !error })),
     !closed && error ? h(Notice, { kind: "error" }, error) : null,
-    !closed && (state.stale || freshness === "stale") ? h(Notice, { kind: "error" }, "This card is out of date. Check safety again before deciding.") : null,
     !closed && freshness === "unavailable" ? h(Notice, null, "Freshness could not be verified. Decisions are unavailable.") : null,
     !closed && state.held ? h(Notice, null, "Required checks still hold this selection.") : null,
     !closed && !state.validChoices ? h(Notice, { kind: "error" }, "A choice is incomplete, no longer permitted or belongs to a different part revision.") : null,
-    !closed && heldInstall && !state.taken ? h("p", { role: "status" }, "Choose at least one part to install, or delete this skill.") : null,
     !closed && update.summary?.whole_skill?.length ? h("section", { className: "oms-source-whole", "aria-label": "Held for the whole skill" },
       h("h3", null, "Held for the whole skill"),
       h("ul", null, update.summary.whole_skill.map((finding, index) => h("li", { key: `${finding.category}-${index}` }, finding.summary))),

@@ -55,6 +55,8 @@ export interface SourceCardOption {
 export interface SourceCardGroup { risk: SourceCardRisk | "other"; label: string; parts: readonly SourceCardPart[] }
 export interface SourceCardGroupOption {
   choice: "keep_oms" | "use_upstream"; label: string; note?: string;
+  /** "This also removes 2 parts in OMS." when taking the group removes the parts it replaces. */
+  removalNote?: string;
   /** The matching option of the group's part at `index`. */
   optionFor(index: number): SourceCardOption;
 }
@@ -74,12 +76,16 @@ export function sourceNeedsYou(update: SourceCardUpdate): SourceCardGroup[];
 export function sourceGroupOptions(update: SourceCardUpdate, group: SourceCardGroup): SourceCardGroupOption[];
 /** "16 rules, 5 sections and 6 files passed the checks. They will be installed." */
 export function sourceSafeSummary(update: SourceCardUpdate, choices: readonly SourceCardChoice[]): string;
-/** "1 item needs you.", "Ready to install.", "Ready to apply." or the whole-skill hold. */
-export function sourceStatusSentence(update: SourceCardUpdate, state: { waiting: number }): string;
-export function sourceCardState(update: SourceCardUpdate, draft?: SourceCardDraft, partFingerprints?: Readonly<Record<string, string>>): {
+export interface SourceCardState {
   stale: boolean; validChoices: boolean; resolved: boolean; groups: string[][]; saved: boolean; held: boolean; taken: boolean;
   choices: SourceCardChoice[]; waiting: number; canApply: boolean;
-};
+}
+/**
+ * The card's status sentence: "Ready to install." or "Ready to apply." only when `state.canApply`;
+ * otherwise the out-of-date wording, "N items need you.", the hold, or the held-install "Choose at least one part" rule.
+ */
+export function sourceStatusSentence(update: SourceCardUpdate, state: Pick<SourceCardState, "stale" | "waiting" | "held" | "taken" | "canApply">): string;
+export function sourceCardState(update: SourceCardUpdate, draft?: SourceCardDraft, partFingerprints?: Readonly<Record<string, string>>): SourceCardState;
 export function SourceUpdateCard(props: {
   update?: SourceCardUpdate | null; title?: string; draft?: SourceCardDraft;
   partFingerprints?: Readonly<Record<string, string>>; ownership?: Readonly<Record<string, "source" | "shared" | "local" | "unknown">>;
