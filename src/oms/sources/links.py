@@ -135,3 +135,9 @@ def select_ref(link: GitHubLink, refs: dict[str, str], symbolic_head: str | None
     if len(candidates) != 1:
         raise LinkError('ambiguous ref; specify kind, value and package path' if candidates else 'ref not found')
     return candidates[0]
+
+
+def repository_name(url: str) -> tuple[str, str]:
+    """Owner and repository as `parse_link` canonicalises them (lower case, no .git)."""
+    owner, repo = parse_link(url).repository_url.removesuffix('.git').split('/')[3:5]
+    return owner, repo

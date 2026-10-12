@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from oms.adapters.blobs.file_blob_store import FileBlobStore
 from oms.domain.identity import SkillRef
 from oms.sources.discovery import Discoveries
+from oms.sources.github_api import FactsFetch
 from oms.sources.models import (
     ActionContext, AcquiredPackage, ApplyRequest, CheckRequest, CheckResult,
     DiscoveryResult, DiscoveredPackage, Evidence, InstallRequest, InstallSelection,
@@ -117,7 +118,7 @@ class SourceWorld:
             return factory
         self.service = SourceService(self.repository, factory_for, self.reader,
             ProjectionBuilder(self.blobs, tmp_path / "work"), self.policy, self.discoveries,
-            clock=lambda: self.now)
+            clock=lambda: self.now, facts=lambda **request: FactsFetch(None, "not_configured"))
 
     @property
     def sources(self):

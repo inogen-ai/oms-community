@@ -243,3 +243,4 @@ class DiscoveryResult(Record):
     packages: tuple[DiscoveredPackage, ...]
     acquired_packages: tuple[AcquiredPackage, ...] = ()
     preselected_path: str | None = None
+    repository: RepositoryFacts | None = None

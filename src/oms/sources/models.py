@@ -190,6 +190,7 @@ class Source(Record):
     generation: Generation = 0
     scheduled: bool = False
     status: SourceStatus | None = None
+    repository: RepositoryFacts | None = None
 
 
 class Binding(Record):

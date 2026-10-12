@@ -3,6 +3,7 @@
 A body names things by their visible ids and nothing more; who the caller is and
 which workspace they act in comes from the edition's admission, never from the body.
 """
+from datetime import datetime
 from typing import Annotated, Literal
 from dataclasses import dataclass
 
@@ -10,7 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from oms.domain.models import SkillVersion
 from oms.sources.findings import CheckFindingView, distinct_findings, finding_view
-from oms.sources.models import CheckResult, DraftChoice, OperationResult, Page, SourceStatus, Update
+from oms.sources.github_api import RepositoryConcern, repository_concerns
+from oms.sources.links import repository_name
+from oms.sources.models import (
+    CheckResult, DraftChoice, OperationResult, Page, RepositoryFacts, SourceStatus, Update,
+)
 from oms.sources.primitives import DiscoveredPackage, Generation, PlanFingerprint, ResolvedRef
 from oms.sources.triage import PartReview, ReviewSummary, review_parts, review_summary
 
@@ -140,12 +145,28 @@ class OperationView(Body):
                        update_id=row.update_id, code=row.code, detail=row.detail) for row in result.outcomes))
 
 
+class RepositoryView(Body):
+    """The tracked repository (ruling R7): its name and link always, its facts and concerns when known."""
+    name: str
+    url: str
+    facts: RepositoryFacts | None = None
+    concerns: tuple[RepositoryConcern, ...] = ()
+
+
+def repository_view(canonical_url: str, facts: RepositoryFacts | None, *, now: datetime) -> RepositoryView:
+    owner, repo = repository_name(canonical_url)
+    name = f"{owner}/{repo}"
+    return RepositoryView(name=name, url=f"https://github.com/{name}", facts=facts,
+                          concerns=repository_concerns(facts, now, tracked_name=name) if facts is not None else ())
+
+
 class DiscoveryView(Body):
     discovery_id: str
     resolved_ref: ResolvedRef
     expires_at: str
     preselected_path: str | None
     packages: Page[DiscoveredPackage]
+    repository: RepositoryView | None = None
 
 
 class FilePreview(Body):
@@ -181,6 +202,7 @@ class UpdateView(Update):
     resolved_check: CheckResult = CheckResult(state="unavailable", code="review_not_evaluated")
     # The card of a skill held at install (spec 5.3): Apply or delete only, no Skip or Adopt.
     held_install: bool = False
+    repository: RepositoryView | None = None     # None for a local-origin card
 
     @computed_field
     @property

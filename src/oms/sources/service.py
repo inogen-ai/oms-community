@@ -18,6 +18,7 @@ from oms.ports.mutation import MutationRequest, MutationContextFactory, Mutation
 from oms.ports.workflow import WorkflowRepository
 from oms.ports.source_reader import SourceReader
 from oms.ports.source_store import SourcePolicy
+from oms.sources.github_api import FactsFetch
 from oms.sources.discovery import Discoveries, DiscoveryAccessError
 from oms.sources.projection import ProjectionBuilder
 from oms.sources import installation, operations
@@ -32,7 +33,7 @@ from oms.sources.models import (
     UnlinkRequest, RelocateSourceRequest, RemoveSourceRequest, AutomationRequest, ScheduleRequest, UndoRequest,
     UndoStatus, SaveDraftRequest, UpdateRequest, Binding, DurableEvent, Evidence, Generations, LocalState,
     OperationResult, PackageRequest,
-    PartKind, PlanFlag, ProjectionPart, RefRequest, SkillOutcome, SourceStatus, Update, UndoRecord, UndoWrite,
+    PartKind, PlanFlag, ProjectionPart, RefRequest, RepositoryFacts, SkillOutcome, SourceStatus, Update, UndoRecord, UndoWrite,
 )
 from oms.sources.mutation import source_repository
 from oms.sources.primitives import exact_digest
@@ -40,6 +41,8 @@ from oms.sources.safety import FileCheck
 from oms.sources import review
 
 logger = logging.getLogger(__name__)
+
+FactsFetcher = Callable[..., FactsFetch]
 
 
 def _file_result(check, path):
@@ -61,11 +64,13 @@ class SourceService:
                  reader: SourceReader, projection_builder: ProjectionBuilder, policy: SourcePolicy,
                  discoveries: Discoveries, *,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc), automatic: bool = False,
-                 completion_hook: Callable[[MutationContext, OperationResult], None] | None = None):
+                 completion_hook: Callable[[MutationContext, OperationResult], None] | None = None,
+                 facts: FactsFetcher | None = None):
         self.repository, self.factory_for = repository, factory_for
         self.reader, self.builder, self.policy = reader, projection_builder, policy
         self.discoveries, self.clock, self.automatic = discoveries, clock, automatic
         self.completion_hook = completion_hook
+        self.facts = facts if facts is not None else getattr(reader, "repository_facts", None)
 
     def _read(self, context, action, skills, callback, *, read_only=False):
         """Bookkeeping under the workflow lock, or with `read_only` a plain read
@@ -159,6 +164,20 @@ class SourceService:
         self.repository.atomic("source:failed", context.tenant_id,
             lambda graph, queue: fail(source_repository(graph)))
 
+    def _repository_facts(self, tenant_id: str, profile_id: str | None, canonical_url: str) -> RepositoryFacts | None:
+        """Facts for the import screen and the card; a failure only hides them (spec D5)."""
+        if not callable(self.facts):
+            return None
+        try:
+            result = self.facts(tenant_id=tenant_id, credential_profile_id=profile_id, canonical_url=canonical_url,
+                                now=self.clock())
+        except Exception:
+            logger.warning("Repository facts unavailable", extra={"code": "repository_facts_failed"})
+            return None
+        if result.facts is None:
+            logger.info("Repository facts unavailable", extra={"code": result.code})
+        return result.facts
+
     def discover(self, context: ActionContext, request: DiscoveryRequest, *, idempotency_key: str) -> DiscoveryResult:
         if request.actor_id != context.actor_id or request.ref.tenant_id != context.tenant_id:
             raise SourceForbidden("source_scope_denied", "discovery scope mismatch")
@@ -173,6 +192,8 @@ class SourceService:
             if (result.tenant_id != context.tenant_id or result.actor_id != context.actor_id
                     or result.credential_profile_id != request.ref.credential_profile_id):
                 raise SourceForbidden("source_scope_denied", "discovery scope mismatch")
+            result = result.model_copy(update={"repository": self._repository_facts(
+                context.tenant_id, result.credential_profile_id, result.resolved_ref.canonical_url)})
 
             def commit(bound):
                 retained = Discoveries(bound.sources, authorise=self.discoveries.authorise, clock=self.clock)
@@ -214,6 +235,10 @@ class SourceService:
                 installation.admitted_source(self, context, proposed_source, bound, request))
             if existing_source is not None:
                 source = existing_source
+            # The discovery's facts are newer than a source that has none or older ones.
+            if discovery.repository is not None and (source.repository is None
+                                                     or source.repository.fetched_at < discovery.repository.fetched_at):
+                source = source.model_copy(update={"repository": discovery.repository})
             paths = tuple(package.selection.package_path for package in packages)
             installed = self._read(context, "install", (), lambda bound:
                 installation.installed_packages(self, context, source, bound, paths))

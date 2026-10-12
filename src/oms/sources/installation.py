@@ -146,7 +146,8 @@ def source_from_discovery(discovery: DiscoveryResult) -> Source:
     canonical = parse_link(discovery.resolved_ref.canonical_url).repository_url
     return Source(source_id="source-" + exact_digest([discovery.tenant_id, canonical.casefold().removesuffix(".git"),
         discovery.credential_profile_id]), tenant_id=discovery.tenant_id, canonical_url=canonical,
-        credential_profile_id=discovery.credential_profile_id, discovery_root=discovery.resolved_ref.package_path)
+        credential_profile_id=discovery.credential_profile_id, discovery_root=discovery.resolved_ref.package_path,
+        repository=discovery.repository)
 
 
 def admitted_source(service, context, proposed, bound, request=None):

@@ -11,6 +11,7 @@ from copy import copy
 from dataclasses import dataclass, replace
 import logging
 import time
+from typing import TYPE_CHECKING
 
 from oms.domain.identity import SkillRef
 from oms.sources import operations, review
@@ -18,12 +19,13 @@ from oms.sources.apply import PreparedApply, commit_apply
 from oms.sources.errors import SourceConflict, SourceError, SourceForbidden, SourceNotFound, StaleMutation
 from oms.sources.forks import affected_owners
 from oms.sources.git_reader import AcquisitionError
+from oms.sources.github_api import facts_stale
 from oms.sources.limits import AcquisitionLimits, BudgetExceeded
 from oms.sources.links import LinkError, parse_link
 from oms.sources.local_projection import project_local
 from oms.sources.merge import build_plan
 from oms.sources.models import (
-    BatchMember, Binding, CheckRequest, Generations, LocalState, Operation, OperationResult, PackageRequest,
+    ActionContext, BatchMember, Binding, CheckRequest, Generations, LocalState, Operation, OperationResult, PackageRequest,
     ProjectionPart, RefRequest, SkillOutcome, Source, SourceSnapshot, SourceStatus, Update,
 )
 from oms.sources.mutation import source_repository
@@ -31,6 +33,11 @@ from oms.sources.operations import admitted_result, refresh
 from oms.sources.primitives import exact_digest
 from oms.sources.retirement import retired_binding
 from oms.sources.review import summarize_status
+
+if TYPE_CHECKING:
+    from oms.ports.graph_store import GraphStore
+    from oms.ports.review_queue import ReviewQueue
+    from oms.sources.service import SourceService
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +113,7 @@ def single(service, context, request, key, budget, *, before=None, throttle=True
             # source's status is left out: a sibling's failed check in the same
             # batch writes it, and that is not a reason to refuse this one.
             current = capture(service, context, request, skill, bound, scheduled=scheduled)
-            if (current.source.model_copy(update={'status': None}) != before.source.model_copy(update={'status': None})
+            if (_settled(current.source) != _settled(before.source)
                     or replace(current, source=before.source) != before):
                 raise StaleMutation('source_changed', 'source baseline or local changed')
             if candidate is None:
@@ -179,6 +186,36 @@ def single(service, context, request, key, budget, *, before=None, throttle=True
         raise
 
 
+def _settled(source: Source) -> Source:
+    # Status and repository facts are written by other checks and refreshes; neither is a reason to refuse this one.
+    return source.model_copy(update={'status': None, 'repository': None})
+
+
+def refresh_repository(service: "SourceService", context: ActionContext, request: CheckRequest) -> None:
+    """Fetch repository facts again when missing or an hour old (spec D5).
+
+    Runs before the check captures anything, outside every transaction, and never fails
+    the check: a fetch that fails leaves the facts the source already has.
+    """
+    try:
+        source = service._read(context, 'check', request.skills, lambda bound: bound.sources.get_source(
+            request.source_id, tenant_id=context.tenant_id), read_only=True)
+        if source is None or not facts_stale(source.repository, service.clock()):
+            return
+        facts = service._repository_facts(context.tenant_id, source.credential_profile_id, source.canonical_url)
+        if facts is None:
+            return
+
+        def record(graph: "GraphStore", queue: "ReviewQueue") -> None:
+            sources = source_repository(graph)
+            current = sources.get_source(source.source_id, tenant_id=context.tenant_id)
+            if current is not None and _settled(current) == _settled(source):
+                sources.put_source(current.model_copy(update={'repository': facts}))
+        service.repository.metadata('source:repository-facts', context.tenant_id, record)
+    except Exception:
+        logger.warning('Repository facts refresh failed', extra={'code': 'repository_facts_refresh_failed'})
+
+
 def check(service, context, request, *, idempotency_key, scheduled=False):
     skills = request.skills
     if not skills or len(skills) > 10_000 or len(set(skills)) != len(skills):
@@ -188,6 +225,7 @@ def check(service, context, request, *, idempotency_key, scheduled=False):
     replay = service._replay(context, 'check', request, idempotency_key, skills)
     if replay is not None:
         return replay.result
+    refresh_repository(service, context, request)
     # One budget for the whole scope, however many skills it names: the
     # deadline, the bytes fetched and the local projections all count against
     # it, so a wide check cannot run for as long as its skills add up to.
@@ -440,7 +478,7 @@ def record_check_failure(service, context, source, rows, error):
     def record(graph, queue):
         sources = source_repository(graph)
         current = sources.get_source(source.source_id, tenant_id=context.tenant_id)
-        if current is None or current.model_copy(update={"status": None}) != source.model_copy(update={"status": None}):
+        if current is None or _settled(current) != _settled(source):
             return
         status = SourceStatus(state=state, code=code, checked_at=service.clock())
         for row in rows:

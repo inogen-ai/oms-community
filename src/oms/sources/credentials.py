@@ -28,21 +28,29 @@ def isolated_environment(home: Path) -> dict[str, str]:
     }
 
 
-def credential_environment(settings: SourceSettings, profile_id: str | None,
-                           granted_profiles: frozenset[str], *,
-                           environ: Mapping[str, str] | None = None,
-                           repository_url: str = 'https://github.com/') -> dict[str, str]:
+def profile_token(settings: SourceSettings, profile_id: str | None, granted_profiles: frozenset[str], *,
+                  environ: Mapping[str, str] | None = None) -> str | None:
+    """The token a granted profile names, read at the moment of use; None without a profile."""
     if profile_id is None:
-        return {}
+        return None
     if profile_id not in granted_profiles:
         raise ProfileAccessError('source credential profile access denied')
     profile = next((p for p in settings.profiles if p.profile_id == profile_id), None)
     if profile is None:
         raise ProfileAccessError('source credential profile unavailable')
-    env = os.environ if environ is None else environ
-    token = env.get(profile.token_env)
+    token = (os.environ if environ is None else environ).get(profile.token_env)
     if not token:
         raise ProfileAccessError('source credential profile has a missing required environment variable')
+    return token
+
+
+def credential_environment(settings: SourceSettings, profile_id: str | None,
+                           granted_profiles: frozenset[str], *,
+                           environ: Mapping[str, str] | None = None,
+                           repository_url: str = 'https://github.com/') -> dict[str, str]:
+    token = profile_token(settings, profile_id, granted_profiles, environ=environ)
+    if token is None:
+        return {}
     encoded = base64.b64encode(('x-access-token:' + token).encode()).decode('ascii')
     return {'GIT_CONFIG_COUNT': '1',
             'GIT_CONFIG_KEY_0': f'http.{repository_url}.extraHeader',

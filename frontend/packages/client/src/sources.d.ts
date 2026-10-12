@@ -57,7 +57,18 @@ export interface SkillSourceSummary {
 export interface SkillSource extends SourceRecord {
   readonly source_id: string; readonly tenant_id: string; readonly canonical_url: string; readonly confirmed_aliases: readonly string[];
   readonly discovery_root: string; readonly credential_profile_id: string | null; readonly generation: number;
-  readonly scheduled: boolean; readonly status: SourceStatus | null;
+  readonly scheduled: boolean; readonly status: SourceStatus | null; readonly repository?: SourceRepositoryFacts | null;
+}
+export interface SourceRepositoryFacts extends SourceRecord {
+  readonly full_name: string; readonly description: string | null; readonly stars: number; readonly forks: number;
+  readonly archived: boolean; readonly disabled: boolean; readonly is_fork: boolean; readonly licence: string | null;
+  readonly created_at: string; readonly pushed_at: string | null; readonly default_branch: string; readonly fetched_at: string;
+}
+export type SourceRepositoryConcernCode = "archived" | "disabled" | "no_licence" | "new_repository" | "few_stars" | "fork" | "moved";
+export interface SourceRepositoryConcern extends SourceRecord { readonly code: SourceRepositoryConcernCode; readonly label: string }
+export interface SourceRepositoryView {
+  readonly name: string; readonly url: string; readonly facts: SourceRepositoryFacts | null;
+  readonly concerns: readonly SourceRepositoryConcern[];
 }
 export interface SourceBinding extends SourceRecord {
   readonly origin: SourceOrigin; readonly source_id: string; readonly package_path: string; readonly ref: ResolvedSourceRef;
@@ -86,6 +97,7 @@ export interface SourceDiscoveredPackage extends SourceRecord {
 export interface SourceDiscovery {
   readonly discovery_id: string; readonly resolved_ref: ResolvedSourceRef; readonly expires_at: string;
   readonly preselected_path: string | null; readonly packages: SourcePage<SourceDiscoveredPackage>;
+  readonly repository?: SourceRepositoryView | null;
 }
 export type SourceOperationState = "fetching" | "planning" | "awaiting_review" | "applying" | "complete" | "blocked" | "failed";
 export interface SourceOperation {
@@ -141,6 +153,7 @@ export interface SourceUpdateView extends SourceUpdate {
   readonly part_fingerprints: Readonly<Record<string, string>>;
   readonly ownership: Readonly<Record<string, "source" | "shared" | "local" | "unknown">>;
   readonly stale: boolean;
+  readonly repository?: SourceRepositoryView | null;
   /** Why a held install is held: a summary only, never the matched text. `path` is null for a SKILL.md part. */
   readonly check_findings?: readonly SourceCheckFinding[];
   readonly parts?: Readonly<Record<string, SourcePartReview>>;

@@ -22,10 +22,14 @@ import unicodedata
 from uuid import uuid4
 import weakref
 
+import httpx
+
 from oms.adapters.blobs.file_blob_store import FileBlobStore
 from oms.sources.discovery import metadata_from_frontmatter
 from oms.ports.blob_store import BlobStore
-from oms.sources.credentials import credential_environment, isolated_environment
+from oms.sources.credentials import ProfileAccessError, credential_environment, isolated_environment, profile_token
+from oms.sources.github_api import FactsFetch, fetch_repository_facts
+from oms.sources.links import LinkError, repository_name
 from oms.sources.network import UnsafeDestination, pinned_address
 from oms.sources.limits import AcquisitionLease, AcquisitionLimits, Budget, BudgetExceeded, run_bounded
 from oms.sources.links import parse_link, select_ref, validate_path
@@ -112,13 +116,29 @@ class GitReader:
     def __init__(self, settings: SourceSettings, *, blob_store: BlobStore | None = None,
                  transport: Transport | None = None, limits: AcquisitionLimits | None = None,
                  profile_grants: Callable[[str], frozenset[str]] = lambda tenant: frozenset(),
-                 cancelled: Callable[[], bool] = lambda: False):
+                 cancelled: Callable[[], bool] = lambda: False,
+                 api_transport: httpx.BaseTransport | None = None,
+                 api_resolve: Callable[[str], list[str]] | None = None):
         self.settings = settings
+        self.api_transport = api_transport
+        self.api_resolve = api_resolve
         self.blob_store = blob_store
         self.transport = transport or GitTransport()
         self.limits = limits or AcquisitionLimits()
         self.profile_grants = profile_grants
         self.cancelled = cancelled
+
+    def repository_facts(self, *, tenant_id: str, credential_profile_id: str | None, canonical_url: str,
+                         now: datetime) -> FactsFetch:
+        try:
+            owner, repo = repository_name(canonical_url)
+            token = profile_token(self.settings, credential_profile_id, self.profile_grants(tenant_id))
+        except LinkError:
+            return FactsFetch(None, "invalid_repository")
+        except ProfileAccessError:
+            return FactsFetch(None, "credential_unavailable")
+        options = {"resolve": self.api_resolve} if self.api_resolve is not None else {}
+        return fetch_repository_facts(owner, repo, now=now, token=token, transport=self.api_transport, **options)
 
     @contextmanager
     def batch_session(self, *, tenant_id: str, credential_profile_id: str | None, canonical_url: str):

@@ -15,6 +15,7 @@ from oms.ports.graph_store import GraphStore
 from oms.publish.publisher import Publisher
 from oms.sources.api_models import (
     DiscoveryView, SkillGenerationBody, SkillSourceSummary, SourceHistoryEntry, UndoView, UpdateListItem, UpdateView,
+    repository_view,
 )
 from oms.sources.errors import SourceConflict, SourceForbidden, SourceNotFound, StaleMutation
 from oms.sources.files import FileSide, require_path, verified_bytes
@@ -174,6 +175,12 @@ class SourceReads:
                 part_fingerprints={change.part_id: part_fingerprint(update, change.part_id)
                                    for change in update.plan.changes},
                 held_install=held_install(bound.graph, update))
+            if update.plan.origin.kind == "github":
+                binding = bound.sources.get_binding(ref)
+                source = bound.sources.get_source(binding.source_id, tenant_id=context.tenant_id) if binding else None
+                if source is not None:
+                    view = view.model_copy(update={"repository": repository_view(
+                        source.canonical_url, source.repository, now=self.service.clock())})
             return view, bound.sources.get_snapshot(update.plan.incoming), local
         view, incoming, local = self.service._read(context, "read", (), read, read_only=True)
         if view.stale or incoming is None:
@@ -250,7 +257,9 @@ class SourceReads:
         result = self.service.discoveries.get(discovery_id, tenant_id=context.tenant_id, actor_id=context.actor_id)
         return DiscoveryView(discovery_id=result.discovery_id, resolved_ref=result.resolved_ref,
             expires_at=result.expires_at.isoformat(), preselected_path=result.preselected_path,
-            packages=page(result.packages, lambda row: row.path, cursor, limit))
+            packages=page(result.packages, lambda row: row.path, cursor, limit),
+            repository=repository_view(result.resolved_ref.canonical_url, result.repository,
+                                       now=self.service.clock()))
 
     def delete_discovery(self, context: ActionContext, discovery_id: str) -> None:
         self.discovery(context, discovery_id, limit=1)
