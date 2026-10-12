@@ -2,11 +2,14 @@
 from datetime import timedelta
 
 import httpx
+import pytest
 
+from oms.sources.errors import SourceNotFound
 from oms.sources.git_reader import GitReader
 from oms.sources.github_api import FactsFetch
 from oms.sources.links import repository_name
-from oms.sources.models import DiscoveryRequest, InstallRequest, InstallSelection, RefRequest
+from oms.sources.models import (CheckRequest, DiscoveryRequest, InstallRequest, InstallSelection, RefRequest,
+                                UpdateRequest)
 from oms.sources.mutation import source_repository
 from oms.sources.reads import SourceReads
 from oms.sources.service import SourceService
@@ -102,6 +105,85 @@ def test_a_failed_refresh_keeps_the_old_facts_and_the_check_still_runs(source_wo
     _broken_fetcher(world)
     assert world.check(key="later").state in {"awaiting_review", "complete"}
     assert _source(world).repository == kept
+
+
+def test_a_check_naming_a_source_its_skills_are_not_bound_to_fetches_nothing(source_world):
+    # Ruling F2: the facts are refreshed only for the source the check's bindings were matched to.
+    world = source_world
+    world.install()
+    calls = []
+    _fetcher(world, facts(full_name="other/private"), calls)
+    other = _source(world).model_copy(update={"source_id": "other-source", "canonical_url": "https://github.com/other/private",
+                                              "credential_profile_id": "private-profile", "repository": None})
+    world.repository.metadata("test:other-source", "acme", lambda graph, queue: source_repository(graph).put_source(other))
+    with pytest.raises(SourceNotFound):
+        world.service.check(world.context, CheckRequest(source_id=other.source_id,
+            expected_source_generation=other.generation, skills=(world.skill,)), idempotency_key="foreign-source")
+    assert calls == []
+    assert world.sources.get_source(other.source_id, tenant_id="acme").repository is None
+
+
+@pytest.mark.parametrize("failure", ["raises", "refused"])
+def test_a_failed_refresh_is_not_tried_again_within_the_hour(source_world, failure):
+    # Ruling F3: an unreachable or refusing API is asked at most hourly, not on every check.
+    world = source_world
+    world.install()
+    calls = []
+
+    def repository_facts(**kwargs):
+        calls.append(kwargs)
+        if failure == "raises":
+            raise RuntimeError("api down")
+        return FactsFetch(None, "rate_limited")
+    world.service.facts = repository_facts
+    world.check(key="first")
+    assert len(calls) == 1
+    world.now += timedelta(minutes=5)
+    world.check(key="second")
+    assert len(calls) == 1
+    world.now += timedelta(hours=1)
+    world.check(key="third")
+    assert len(calls) == 2
+
+
+def test_a_recheck_refreshes_stale_facts_through_the_same_throttle(source_world):
+    # Ruling F4: "Check safety again" refreshes the facts too, once its binding is matched.
+    world = source_world
+    calls = []
+    _fetcher(world, facts(full_name="example/skills"), calls)
+    world.open_update()                      # install, then a check that fetches the facts
+    assert len(calls) == 1
+
+    def recheck(key):
+        update = world.sources.open_update(world.skill)
+        world.service.recheck(world.context, UpdateRequest(update_id=update.update_id, skill=world.skill,
+                                                           fingerprint=update.plan.fingerprint), idempotency_key=key)
+    recheck("fresh")
+    assert len(calls) == 1
+    world.now += timedelta(hours=2)
+    recheck("stale")
+    assert len(calls) == 2 and _source(world).repository.fetched_at == world.now
+    # A failed attempt counts, so a second recheck within the hour asks nobody.
+    world.service.facts = lambda **kwargs: calls.append(kwargs) or FactsFetch(None, "rate_limited")
+    world.now += timedelta(hours=2)
+    recheck("refused")
+    world.now += timedelta(minutes=5)
+    recheck("refused-again")
+    assert len(calls) == 3
+
+
+def test_a_recheck_of_a_local_card_fetches_nothing(source_world):
+    # A local upload's card has no repository, so its recheck asks GitHub for nothing.
+    world = source_world
+    calls = []
+    _fetcher(world, facts(full_name="example/skills"), calls)
+    world.open_local_review()
+    update = world.sources.open_update(world.skill)
+    assert update.plan.origin.kind != "github"
+    world.now += timedelta(hours=2)
+    world.service.recheck(world.context, UpdateRequest(update_id=update.update_id, skill=world.skill,
+                                                       fingerprint=update.plan.fingerprint), idempotency_key="recheck-local")
+    assert calls == []
 
 
 def test_facts_written_during_a_check_do_not_make_it_stale(source_world):

@@ -25,7 +25,7 @@ from oms.sources.links import LinkError, parse_link
 from oms.sources.local_projection import project_local
 from oms.sources.merge import build_plan
 from oms.sources.models import (
-    ActionContext, BatchMember, Binding, CheckRequest, Generations, LocalState, Operation, OperationResult, PackageRequest,
+    ActionContext, BatchMember, Binding, Generations, LocalState, Operation, OperationResult, PackageRequest,
     ProjectionPart, RefRequest, SkillOutcome, Source, SourceSnapshot, SourceStatus, Update,
 )
 from oms.sources.mutation import source_repository
@@ -191,16 +191,17 @@ def _settled(source: Source) -> Source:
     return source.model_copy(update={'status': None, 'repository': None})
 
 
-def refresh_repository(service: "SourceService", context: ActionContext, request: CheckRequest) -> None:
+def refresh_repository(service: "SourceService", context: ActionContext, source: Source) -> None:
     """Fetch repository facts again when missing or an hour old (spec D5).
 
-    Runs before the check captures anything, outside every transaction, and never fails
-    the check: a fetch that fails leaves the facts the source already has.
+    `source` is the one the caller matched to the bindings it acts on, so a request cannot
+    point the fetch, or the source's credential, at another repository. Runs outside every
+    transaction, asks at most hourly per source whether the last attempt worked or not, and
+    never fails the action: a fetch that fails leaves the facts the source already has.
     """
     try:
-        source = service._read(context, 'check', request.skills, lambda bound: bound.sources.get_source(
-            request.source_id, tenant_id=context.tenant_id), read_only=True)
-        if source is None or not facts_stale(source.repository, service.clock()):
+        if (not facts_stale(source.repository, service.clock())
+                or not service._claim_facts_refresh(context.tenant_id, source.source_id)):
             return
         facts = service._repository_facts(context.tenant_id, source.credential_profile_id, source.canonical_url)
         if facts is None:
@@ -225,7 +226,6 @@ def check(service, context, request, *, idempotency_key, scheduled=False):
     replay = service._replay(context, 'check', request, idempotency_key, skills)
     if replay is not None:
         return replay.result
-    refresh_repository(service, context, request)
     # One budget for the whole scope, however many skills it names: the
     # deadline, the bytes fetched and the local projections all count against
     # it, so a wide check cannot run for as long as its skills add up to.
@@ -241,6 +241,8 @@ def check(service, context, request, *, idempotency_key, scheduled=False):
             rows.append(row)
         return tuple(rows)
     captured = service._read(context, 'check', skills, capture_all)
+    # Only now are the request's skills known to be bound to its source.
+    refresh_repository(service, context, captured[0].source)
     if len(skills) == 1:
         return single(service, context, request, idempotency_key, budget, before=captured[0],
                       throttle=not scheduled, scheduled=scheduled, open_session=True)

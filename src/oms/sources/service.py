@@ -10,6 +10,7 @@ from dataclasses import replace
 from collections.abc import Callable
 from datetime import datetime, timezone
 import logging
+import threading
 
 from oms.domain.identity import SkillRef
 from oms.domain.models import ReviewItem, Skill
@@ -18,7 +19,7 @@ from oms.ports.mutation import MutationRequest, MutationContextFactory, Mutation
 from oms.ports.workflow import WorkflowRepository
 from oms.ports.source_reader import SourceReader
 from oms.ports.source_store import SourcePolicy
-from oms.sources.github_api import FactsFetch
+from oms.sources.github_api import REFRESH_AFTER, FactsFetch
 from oms.sources.discovery import Discoveries, DiscoveryAccessError
 from oms.sources.projection import ProjectionBuilder
 from oms.sources import installation, operations
@@ -71,6 +72,21 @@ class SourceService:
         self.discoveries, self.clock, self.automatic = discoveries, clock, automatic
         self.completion_hook = completion_hook
         self.facts = facts if facts is not None else getattr(reader, "repository_facts", None)
+        # When each source's facts were last asked for, whether the answer came or not, so an
+        # unreachable or refusing API is asked at most hourly (spec D5). Copies of the service
+        # share it.
+        self._facts_attempts: dict[tuple[str, str], datetime] = {}
+        self._facts_lock = threading.Lock()
+
+    def _claim_facts_refresh(self, tenant_id: str, source_id: str) -> bool:
+        """Whether a facts refresh of this source may run now; a refresh that may is recorded as the last attempt."""
+        now = self.clock()
+        with self._facts_lock:
+            last = self._facts_attempts.get((tenant_id, source_id))
+            if last is not None and now - last < REFRESH_AFTER:
+                return False
+            self._facts_attempts[(tenant_id, source_id)] = now
+            return True
 
     def _read(self, context, action, skills, callback, *, read_only=False):
         """Bookkeeping under the workflow lock, or with `read_only` a plain read

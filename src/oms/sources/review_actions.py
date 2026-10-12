@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from oms.domain.identity import SkillRef
 from oms.domain.types import SkillStatus
 from oms.sources import operations, review
+from oms.sources.checks import refresh_repository
 from oms.sources.errors import SourceConflict, SourceNotFound, StaleMutation
 from oms.sources.local_projection import project_local
 from oms.sources.merge import build_plan
@@ -70,8 +71,13 @@ def decide(service, context, request: UpdateRequest, key: str, action: str) -> O
         def read(bound):
             state = capture(service, context, request, bound, fresh=action != "recheck")
             refuse_held(bound, request.skill, action)
-            return state
-        state = service._read(context, action, (request.skill,), read)
+            # A recheck refreshes the facts of the source the card's own binding names, never another.
+            source = (bound.sources.get_source(state.holder.source_id, tenant_id=context.tenant_id)
+                      if action == "recheck" and isinstance(state.holder, Binding) else None)
+            return state, source
+        state, source = service._read(context, action, (request.skill,), read)
+        if source is not None:
+            refresh_repository(service, context, source)
         next_plan = state.update.plan
         next_drafts = state.update.drafts
         if action == "save_draft":
