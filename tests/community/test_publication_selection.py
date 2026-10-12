@@ -33,7 +33,7 @@ def _skill(store: InMemoryGraphStore, skill_id: str, domain: str | None) -> None
     rule_id = f"{skill_id}-rule"
     store.upsert_rule(Rule(id=rule_id, body=f"Follow the {skill_id} checklist.",
                            tenant_id=TENANT))
-    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id=skill_id))
+    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id=skill_id), tenant_id="acme")
 
 
 def _store() -> InMemoryGraphStore:
@@ -53,7 +53,7 @@ def _marketing(skill: Skill) -> bool:
 
 
 def _conflict(store: InMemoryGraphStore, rule_id: str) -> None:
-    store.attach_edge(Edge(type=EdgeType.CONFLICTS_WITH, from_id=rule_id, to_id="c1"))
+    store.attach_edge(Edge(type=EdgeType.CONFLICTS_WITH, from_id=rule_id, to_id="c1"), tenant_id="acme")
 
 
 def _authorial_section(store: InMemoryGraphStore, skill_id: str, *bodies: str) -> None:
@@ -68,7 +68,7 @@ def _authorial_section(store: InMemoryGraphStore, skill_id: str, *bodies: str) -
                              tenant_id=TENANT,
                              source_ref=f"skills/{skill_id}/SKILL.md#notes", body=body)
         store.upsert_content_block(block)
-        store.attach_block(block, section_id)
+        store.attach_block(block, section_id, tenant_id="acme")
 
 
 # -- The tree and the manifest ----------------------------------------------------
@@ -144,7 +144,7 @@ def test_a_conflict_in_a_selected_skill_that_publishes_nothing_still_refuses():
                              description="Month end.", domain="finance",
                              tenant_id=TENANT, publish_enabled=False))
     store.upsert_rule(Rule(id="ledger-rule", body="Close on day three.", tenant_id=TENANT))
-    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="ledger-rule", to_id="ledger-close"))
+    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="ledger-rule", to_id="ledger-close"), tenant_id="acme")
     _conflict(store, "ledger-rule")
     assert not Publisher(store).check(TENANT, select=_finance).passed
     assert Publisher(store).check(TENANT, select=_marketing).passed
@@ -197,7 +197,7 @@ def test_an_unrestorable_artefact_refuses_only_its_own_skill():
                                    kind=ArtefactKind.SCRIPT, name="run.sh", size=10,
                                    tenant_id=TENANT,
                                    source_ref="skills/campaign-briefs/scripts/run.sh"),
-                          "campaign-briefs", "scripts/run.sh")
+                          "campaign-briefs", "scripts/run.sh", tenant_id="acme")
     publisher = Publisher(store)
     assert publisher.check(TENANT, select=_finance).passed
     gate = publisher.check(TENANT, select=_marketing)

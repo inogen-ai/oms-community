@@ -81,6 +81,10 @@ class SkillStatus(str, Enum):
     # lineage of whatever was anchored to it, survive. Distinct from FLAGGED:
     # flagged means nobody has looked yet, and those publish normally.
     REJECTED = "rejected"
+    # An installed skill whose safety check held it. The skill exists as an
+    # empty record so the person can see why, but it is never published and
+    # never served to agents.
+    HELD = "held"
 
 
 class SkillOrigin(str, Enum):
@@ -111,6 +115,9 @@ class SkillVersionCause(str, Enum):
     RESTORE = "restore"
     CREATED = "created"
     UNATTRIBUTED = "unattributed"
+    SOURCE_INSTALL = "source_install"
+    SOURCE_UPDATE = "source_update"
+    SOURCE_UNDO = "source_undo"
 
 
 class EdgeType(str, Enum):
@@ -199,7 +206,6 @@ class Plane(str, Enum):
     """Stored content category; only DATA rules are eligible for publication."""
     DATA = "data"        # guidance for the people and agents doing the work
     CONTROL = "control"  # describes how OMS itself operates; never published
-
 
 
 

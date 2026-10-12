@@ -8,11 +8,9 @@ from zipfile import ZipFile
 import pytest
 
 from oms.community.app import build_community, build_memory
-from oms.domain.models import Edge, ReviewItem, Rule, Skill
-from oms.domain.types import EdgeType, RuleStatus, Verdict
+from oms.domain.models import ContentBlock, Edge, ReviewItem, Rule, Section, Skill, Transaction
+from oms.domain.types import EdgeType, Mutability, RuleStatus, SectionKind, SignalType, SourceRuntime, Verdict
 from oms.import_skills.identity import ImportIdentityConflict
-from oms.import_skills.importer import ImportReport
-from oms.import_skills.parser import parse_directory
 from oms.settings.core import CoreSettings
 from oms.skills.upload import UploadRefused
 from tests.community.test_critic_workflow import critic_neo4j_driver  # noqa: F401
@@ -25,7 +23,7 @@ def services(request, tmp_path):
     driver = request.getfixturevalue("critic_neo4j_driver")
     with driver.session() as session:
         session.run("MATCH (n) DETACH DELETE n").consume()
-    return build_community(CoreSettings(data_dir=tmp_path / "data", tenant_id="acme"), driver)
+    return build_community(CoreSettings(data_dir=tmp_path / "data", tenant_id="acme", github_skill_sources=False), driver)
 
 
 def files(scope, name="run", *, rule=None, body=None):
@@ -57,7 +55,7 @@ def index(services):
 
 def snapshot(services):
     return deepcopy({"skills": [asdict(s) for s in services.store.skills_for_tenant("acme")],
-        "rules": {s.id: [asdict(r) for r in services.store.rules_for_skill(s.id)]
+        "rules": {s.id: [asdict(r) for r in services.store.rules_for_skill(s.id, tenant_id="acme")]
                   for s in services.store.skills_for_tenant("acme")},
         "reviews": [asdict(r) for r in services.queue.pending("acme")]})
 
@@ -75,14 +73,14 @@ def test_first_import_and_separate_imports_have_the_same_source_ids(services):
     assert report.rules_created == 0 and report.rules_flagged_removed == 0
     assert not services.queue.pending("acme")
     for skill in index(services).values():
-        assert len(services.store.rules_for_skill(skill.id)) == 1
-        assert services.store.rules_for_skill(skill.id)[0].corroboration_count == 1
+        assert len(services.store.rules_for_skill(skill.id, tenant_id="acme")) == 1
+        assert services.store.rules_for_skill(skill.id, tenant_id="acme")[0].corroboration_count == 1
 
 
 def test_slug_similar_paths_have_independent_transactions_and_reviews(services):
     apply(services, files("a-b") | files("a_b"))
     skills = index(services)
-    transactions = [services.store.lineage(services.store.rules_for_skill(s.id)[0].id)[0]
+    transactions = [services.store.lineage(services.store.rules_for_skill(s.id, tenant_id="acme")[0].id)[0]
                     for s in skills.values()]
     assert len({t.id for t in transactions}) == 2
     assert len({t.source_ref for t in transactions}) == 2
@@ -96,8 +94,8 @@ def test_namespaced_import_does_not_adopt_an_unbound_manual_skill(services):
     services.store.upsert_skill(Skill(id="run", name="My local run", description="Mine",
                                       domain="general", tenant_id="acme"))
     apply(services, files("agenthub"))
-    assert services.store.get_skill("run").name == "My local run"
-    assert services.store.get_skill("run").import_source_ref is None
+    assert services.store.get_skill("run", tenant_id="acme").name == "My local run"
+    assert services.store.get_skill("run", tenant_id="acme").import_source_ref is None
     assert len(services.store.skills_for_tenant("acme")) == 2
 
 
@@ -115,7 +113,7 @@ def test_package_local_forward_routing_reaches_the_qualified_skill(services):
 def test_failed_import_keeps_previous_payload_evidence(services, monkeypatch):
     apply(services, files("agenthub") | files("autoresearch-agent"))
     before = snapshot(services)
-    rule = services.store.rules_for_skill(index(services)["agenthub/skills/run/SKILL.md"].id)[0]
+    rule = services.store.rules_for_skill(index(services)["agenthub/skills/run/SKILL.md"].id, tenant_id="acme")[0]
     txn = services.store.lineage(rule.id)[0]
     payload = services.payloads.get(txn.id)
     assert payload is not None
@@ -134,7 +132,7 @@ def test_failed_import_keeps_previous_payload_evidence(services, monkeypatch):
 
 
 def legacy(services, tmp_path, *, ruleless=False):
-    """Seed exactly the old sequential name-only import, bypassing preflight."""
+    """Seed a legacy name collision with two retained import origins."""
     entries = files("agenthub") | files("autoresearch-agent")
     if ruleless:
         entries = {p: b.replace(b"## Rules", b"## Overview") for p, b in entries.items()}
@@ -143,14 +141,29 @@ def legacy(services, tmp_path, *, ruleless=False):
         dest = root / path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(body)
-    vocab = services.importer._vocabulary("acme")
-    for parsed in parse_directory(root, vocabulary=vocab).skills:
-        services.importer._import_skill(parsed, "acme", vocab, ImportReport())
-    old = services.store.get_skill("run")
-    services.store.upsert_skill(replace(old, import_source_ref=None, import_name=None))
+    from datetime import datetime, timezone
+    store = services.store
+    store.upsert_skill(Skill(id="run", name="Run", description="Legacy", domain="general", tenant_id="acme"))
+    for index, source in enumerate(entries):
+        if ruleless:
+            section = Section(id=f"legacy-section-{index}", skill_id="run", heading=f"Source {index}",
+                kind=SectionKind.PROSE, order=index, mutability=Mutability.AUTHORIAL_PASSTHROUGH, tenant_id="acme")
+            store.upsert_section(section)
+            block = ContentBlock(id=f"legacy-block-{index}", content_ref=f"legacy-{index}",
+                kind=SectionKind.PROSE, tenant_id="acme", source_ref=source, body=f"Source {index}")
+            store.upsert_content_block(block)
+            store.attach_block(block, section.id, tenant_id="acme")
+        else:
+            transaction = Transaction(id=f"legacy-import-{index}", tenant_id="acme", source_ref=source,
+                signal_type=SignalType.SKILL_IMPORT, source_runtime=SourceRuntime.MANUAL,
+                sanitised_payload_ref=f"legacy-{index}", timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc))
+            store.upsert_transaction(transaction)
+            rule = Rule(id=f"rule-import-legacy-{index}", body=f"Keep source {index}", tenant_id="acme")
+            store.upsert_rule(rule)
+            store.attach_edge(Edge(EdgeType.BELONGS_TO, rule.id, "run"), tenant_id="acme")
+            store.attach_edge(Edge(EdgeType.DERIVED_FROM, rule.id, transaction.id), tenant_id="acme")
     if not ruleless:
-        first = next(r for r in services.store.rules_for_skill("run") if "agenthub" in r.body)
-        services.queue.enqueue_once(ReviewItem(id="false-removal", kind="removal", subject_id=first.id,
+        services.queue.enqueue_once(ReviewItem(id="false-removal", kind="removal", subject_id="rule-import-legacy-0",
             other_id=None, verdict=Verdict.AMBIGUOUS, tenant_id="acme",
             reason="rule absent from re-imported autoresearch-agent/skills/run/SKILL.md"))
     return root, entries

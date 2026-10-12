@@ -57,7 +57,19 @@ class SkillHistory:
         # by design: a group lives for the seconds one save takes, and a
         # duplicate event after a restart is a smaller wrong than a store
         # round-trip on every part write.
-        self._restored_groups: set[str] = set()
+        self._restored_groups: set[tuple[str, str, str | None]] = set()
+
+    def snapshot_state(self) -> object:
+        events = self._admin_events
+        event_state = events.snapshot_state() if hasattr(events, "snapshot_state") else None
+        return self._restored_groups.copy(), event_state
+
+    def restore_state(self, state: object) -> None:
+        if not isinstance(state, tuple) or len(state) != 2 or not isinstance(state[0], set):
+            raise TypeError("Invalid history rollback state")
+        self._restored_groups = state[0].copy()
+        if state[1] is not None:
+            self._admin_events.restore_state(state[1])
 
     def capture(self, skill_id: str, tenant_id: str, *,
                cause: SkillVersionCause,
@@ -86,7 +98,7 @@ class SkillHistory:
         """Capture inside a caller's unit of work; a failure must roll it back."""
         values = {"actor": None, "detail": None, "group_id": None,
                   "restore_source": None, "restore_taken": None, **kwargs}
-        return self._capture(skill_id, tenant_id, **values)
+        return self._capture(skill_id, tenant_id, required=True, **values)
 
     def capture_for_rule(self, rule_id: str, tenant_id: str, *,
                          cause: SkillVersionCause,
@@ -102,7 +114,7 @@ class SkillHistory:
         than one skill, and every one of those documents just changed.
         """
         try:
-            skills = self._store.skills_for_rule(rule_id)
+            skills = self._store.skills_for_rule(rule_id, tenant_id=tenant_id)
         except Exception:
             logger.exception("skill history lookup failed for rule %s", rule_id)
             return
@@ -120,8 +132,10 @@ class SkillHistory:
                 cause: SkillVersionCause, actor: str | None,
                 detail: str | None, group_id: str | None,
                 restore_source: str | None,
-                restore_taken: str | None) -> SkillVersion | None:
-        skill = self._store.get_skill(skill_id)
+                restore_taken: str | None, required: bool = False,
+                source_operation_id: str | None = None, source_origin_id: str | None = None,
+                source_revision: str | None = None) -> SkillVersion | None:
+        skill = self._store.get_skill(skill_id, tenant_id=tenant_id)
         if skill is None or skill.tenant_id != tenant_id:
             return None
         parts, _path = self._publisher.outline_skill(skill_id, tenant_id)
@@ -134,20 +148,28 @@ class SkillHistory:
             "status": skill.status.value,
             "publish_enabled": skill.publish_enabled,
             "origin": skill.origin.value,
+            "declared_license": skill.declared_license,
+            "document_mode": skill.document_mode,
             "curated": sorted(skill.curated),
-            "tags": sorted(self._store.tags_for_skill(skill_id)),
+            "tags": sorted(self._store.tags_for_skill(skill_id, tenant_id=tenant_id)),
         })
         rules_json = json.dumps(sorted((
             {"id": r.id, "body": r.body, "status": r.status.value,
              "corroboration_count": r.corroboration_count,
              "polarity": r.polarity.value}
-            for r in self._store.rules_for_skill(skill_id)
+            for r in self._store.rules_for_skill(skill_id, tenant_id=tenant_id)
         ), key=lambda r: r["id"]))
+        files_json = json.dumps([
+            {"path": path, "content_ref": artefact.content_ref, "size": artefact.size,
+             "mode": artefact.mode, "kind": artefact.kind.value, "source_ref": artefact.source_ref}
+            for artefact, path in sorted(self._store.artefacts_for_skill(skill_id, tenant_id=tenant_id),
+                                        key=lambda entry: entry[1])
+        ], sort_keys=True)
 
         latest = self._store.latest_skill_version(tenant_id, skill_id)
         if latest is not None and latest.revision == revision \
                 and latest.metadata_json == metadata_json \
-                and latest.rules_json == rules_json:
+                and latest.rules_json == rules_json and latest.files_json == files_json:
             return None
 
         if restore_source is not None:
@@ -172,11 +194,13 @@ class SkillHistory:
             at=datetime.now(timezone.utc), revision=revision, cause=cause,
             actor_person_id=actor, detail=detail, group_id=group_id,
             parts_json=parts_json, metadata_json=metadata_json,
-            rules_json=rules_json)
+            rules_json=rules_json, files_json=files_json,
+            source_operation_id=source_operation_id, source_origin_id=source_origin_id,
+            source_revision=source_revision)
         self._store.append_skill_version(version)
-        self._trim(tenant_id, skill_id)
+        self._trim(tenant_id, skill_id, required=required)
         if cause is SkillVersionCause.RESTORE:
-            self._announce_restore(tenant_id, skill_id, actor, group_id, detail)
+            self._announce_restore(tenant_id, skill_id, actor, group_id, detail, required=required)
         return version
 
     def _restore_detail(self, tenant_id: str, skill_id: str,
@@ -197,7 +221,7 @@ class SkillHistory:
         Answering None instead means an unresolvable, foreign-tenant or
         foreign-skill id simply does not make the write a restore.
         """
-        source = self._store.get_skill_version(restore_source)
+        source = self._store.get_skill_version(restore_source, tenant_id=tenant_id)
         if source is None or source.tenant_id != tenant_id \
                 or source.skill_id != skill_id:
             return None
@@ -211,7 +235,7 @@ class SkillHistory:
 
     def _announce_restore(self, tenant_id: str, skill_id: str,
                           actor: str | None, group_id: str | None,
-                          detail: str | None) -> None:
+                          detail: str | None, *, required: bool = False) -> None:
         """One `AdminEvent` per restore save, not one per part write.
 
         `applyDraft` writes one part per HTTP request, so a restore of several
@@ -228,12 +252,11 @@ class SkillHistory:
         anywhere and nothing left to re-read it. Failing here is caught rather
         than raised, so the version this call just wrote is still returned to
         its caller; the next part write of the same save makes the attempt
-        again.
+        again. Required captures propagate the failure to their transaction.
         """
         if self._admin_events is None:
             return
-        key = f"{group_id}|{skill_id}" if group_id is not None \
-            else f"solo-{skill_id}-{detail}"
+        key = (tenant_id, skill_id, group_id if group_id is not None else detail)
         if key in self._restored_groups:
             return
         try:
@@ -247,11 +270,13 @@ class SkillHistory:
                 subject_kind="skill", actor_person_id=actor,
                 before=None, after=detail))
         except Exception:
+            if required:
+                raise
             logger.exception("skill restore announcement failed for %s", skill_id)
             return
         self._restored_groups.add(key)
 
-    def _trim(self, tenant_id: str, skill_id: str) -> None:
+    def _trim(self, tenant_id: str, skill_id: str, *, required: bool = False) -> None:
         keep = DEFAULT_KEEP
         if self._keep is not None:
             try:
@@ -260,6 +285,8 @@ class SkillHistory:
                 # tenant it drains through one history.
                 keep = max(1, int(self._keep(tenant_id)))
             except Exception:
+                if required:
+                    raise
                 logger.exception("skill history keep() failed for %s", skill_id)
                 keep = DEFAULT_KEEP
         self._store.trim_skill_versions(tenant_id, skill_id, keep)

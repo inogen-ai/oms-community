@@ -6,6 +6,8 @@ const CAUSES = {
   rule_edit: "reworded a rule", upload_import: "uploaded a package",
   import: "uploaded a package", compile: "compiled in a correction",
   review_decision: "made a review decision", restore: "restored an earlier version",
+  source_install: "installed a source package", source_update: "applied a source update",
+  source_undo: "undid a source update",
   created: "created this skill", unattributed: "changed outside the console",
 };
 const RULE_DETAILS = {
@@ -77,5 +79,8 @@ export function HistoryTimeline({ entries, people, emptyText = "No recorded chan
         h("div", null, h("dt", null, "Recorded by"), h("dd", null,
           entry.actor_person_id ? (people?.get(entry.actor_person_id) || entry.actor_person_id) : "Not recorded")),
         h("div", null, h("dt", null, "Version"), h("dd", null, entry.id)),
-        entry.revision ? h("div", null, h("dt", null, "Revision"), h("dd", null, entry.revision)) : null)))));
+        entry.revision ? h("div", null, h("dt", null, "Revision"), h("dd", null, entry.revision)) : null,
+        entry.source_operation_id ? h("div", null, h("dt", null, "Source operation"), h("dd", null, entry.source_operation_id)) : null,
+        entry.source_origin_id ? h("div", null, h("dt", null, "Source origin"), h("dd", null, entry.source_origin_id)) : null,
+        entry.source_revision ? h("div", null, h("dt", null, "Source revision"), h("dd", null, entry.source_revision)) : null)))));
 }

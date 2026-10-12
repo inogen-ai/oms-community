@@ -76,7 +76,7 @@ legend span { margin-left: 6px; font-weight: 400; }
 .list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
 .search-label { max-width: 380px; flex: 1; }
 .skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(225px, 1fr)); gap: 16px; }
-.skill-card { text-align: left; background: var(--surface); border: 1px solid var(--border-2); border-radius: 8px; padding: 20px; cursor: pointer; color: var(--text); }
+.skill-card { position: relative; text-align: left; background: var(--surface); border: 1px solid var(--border-2); border-radius: 8px; padding: 20px; cursor: pointer; color: var(--text); }
 .skill-card:hover { border-color: var(--accent-line); background: var(--surface-2); }
 .skill-icon { display: inline-grid; place-items: center; height: 32px; width: 32px; color: var(--accent); background: var(--accent-soft); border-radius: 6px; margin-bottom: 16px; }
 .skill-card h2 { margin-bottom: 8px; font-size: 15px; }
@@ -182,6 +182,8 @@ summary:hover { color: var(--text); }
 .skill-card__footer { padding: 8px 20px 18px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .skill-card__footer .oms-button { margin-left: auto; padding: 5px 9px; }
 .skill-card > .collection-unsaved { padding: 0 20px 14px; }
+.skill-card__source { position: absolute; top: 8px; right: 8px; line-height: 0; }
+.skill-card--linked .skill-card__open { padding-right: 40px; }
 .oms-collection-list li { display: flex; align-items: center; }
 .oms-collection-list__row { flex: 1; min-width: 0; }
 .oms-collection-list__actions { padding: 10px 14px 10px 0; }

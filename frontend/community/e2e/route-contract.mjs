@@ -1,5 +1,17 @@
 /** Closed request allowlist, independently exercised by a mutation check. */
 const operations = [
+  ["GET", /^\/api\/(skill-sources|skill-updates|skill-source-operations|skill-source-workspace)$/],
+  ["POST", /^\/api\/(skill-source-discoveries|skill-source-installations|skill-local-imports|skill-sources)$/],
+  ["GET", /^\/api\/skill-source-discoveries\/[^/]+(?:\/files)?$/],
+  ["DELETE", /^\/api\/skill-source-discoveries\/[^/]+$/],
+  ["GET", /^\/api\/skill-sources\/[^/]+$/],
+  ["POST", /^\/api\/skill-sources\/[^/]+\/(check|remove|relocate)$/],
+  ["GET", /^\/api\/skills\/[^/]+\/(source-binding|source-history)$/],
+  ["POST", /^\/api\/skills\/[^/]+\/source-binding\/(link|relink|retarget|unlink)$/],
+  ["GET", /^\/api\/skill-updates\/[^/]+(?:\/files)?$/],
+  ["POST", /^\/api\/skill-updates\/[^/]+\/(draft|recheck|apply|skip|adopt|undo)$/],
+  ["POST", /^\/api\/skill-updates\/bulk-apply$/],
+  ["GET", /^\/api\/skill-source-operations\/[^/]+$/],
   ["GET", /^\/api\/(capabilities|health|skills|skill-changes|review|rules|constraints|settings|graph|import-review)$/],
   ["POST", /^\/api\/(ingest|skills|constraints|import|publish)$/],
   ["GET", /^\/api\/publish\/preview$/],

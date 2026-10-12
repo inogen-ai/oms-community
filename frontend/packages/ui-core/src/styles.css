@@ -374,3 +374,85 @@
   .oms-mode-tabs button { flex: 1; padding: 12px 10px; font-size: 12px; }
   .oms-target-skills__summary { align-items: start; flex-wrap: wrap; }
 }
+
+.oms-source-workspace, .oms-source-details, .oms-source-discovery, .oms-source-card, .oms-source-files, .oms-source-undo { min-width: 0; overflow-wrap: anywhere; }
+.oms-source-workspace { display: grid; gap: 20px; }
+.oms-source-workspace > .oms-button { justify-self: start; }
+.oms-source-details > .oms-panel { margin-block: 16px; }
+.oms-source-details details { margin-block: 12px; }
+:is(.oms-source-workspace, .oms-source-details, .oms-source-discovery, .oms-source-card, .oms-source-files, .oms-source-undo) .oms-button { box-sizing: border-box; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; background: var(--oms-accent); border-color: transparent; color: white; }
+:is(.oms-source-workspace, .oms-source-details, .oms-source-discovery, .oms-source-card, .oms-source-files, .oms-source-undo) .oms-button:hover { background: var(--oms-accent-hover); }
+:is(.oms-source-workspace, .oms-source-details) .record-heading { flex-wrap: wrap; }
+:is(.oms-source-workspace, .oms-source-details) .record-heading h3 { flex: 1 1 14rem; min-width: 0; }
+.oms-source-badges, .oms-source-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.oms-source-badges .oms-badge { white-space: normal; }
+.oms-source-ref { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.oms-source-ref code, .oms-source-metadata dd { overflow-wrap: anywhere; }
+.oms-source-packages { list-style: none; padding: 0; margin: 18px 0; }
+.oms-source-packages > li, .oms-source-part { border-top: 1px solid var(--oms-line); padding: 18px 0; min-width: 0; }
+.oms-source-packages p, .oms-source-status p { font-size: 13px; line-height: 1.55; }
+.oms-source-check { display: flex; align-items: baseline; gap: 9px; font-size: 13px; margin: 10px 0; }
+.oms-source-check input { flex: 0 0 auto; width: auto; accent-color: var(--oms-accent); }
+.oms-source-fields, .oms-source-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
+.oms-source-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* Rows pack at the top: a field stretched to a taller neighbour (one with a hint under its box) keeps its box in line. */
+.oms-source-fields label, .oms-source-field { display: grid; align-content: start; gap: 7px; font-size: 13px; min-width: 0; margin: 12px 0; }
+/* A select sizes its own text line, so a minimum of one 1.5 line plus padding and border gives selects and inputs one height. */
+.oms-source-fields :is(input, select), .oms-source-field :is(select, textarea), .oms-source-field input:where(:not([type="checkbox"]):not([type="radio"])) { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid var(--oms-line); border-radius: 7px; padding: 10px 12px; background: var(--oms-paper); color: var(--oms-ink); font: inherit; line-height: 1.5; min-height: calc(1.5em + 22px); }
+.oms-source-field textarea { resize: vertical; line-height: 1.6; }
+:is(.oms-source-discovery, .oms-source-card, .oms-source-files, .oms-source-undo) :is(input, select, textarea, button, summary, pre):focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }
+.oms-source-side { min-width: 0; padding: 12px; border: 1px solid var(--oms-line); border-radius: 8px; background: var(--oms-wash); }
+.oms-source-side h5 { font-size: 13px; margin: 0 0 10px; }
+.oms-source-side pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 360px; font: 12px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.oms-source-side p { font-size: 12px; }
+.oms-source-files details { margin: 16px 0; }
+.oms-source-files summary { cursor: pointer; }
+.oms-source-metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; font-size: 12px; }
+.oms-source-metadata dt { color: var(--oms-muted); }
+.oms-source-metadata dd { margin: 4px 0; }
+.oms-source-repository { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin: 4px 0 14px; font-size: 13px; }
+.oms-source-repository a { font-weight: 600; color: var(--oms-accent); }
+.oms-source-fact, .oms-source-note { color: var(--oms-muted); }
+.oms-source-concerns { display: flex; flex-wrap: wrap; gap: 6px; flex-basis: 100%; }
+.oms-source-sentence { font-weight: 600; margin: 8px 0 14px; }
+.oms-source-installing { padding: 10px 14px; border: 1px solid var(--oms-notice-line); background: var(--oms-notice-paper); border-radius: 8px; }
+.oms-source-whole, .oms-source-group, .oms-source-item, .oms-source-safe { border: 1px solid var(--oms-line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; min-width: 0; }
+.oms-source-whole { border-color: var(--oms-error-line); background: var(--oms-error-paper); color: var(--oms-error-ink); }
+.oms-source-group .oms-source-item { border: 0; border-top: 1px solid var(--oms-line); border-radius: 0; padding-inline: 0; }
+:is(.oms-source-item, .oms-source-group) h4 { margin: 0 0 6px; font-size: 14px; overflow-wrap: anywhere; }
+.oms-source-reasons { margin: 6px 0; padding-left: 18px; font-size: 13px; line-height: 1.55; }
+.oms-source-choices { border: 0; padding: 0; margin: 10px 0 0; display: grid; gap: 4px; min-width: 0; }
+:is(.oms-source-show, .oms-source-each, .oms-source-list, .oms-source-safe-item, .oms-source-technical) > summary { cursor: pointer; font-size: 13px; }
+.oms-source-technical { margin-top: 18px; border-top: 1px solid var(--oms-line); padding-top: 12px; }
+.oms-source-table { overflow-x: auto; }
+.oms-source-parts { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+.oms-source-parts :is(th, td) { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--oms-line); overflow-wrap: anywhere; }
+.oms-source-undo { border-top: 1px solid var(--oms-line); margin-top: 18px; padding-top: 12px; }
+/* The GitHub side's preview: line numbers, flagged lines marked and tagged; a line number in a reason is a button. */
+.oms-source-numbered .oms-source-line { display: block; position: relative; min-height: 1.65em; padding-left: 3.6em; }
+.oms-source-numbered .oms-source-line::before { content: attr(data-line); position: absolute; left: 0; width: 2.8em; text-align: right; color: var(--oms-muted); user-select: none; }
+.oms-source-numbered .oms-source-flagged { background: var(--oms-error-paper); box-shadow: inset 3px 0 0 var(--oms-error-line); }
+.oms-source-flag { display: inline-block; margin-left: 0.5em; padding: 0 6px; border: 1px solid var(--oms-error-line); border-radius: 4px; color: var(--oms-error-ink); font: 600 11px/1.5 system-ui, sans-serif; white-space: nowrap; user-select: none; }
+.oms-source-line-link { display: inline; min-width: 0; min-height: 0; height: auto; margin: 0; padding: 0; border: 0; border-radius: 0; background: none; color: var(--oms-accent); font: inherit; text-decoration: underline; cursor: pointer; }
+.oms-source-line-link:hover { color: var(--oms-accent-hover); }
+.oms-source-beyond:focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }
+.oms-source-new { font-size: 13px; margin: 8px 0 0; }
+.oms-source-columns-single { grid-template-columns: minmax(0, 1fr); }
+.oms-source-group-note { margin: 0 0 8px; font-size: 13px; color: var(--oms-muted); }
+@media (max-width: 800px) { .oms-source-columns { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 550px) { .oms-source-fields, .oms-source-metadata { grid-template-columns: minmax(0, 1fr); } }
+.oms-source-advanced { margin: 4px 0 8px; }
+.oms-source-advanced > summary, .oms-source-names > summary { cursor: pointer; font-size: 13px; }
+.oms-source-advanced > label { display: grid; gap: 7px; font-size: 13px; margin: 12px 0; }
+/* The lookup form lays itself out, so an edition need not supply a form grid of its own. */
+.oms-source-lookup { display: grid; gap: 4px; max-width: 46rem; }
+.oms-source-lookup > .oms-source-field:first-child { margin-top: 0; }
+.oms-source-lookup > .oms-button { justify-self: start; margin-top: 8px; }
+.oms-source-lookup :is(input, select, summary, button):focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }
+.oms-source-advanced[open] { padding: 2px 0 2px 14px; border-left: 2px solid var(--oms-line); }
+.oms-source-names { margin: 14px 0; }
+.oms-source-confirm { border: 1px solid var(--oms-line); border-radius: 8px; padding: 16px; margin: 18px 0; }
+.oms-source-confirm :is(input, select, textarea, button, summary):focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }
+.oms-github-mark { display: inline-block; vertical-align: middle; flex: none; box-sizing: content-box; }
+.oms-button > .oms-github-mark { margin: -4px; }
+.oms-panel-footer { margin-top: 16px; }

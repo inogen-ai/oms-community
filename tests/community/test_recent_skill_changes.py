@@ -43,7 +43,7 @@ def feed(request, tmp_path):
         driver = request.getfixturevalue("critic_neo4j_driver")
         with driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n").consume()
-        services = build_community(CoreSettings(data_dir=data, tenant_id="acme"), driver)
+        services = build_community(CoreSettings(data_dir=data, tenant_id="acme", github_skill_sources=False), driver)
     with TestClient(create_app(services), base_url=API_URL) as client:
         yield Feed(services, client, request.param)
 
@@ -117,7 +117,7 @@ def test_both_version_and_current_skill_must_belong_to_the_workspace_before_limi
     foreign = _skill(feed, "foreign-skill", tenant="other", name="Private foreign name")
     doomed = _skill(feed, "deleted-skill")
     _version(feed, "deleted-history", doomed.id)
-    feed.services.store.delete_skill(doomed.id)
+    feed.services.store.delete_skill(doomed.id, tenant_id="acme")
 
     # Corrupt or historical dangling references must not leak, and must be
     # filtered before LIMIT rather than crowding all valid changes out.
@@ -128,7 +128,7 @@ def test_both_version_and_current_skill_must_belong_to_the_workspace_before_limi
                  tenant="other", at=newer)
         _version(feed, f"local-version-foreign-skill-{index}", foreign.id, at=newer)
         _version(feed, f"dangling-{index}", doomed.id, at=newer)
-    assert feed.services.store.get_skill(doomed.id) is None
+    assert feed.services.store.get_skill(doomed.id, tenant_id="acme") is None
     rows = _rows(feed)
     assert [row["id"] for row in rows] == [version.id for version in valid[:8]]
     assert "Private foreign name" not in str(rows)

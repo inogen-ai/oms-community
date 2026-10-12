@@ -3,7 +3,7 @@ from collections.abc import Callable, Mapping
 from packaging.version import InvalidVersion, Version
 
 CORE_VERSION = "1.4.1"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class SchemaCompatibilityError(ValueError):
@@ -15,7 +15,7 @@ class SchemaManager:
         self.driver = driver
 
     @staticmethod
-    def _check(metadata, edition, target_version, private_version=None):
+    def _check(metadata, edition, target_version, private_version=None, *, maintenance=False):
         if not metadata:
             return
         owner = metadata.get("managed_edition", metadata.get("edition"))
@@ -32,6 +32,9 @@ class SchemaManager:
         if ("core_version" in metadata and "schema_version" in metadata
                 and metadata["core_version"] != metadata["schema_version"]):
             raise SchemaCompatibilityError("database schema markers disagree")
+        if not maintenance and (metadata.get("migration_state") not in (None, "ready")
+                                or (max(versions) >= 2 and metadata.get("migration_state") != "ready")):
+            raise SchemaCompatibilityError("source identity maintenance migration is incomplete")
         private = metadata.get("private_version", 0)
         if type(private) is not int or private < 0 or (owner == "community" and private != 0):
             raise SchemaCompatibilityError("invalid private schema marker")
@@ -55,6 +58,8 @@ class SchemaManager:
             raise ValueError("target schema version must be a positive integer")
         if private_version is not None and (type(private_version) is not int or private_version < 1):
             raise ValueError("private schema version must be a positive integer")
+        if target_version < SCHEMA_VERSION:
+            raise SchemaCompatibilityError("this binary requires schema 2 or newer")
         migrations = dict(migrations or {})
         # This read-only preflight precedes even CREATE CONSTRAINT. A refused
         # startup must not alter the database it was accidentally pointed at.
@@ -62,6 +67,13 @@ class SchemaManager:
             rec = session.run("MATCH (m:OMSMetadata {id:'core'}) RETURN properties(m) AS metadata").single()
             metadata = rec["metadata"] if rec else None
             self._check(metadata, edition, target_version, private_version)
+            if metadata is not None and metadata.get("schema_version", metadata.get("core_version", 0)) < 2:
+                raise SchemaCompatibilityError("schema 2 requires explicit source identity maintenance")
+            if metadata is None and edition == "enterprise":
+                owned = session.run("MATCH (n) WHERE n:Skill OR n:Section OR n:ContentBlock "
+                                    "OR n:Example OR n:Artefact OR n:SkillVersion RETURN count(n) AS n").single()["n"]
+                if owned:
+                    raise SchemaCompatibilityError("legacy custody requires explicit source identity maintenance")
             if metadata is None and edition == "community":
                 if session.run("MATCH (n) RETURN count(n) AS count").single()["count"]:
                     raise SchemaCompatibilityError("unmarked nonempty database requires an Enterprise migration or a fresh Community database")
@@ -94,13 +106,20 @@ class SchemaManager:
                    "SET m.edition=$edition, m.managed_edition=$edition, "
                    "m.core_version=$version, m.schema_version=$version, "
                    "m.private_version=$private, m.minimum_core_version=$minimum, "
-                   "m.last_successful_migration=$last "
+                   "m.last_successful_migration=$last, m.migration_state='ready' "
                    "RETURN m", edition=edition, version=target_version,
                    private=managed_private_version, minimum=CORE_VERSION,
                    last=f"core-{target_version}").consume()
             return {"edition": edition, "core_version": target_version,
                     "private_version": managed_private_version, "schema_version": target_version,
                     "managed_edition": edition, "minimum_core_version": CORE_VERSION,
-                    "last_successful_migration": f"core-{target_version}"}
+                    "last_successful_migration": f"core-{target_version}", "migration_state": "ready"}
         with self.driver.session() as session:
             return session.execute_write(migrate)
+
+    def migrate_source_identity(self, *, old_writers_stopped: bool,
+                                edition="community", private_version: int | None = None):
+        """Resume staged schema-2 maintenance; normal startup never runs DDL migration."""
+        from oms.schema.migrations.source_identity import migrate
+        return migrate(self, old_writers_stopped=old_writers_stopped,
+                       edition=edition, private_version=private_version)

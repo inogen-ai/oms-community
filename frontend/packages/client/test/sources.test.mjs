@@ -1,0 +1,224 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as clientModule from "../src/index.js";
+const { createClient, HttpError } = clientModule;
+
+test("a 202 response remains in progress", async () => {
+  const client = createClient({ fetch: async () => Response.json({ operation_id: "op-1", state: "planning", committed: false }, { status: 202 }) });
+  assert.deepEqual(await client.request("/api/skill-source-operations/op-1"), { operation_id: "op-1", state: "planning", committed: false });
+});
+test("byte transport preserves authentication and metadata without JSON decoding", async () => {
+  const seen = [];
+  const client = createClient({ requestPolicy: "browser", fetch: async (path, init) => {
+    seen.push({ path, init });
+    return new Response(new Uint8Array([0, 255, 13]), { headers: { "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="fixture.bin"' } });
+  } });
+  assert.equal(typeof client.requestBytes, "function");
+  const result = await client.requestBytes("/api/skill-updates/u/files?path=fixture.bin&preview=false", { headers: { Authorization: "Bearer fixture" } });
+  assert.deepEqual([...result.bytes], [0, 255, 13]);
+  assert.equal(result.content_disposition, 'attachment; filename="fixture.bin"');
+  assert.equal(result.content_type, "application/octet-stream");
+  assert.equal(new Headers(seen[0].init.headers).get("Authorization"), "Bearer fixture");
+});
+test("both transports reject URL escapes before fetch and retain local security policy", async () => {
+  let calls = 0;
+  const client = createClient({ fetch: async (_, init) => {
+    calls++;
+    assert.equal(init.credentials, "omit");
+    assert.equal(init.redirect, "error");
+    assert.equal(init.cache, "no-store");
+    return new Response("bytes");
+  } });
+  assert.equal(typeof client.requestBytes, "function");
+  for (const path of ["//evil.test/api/x", "/api/../private", "/api/%2e%2e/private", "/api/x\\y", "/api/x#fragment", "/api/%252e%252e/private", "/api/x\n"]) {
+    await assert.rejects(client.requestBytes(path));
+    await assert.rejects(client.request(path));
+  }
+  assert.equal(calls, 0);
+  await client.requestBytes("/api/files?path=a%20b", { credentials: "include", redirect: "follow" });
+  assert.equal(calls, 1);
+});
+test("structured retry and operation metadata coexist with legacy errors", async () => {
+  for (const body of [{ code: "busy", message: "Try later", operation_id: "op-1", retry_after_seconds: 9 }, { error: { code: "busy", message: "Try later", operation_id: "op-1", retry_after_seconds: 9 } }, { detail: { code: "busy", message: "Try later", operation_id: "op-1", retry_after_seconds: 9 } }]) {
+    const client = createClient({ fetch: async () => Response.json(body, { status: 429, headers: { "Retry-After": "12" } }) });
+    await assert.rejects(client.request("/api/skill-sources"), error => {
+      assert.ok(error instanceof HttpError);
+      assert.equal(error.operation_id, "op-1");
+      assert.equal(error.retry_after_seconds, 9);
+      assert.equal(error.code, "busy");
+      return true;
+    });
+  }
+  const client = createClient({ fetch: async () => Response.json({ error: { code: 42, message: "Old error" } }, { status: 429, headers: { "Retry-After": "12" } }) });
+  await assert.rejects(client.request("/api/skill-sources"), error => error.code === 42 && error.retry_after_seconds === 12 && error.operation_id === null);
+});
+test("source facade injects scoped path and headers for reads, mutations and bytes", async () => {
+  assert.equal(typeof clientModule.createSourcesClient, "function");
+  const calls = [];
+  const transport = createClient({ requestPolicy: "browser", fetch: async (path, init) => {
+    calls.push({ path, init });
+    return path.includes("preview=false") ? new Response("file") : Response.json({ state: "awaiting_review", committed: false });
+  } });
+  const client = clientModule.createSourcesClient({ ...transport, context: async (path, init) => ({
+    path: `${path}${path.includes("?") ? "&" : "?"}tenant_id=tenant-1`,
+    init: { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), Authorization: "Bearer fixture" } },
+  }) });
+  await client.sources({ cursor: "next + page", limit: 4 });
+  const result = await client.apply("u/1", { skill_id: "s", fingerprint: {} }, "request-1");
+  await client.updateFile("u/1", { side: "upstream", path: "docs/a b.txt" });
+  assert.equal(result.state, "awaiting_review");
+  assert.equal(result.committed, false);
+  assert.equal(calls[0].path, "/api/skill-sources?cursor=next+%2B+page&limit=4&tenant_id=tenant-1");
+  assert.equal(calls[1].path, "/api/skill-updates/u%2F1/apply?tenant_id=tenant-1");
+  assert.equal(new Headers(calls[1].init.headers).get("Idempotency-Key"), "request-1");
+  assert.equal(new Headers(calls[2].init.headers).get("Authorization"), "Bearer fixture");
+  assert.match(calls[2].path, /side=upstream&path=docs%2Fa\+b.txt&preview=false/);
+});
+test("source file paths and initiating keys are checked before network access", async () => {
+  assert.equal(typeof clientModule.createSourcesClient, "function");
+  let calls = 0;
+  const client = clientModule.createSourcesClient({ request: async () => { calls++; }, requestBytes: async () => { calls++; } });
+  for (const path of ["../secret", "/absolute", "a/../secret", "a\\b", "a//b", "a/./b", "a\0b"]) {
+    await assert.rejects(async () => client.updateFile("u", { side: "local", path }));
+    await assert.rejects(async () => client.discoveryFile("d", { package_path: "", path }));
+  }
+  await assert.rejects(async () => client.apply("u", {}, ""));
+  await assert.rejects(async () => client.updateFile("u", { side: "invalid", path: "file" }));
+  assert.equal(calls, 0);
+});
+
+test("source facade invalidation rejects old context and delayed downloads", async () => {
+  let finish;
+  const client = clientModule.createSourcesClient({ request: async () => assert.fail("invalidated context reached network"), requestBytes: async () => {},
+    context: () => new Promise(resolve => { finish = resolve; }) });
+  const flight = client.sources();
+  client.invalidate();
+  finish({ path: "/api/skill-sources" });
+  await assert.rejects(flight, error => error.name === "StaleSourceResponseError");
+});
+
+test("source routes preserve guarded bodies and caller keys across every mutation", async () => {
+  const calls = [];
+  const response = { operation_id: "op", state: "blocked", committed: false, outcomes: [{ skill_id: "s", state: "blocked", code: "stale", update_id: null }] };
+  const transport = createClient({ fetch: async (url, init) => { calls.push({ url, init }); return Response.json(response); } });
+  const client = clientModule.createSourcesClient(transport);
+  const body = { expected_content_generation: 2, expected_binding_generation: 3 };
+  const routes = [
+    ["discover", "/api/skill-source-discoveries"], ["install", "/api/skill-source-installations"],
+    ["check", "/api/skill-sources/id/check"], ["schedule", "/api/skill-sources/id/schedule"], ["removeSource", "/api/skill-sources/id/remove"], ["relocateSource", "/api/skill-sources/id/relocate"],
+    ...["link", "relink", "retarget", "unlink", "automation"].map(name => [name, `/api/skills/id/source-binding/${name}`]),
+    ["saveDraft", "/api/skill-updates/id/draft"],
+    ...["recheck", "apply", "skip", "adopt", "undo"].map(name => [name, `/api/skill-updates/id/${name}`]),
+    ["bulkApply", "/api/skill-updates/bulk-apply"],
+  ];
+  for (const [method, url] of routes) {
+    const noId = ["discover", "install", "bulkApply"].includes(method);
+    const result = await client[method](...(noId ? [body, method] : ["id", body, method]));
+    assert.equal(result.state, "blocked");
+    assert.equal(result.committed, false);
+    const call = calls.at(-1);
+    assert.equal(call.url, url);
+    assert.equal(call.init.method, "POST");
+    assert.equal(new Headers(call.init.headers).get("Idempotency-Key"), method);
+    assert.deepEqual(JSON.parse(call.init.body), body);
+  }
+});
+
+test("read routes preserve empty pages, binding absence, previews and staging deletion", async () => {
+  const calls = [];
+  const preview = { path: "SKILL.md", side: "discovery", size: 90000, binary: false, text: "bounded", truncated: true, byte_limit: 65536, line_limit: 1000, media_type: "text/plain" };
+  const client = clientModule.createSourcesClient(createClient({ fetch: async (url, init) => {
+    calls.push({ url, init });
+    if (init?.method === "DELETE") return new Response(null, { status: 204 });
+    if (url.includes("preview=true")) return Response.json(preview);
+    return Response.json({ items: [], next_cursor: null });
+  } }));
+  for (const [method, expected] of [["discovery", "/api/skill-source-discoveries/id"], ["source", "/api/skill-sources/id"], ["binding", "/api/skills/id/source-binding"], ["update", "/api/skill-updates/id"], ["operation", "/api/skill-source-operations/id"], ["history", "/api/skills/id/source-history"]]) {
+    assert.deepEqual(await client[method]("id"), { items: [], next_cursor: null });
+    assert.equal(calls.at(-1).url, expected);
+  }
+  await client.updates({ limit: 5 });
+  assert.equal(calls.at(-1).url, "/api/skill-updates?limit=5");
+  assert.deepEqual(await client.discoveryFile("id", { package_path: "", path: "SKILL.md", preview: true }), preview);
+  assert.equal(calls.at(-1).url, "/api/skill-source-discoveries/id/files?package_path=&path=SKILL.md&preview=true");
+  assert.equal(await client.discardDiscovery("id", "discard-key"), undefined);
+  assert.equal(calls.at(-1).init.method, "DELETE");
+  assert.equal(calls.at(-1).init.body, undefined);
+});
+
+test("safe encoded legacy identifiers remain usable through both transports", async () => {
+  const calls = [];
+  const client = createClient({ fetch: async url => { calls.push(url); return Response.json({}); } });
+  await client.skill("100% verified");
+  await client.requestBytes("/api/files/a%2Eb%25file");
+  assert.deepEqual(calls, ["/api/skills/100%25%20verified", "/api/files/a%2Eb%25file"]);
+});
+
+test("reviewed choices are saved, read back and applied, and stop when the card is stale or held", async () => {
+  // Ruling P6a and Review Focus 3: one helper for both hosts; each request goes through the host's run.
+  const { applyReviewedChoices } = clientModule;
+  const given = { content_generation: 1, binding_generation: 1, update_generation: 1, policy_version: "p", local_digest: "l", candidate_digest: "c" };
+  const fresh = { ...given, update_generation: 2 };
+  const choices = [{ part_id: "p", part_fingerprint: "f", choice: "use_upstream", merged_text: null, acknowledged: ["phone"] }];
+  let view = { stale: false, resolved_check: { state: "passed" }, plan: { fingerprint: fresh }, drafts: choices };
+  const calls = [];
+  const client = {
+    saveDraft: async (id, body, key) => { calls.push(["draft", id, body, key]); return { state: "awaiting_review" }; },
+    update: async id => { calls.push(["read", id]); return view; },
+    apply: async (id, body, key) => { calls.push(["apply", id, body, key]); return { state: "complete" }; },
+  };
+  const identities = []; let keys = 0;
+  const run = async (job, identity) => { identities.push(JSON.parse(identity)[0]); return job(`key-${++keys}`); };
+  const body = { skill_id: "s", fingerprint: given, choices, removal_consents: ["r"], save: true };
+  assert.deepEqual(await applyReviewedChoices(client, run, "u", body), { state: "complete" });
+  assert.deepEqual(identities, ["draft", "apply"]);
+  assert.deepEqual(calls, [["draft", "u", { skill_id: "s", fingerprint: given, choices }, "key-1"], ["read", "u"],
+    ["apply", "u", { skill_id: "s", fingerprint: fresh, removal_consents: ["r"] }, "key-2"]]);
+  for (const stop of [{ ...view, stale: true }, { ...view, resolved_check: { state: "held" } }]) {
+    view = stop; calls.length = 0;
+    assert.equal(await applyReviewedChoices(client, run, "u", body), null);
+    assert.deepEqual(calls.map(row => row[0]), ["draft", "read"]);
+  }
+  calls.length = 0;
+  assert.equal(await applyReviewedChoices(client, async () => ({ state: "failed" }), "u", body), null);
+  assert.equal(await applyReviewedChoices(client, async () => null, "u", body), null);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await applyReviewedChoices(client, run, "u", { ...body, save: false }), { state: "complete" });
+  assert.deepEqual(calls.map(row => [row[0], row[2].fingerprint]), [["apply", given]]);
+});
+
+test("the one-step apply applies only the choices this reviewer saved, and says why it stopped", async () => {
+  // Ruling T6-2: drafts are one shared record. If another reviewer saves between this save and the
+  // read-back, applying would commit their selection in this reviewer's name, so the helper stops.
+  const { applyReviewedChoices } = clientModule;
+  const fingerprint = { content_generation: 1, binding_generation: 1, update_generation: 1, policy_version: "p", local_digest: "l", candidate_digest: "c" };
+  const choices = [{ part_id: "a", part_fingerprint: "fa", choice: "use_upstream", merged_text: null, acknowledged: ["phone", "email"] },
+    { part_id: "b", part_fingerprint: "fb", choice: "merged_text", merged_text: "Mine" }];
+  // The server keeps each choice with its format version and sorted acknowledgements, in any order.
+  const stored = [{ format_version: 1, ...choices[1], acknowledged: [] }, { format_version: 1, ...choices[0], acknowledged: ["email", "phone"] }];
+  const passed = { stale: false, resolved_check: { state: "passed" }, plan: { fingerprint: { ...fingerprint, update_generation: 2 } }, drafts: stored };
+  const body = { skill_id: "s", fingerprint, choices, removal_consents: [], save: true };
+  const attempt = async (read, run = async job => job("key")) => {
+    const stops = [], applied = [];
+    const client = { saveDraft: async () => ({ state: "awaiting_review" }), update: read,
+      apply: async (id, sent) => { applied.push(sent); return { state: "complete" }; } };
+    const result = await applyReviewedChoices(client, run, "u", body, { onStopped: reason => stops.push(reason) });
+    return [result, stops, applied.length];
+  };
+  assert.deepEqual(await attempt(async () => passed), [{ state: "complete" }, [], 1]);
+  const cases = [
+    [async () => ({ ...passed, drafts: [stored[1], { ...stored[0], merged_text: "Theirs" }] }), "changed"],
+    [async () => ({ ...passed, drafts: [stored[1]] }), "changed"],
+    [async () => ({ ...passed, drafts: [stored[0], { ...stored[1], acknowledged: ["phone"] }] }), "changed"],
+    [async () => ({ ...passed, drafts: [stored[0], { ...stored[1], part_fingerprint: "other" }] }), "changed"],
+    [async () => ({ ...passed, stale: true }), "stale"],
+    [async () => ({ ...passed, resolved_check: { state: "held" } }), "held"],
+    [async () => ({ ...passed, resolved_check: { state: "unavailable" } }), "held"],
+    [async () => { throw new Error("offline"); }, "unavailable"],
+  ];
+  for (const [read, reason] of cases) assert.deepEqual(await attempt(read), [null, [reason], 0], reason);
+  // A failed save is reported by the host's own run, with its recovery; it is not a stop.
+  assert.deepEqual(await attempt(async () => passed, async () => null), [null, [], 0]);
+  // The callback is optional.
+  assert.deepEqual(await applyReviewedChoices({ saveDraft: async () => ({ state: "complete" }), update: async () => ({ ...passed, stale: true }) }, async job => job("k"), "u", body), null);
+});

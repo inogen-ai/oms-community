@@ -21,7 +21,6 @@ from oms.ingestion.sanitiser import RegexSanitiser
 from oms.security.injection import DeterministicScreen
 from oms.publish.publisher import Publisher
 from oms.skills.history import SkillHistory
-from oms.skills.service import SkillAdminService
 from oms.web.capabilities import RouteBundle
 from oms.settings.publication import publication_settings
 
@@ -100,13 +99,13 @@ def build_routes(services):
     manual = APIRouter(prefix="/api")
 
     def require_skill(skill_id):
-        skill = s.store.get_skill(skill_id)
+        skill = s.store.get_skill(skill_id, tenant_id=tenant)
         if skill is None or skill.tenant_id != tenant:
             raise HTTPException(404, "skill not found in this workspace")
         return skill
 
     def rule_view(rule):
-        return {**asdict(rule), "skill_ids": [sk.id for sk in s.store.skills_for_rule(rule.id)],
+        return {**asdict(rule), "skill_ids": [sk.id for sk in s.store.skills_for_rule(rule.id, tenant_id=tenant)],
                 "transaction_ids": [t.id for t in s.store.lineage(rule.id)]}
 
     def publisher(store=None):
@@ -124,7 +123,7 @@ def build_routes(services):
 
     def mutate_skill(skill_id, change, cause=SkillVersionCause.CONSOLE_EDIT):
         def apply(store, queue):
-            result = change(SkillAdminService(store=store))
+            result = change(s.skills.using(store, queue))
             history(store).capture_required(skill_id, tenant, cause=cause, actor=actor)
             return result
         return s.repository.atomic(f"edit-{skill_id}", tenant, apply)
@@ -139,7 +138,9 @@ def build_routes(services):
 
     @router.get("/skills")
     def skills():
-        return [asdict(sk) for sk in s.store.skills_for_tenant(tenant)]
+        rows = s.store.skills_for_tenant(tenant)
+        linked = s.source_reads.skill_sources(s.sources.policy.context(), [sk.id for sk in rows]) if s.source_reads is not None else {}
+        return [{**asdict(sk), "source": linked[sk.id].model_dump(mode="json") if sk.id in linked else None} for sk in rows]
 
     @router.get("/skill-changes")
     def skill_changes():
@@ -148,7 +149,7 @@ def build_routes(services):
     @router.post("/skills", status_code=201)
     def create_skill(body: SkillCreate):
         def apply(store, queue):
-            result = SkillAdminService(store=store).create_skill(tenant, actor=actor, **body.model_dump())
+            result = s.skills.using(store, queue).create_skill(tenant, actor=actor, **body.model_dump())
             history(store).capture_required(result.id, tenant, cause=SkillVersionCause.CREATED, actor=actor)
             return result
         return s.repository.atomic("create-skill", tenant, apply)
@@ -157,17 +158,17 @@ def build_routes(services):
     def skill(skill_id: str):
         found = require_skill(skill_id)
         return {**asdict(found), "body": publisher().render_package(found).skill_md,
-                "rules": [rule_view(r) for r in s.store.rules_for_skill(skill_id)],
+                "rules": [rule_view(r) for r in s.store.rules_for_skill(skill_id, tenant_id=tenant)],
                 "sections": [asdict(section) for section in s.skills.sections(skill_id, tenant)],
                 "artefacts": [{"path": path, "size": artefact.size,
-                                "digest": artefact.content_ref} for artefact, path in s.store.artefacts_for_skill(skill_id)],
+                                "digest": artefact.content_ref} for artefact, path in s.store.artefacts_for_skill(skill_id, tenant_id=tenant)],
                 "versions": [asdict(v) for v in s.store.skill_versions(tenant, skill_id)]}
 
     @router.patch("/skills/{skill_id}")
     def update_skill(skill_id: str, body: SkillPatch):
         require_skill(skill_id)
         def apply(store, queue):
-            result = SkillAdminService(store=store).update_metadata(skill_id, tenant, actor=actor,
+            result = s.skills.using(store, queue).update_metadata(skill_id, tenant, actor=actor,
                 **body.model_dump(exclude_unset=True, exclude={"publish_enabled"}))
             if body.publish_enabled is not None:
                 result.publish_enabled = body.publish_enabled
@@ -179,9 +180,9 @@ def build_routes(services):
     @router.delete("/skills/{skill_id}")
     def delete_skill(skill_id: str):
         def apply(store, queue):
-            service = SkillAdminService(store=store)
+            service = s.skills.using(store, queue)
             service.skill(skill_id, tenant)
-            sections = {section.id for section in store.sections_for_skill(skill_id)}
+            sections = {section.id for section in store.sections_for_skill(skill_id, tenant_id=tenant)}
             report = service.delete_skill(skill_id, tenant, actor=actor)
             # These reviews cannot be decided once their section is gone.
             # Rule reviews stay: their rules and any other memberships survive.
@@ -219,7 +220,7 @@ def build_routes(services):
             for item in queue.pending(tenant):
                 if item.subject_id == rule_id and item.kind in ("injection", "removal", "polarity_conflict"):
                     queue.resolve(item.id, body.action, decided_by=actor)
-            for selected in store.skills_for_rule(rule.id):
+            for selected in store.skills_for_rule(rule.id, tenant_id=tenant):
                 history(store).capture_required(selected.id, tenant,
                     cause=SkillVersionCause.RULE_EDIT, actor=actor, detail=body.action)
             return rule
@@ -267,6 +268,9 @@ def build_routes(services):
         if len(archive) > 25_000_000:
             raise HTTPException(413, "archive exceeds 25 MB")
         staged = s.uploads.stage(archive, tenant, filename=file.filename or "upload.zip")
+        if s.sources is not None:
+            from oms.sources.local_upload import stage_view
+            return stage_view(staged)
         # The local operator's upload is itself the explicit import command.
         return asdict(s.uploads.apply(staged.id, tenant))
 
@@ -286,6 +290,9 @@ def build_routes(services):
                     raise HTTPException(413, "directory exceeds 25 MB")
                 archive.writestr(file.filename or "", content)
         staged = s.uploads.stage(buffer.getvalue(), tenant, filename="directory.zip")
+        if s.sources is not None:
+            from oms.sources.local_upload import stage_view
+            return stage_view(staged)
         return asdict(s.uploads.apply(staged.id, tenant))
 
     @manual.post("/ingest", status_code=202)
@@ -338,7 +345,7 @@ def build_routes(services):
         ids = {n["id"] for n in selected}
         edges = [{"source": rule.id, "target": skill.id, "type": "BELONGS_TO"}
                  for rule in rules if rule.id in ids
-                 for skill in s.store.skills_for_rule(rule.id) if skill.id in ids]
+                 for skill in s.store.skills_for_rule(rule.id, tenant_id=tenant) if skill.id in ids]
         return {"nodes": selected, "edges": edges}
 
     @router.get("/graph/nodes/{node_id}")
@@ -376,5 +383,10 @@ def build_routes(services):
     custody = APIRouter()
     custody.include_router(router)
     custody.include_router(documents)
-    return (RouteBundle("local_custody", custody, required_services=("store", "skills", "history", "publisher", "uploads", "settings_store")),
-            RouteBundle("manual_learning", manual, frozenset({"manual_learning"}), ("coordinator", "manual")))
+    bundles = (RouteBundle("local_custody", custody, required_services=("store", "skills", "history", "publisher", "uploads", "settings_store")),
+               RouteBundle("manual_learning", manual, frozenset({"manual_learning"}), ("coordinator", "manual")))
+    if s.sources is not None:
+        from oms.sources.api import source_routes
+        bundles += (source_routes(s.sources, s.source_reads,
+                    lambda request, action: s.sources.policy.context(), uploads=s.uploads),)
+    return bundles

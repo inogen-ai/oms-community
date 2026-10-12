@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from oms.domain.models import Skill, UsageEvent
 from oms.domain.repo import is_repo_skill
-from oms.domain.types import SourceRuntime
+from oms.domain.types import SkillStatus, SourceRuntime
 from oms.ports.blob_store import BlobStore
 from oms.ports.repositories import CatalogueRepository
 from oms.publish.publisher import Publisher
@@ -160,6 +160,9 @@ class SkillCatalogue:
                 # this is not a preference or a permission: a bundle is not a
                 # member of this list at all.
                 continue
+            if skill.status is SkillStatus.HELD:
+                # Held by the install safety check: not served to agents.
+                continue
             if not selection.can_read(skill):
                 continue
             if not selection.can_list(skill):
@@ -202,7 +205,7 @@ class SkillCatalogue:
         skill = self._resolve(tenant_id, name, selection)
         package = self._publisher.render_package(skill)
         resources = self._publisher.resource_names(
-            skill.id, package.references_md is not None)
+            skill.id, package.references_md is not None, tenant_id=tenant_id)
         if resource not in resources:
             raise ResourceNotFound(
                 f"skill {skill.id!r} has no resource {resource!r}")
@@ -241,7 +244,7 @@ class SkillCatalogue:
 
     def _resource_bytes(self, skill: Skill, resource: str) -> bytes | None:
         """The raw bytes behind an artefact this skill owns, undecoded."""
-        for artefact, path in self._store.artefacts_for_skill(skill.id):
+        for artefact, path in self._store.artefacts_for_skill(skill.id, tenant_id=skill.tenant_id):
             if path != resource or self._blob_store is None:
                 continue
             try:
@@ -264,6 +267,9 @@ class SkillCatalogue:
         wanted = _key(name)
         for skill in self._store.skills_for_tenant(tenant_id):
             if _key(skill.id) != wanted and _key(skill.name) != wanted:
+                continue
+            if skill.status is SkillStatus.HELD:
+                # Same result as an unknown id.
                 continue
             if not selection.can_read(skill):
                 # `continue`, not `break`. Matching is on id OR display name and
@@ -289,7 +295,7 @@ class SkillCatalogue:
         generated overflow file, or an artefact out of the blob store."""
         if resource == REFERENCES_FILE:
             return package.references_md
-        for artefact, path in self._store.artefacts_for_skill(skill.id):
+        for artefact, path in self._store.artefacts_for_skill(skill.id, tenant_id=skill.tenant_id):
             if path != resource:
                 continue
             if self._blob_store is None:

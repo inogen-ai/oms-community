@@ -45,7 +45,7 @@ def _store() -> InMemoryGraphStore:
                                  domain=domain, tenant_id=TENANT))
         store.upsert_rule(Rule(id=f"{skill_id}-rule", body="Check it twice.", tenant_id=TENANT))
         store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=f"{skill_id}-rule",
-                               to_id=skill_id))
+                               to_id=skill_id), tenant_id="acme")
     return store
 
 
@@ -141,7 +141,7 @@ def test_a_rotated_credential_updates_the_checkouts_remote(tmp_path, monkeypatch
     store.upsert_skill(Skill(id="year-end", name="year-end", description="Guidance.",
                              domain="finance", tenant_id=TENANT))
     store.upsert_rule(Rule(id="year-end-rule", body="Close the year.", tenant_id=TENANT))
-    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="year-end-rule", to_id="year-end"))
+    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="year-end-rule", to_id="year-end"), tenant_id="acme")
     gate, pushed = publish_to_repo(Publisher(store), TENANT,
                                    "https://bot:new@git.example/skills.git", work)
     assert gate.passed and pushed

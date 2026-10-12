@@ -4,11 +4,16 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from oms.domain.identity import SkillRef
+from oms.sources.models import Generations
+from oms.sources.errors import SourceConflict, StaleMutation
+from oms.sources.mutation import source_repository, watch_changes
+from oms.ports.injection_screen import CLEAN, ScreenResult
 from oms.domain.models import (
     Constraint, Edge, Skill, Transaction, Section, ContentBlock, Artefact, Example,
     TenantVocabulary,
@@ -38,6 +43,7 @@ from oms.ingestion.schema import ExecutionContext
 from oms.ingestion.service import summarise
 from oms.settings.thresholds import tenant_threshold
 from oms.skills.history import SkillHistory
+from oms.publish.manifest import is_package_echo
 from oms.ports.blob_store import BlobStore
 from oms.ports.import_extension import ImportExtension
 from oms.ports.graph_store import GraphStore
@@ -64,6 +70,46 @@ class ImportReport:
     identities: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ImportState:
+    tenant_id: str
+    skills: tuple[SkillRef, ...]
+    generations: tuple[Generations, ...]
+
+
+@dataclass(frozen=True)
+class PreparedImport:
+    state: ImportState
+    vocabulary: TenantVocabulary
+    original_skills: tuple[ParsedSkill, ...]
+    skills: tuple[ParsedSkill, ...]
+    constraints: tuple[ParsedConstraint, ...]
+    transactions: dict[str, Transaction]
+    screens: dict[str, ScreenResult]
+    blob_refs: dict[str, str]
+    injection_threshold: float
+    filename: str | None = None
+    extension: ImportExtension | None = None
+
+
+class _PreparedScreen:
+    def __init__(self, results):
+        self.results = results
+
+    def screen(self, body):
+        return self.results[body]
+
+
+def _revision(skill: ParsedSkill) -> str:
+    return hashlib.sha256(json.dumps({
+        "frontmatter": skill.frontmatter_body, "name": skill.name,
+        "rules": [(r.body, r.polarity.value, r.reference_only) for r in skill.rules],
+        "sections": [(section.heading, section.kind.value, section.body) for section in skill.sections],
+        "artefacts": [(a.path, hashlib.sha256(a.body).hexdigest(), a.mode) for a in skill.artefacts],
+        "document_mode": getattr(skill, "source_mode", None),
+    }, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def _section_id(skill_id: str, heading: str) -> str:
     return f"section-{skill_id}-{_slug(heading)[:64] or 'intro'}"
 
@@ -88,6 +134,7 @@ class SkillImporter:
         history: SkillHistory | None = None,
         extension: ImportExtension | None = None,
         repository: WorkflowRepository | None = None,
+        prepare_extension: Callable[[tuple[ParsedSkill, ...], GraphStore, str], ImportExtension] | None = None,
     ) -> None:
         self._store = store
         self._sanitiser = sanitiser
@@ -115,11 +162,15 @@ class SkillImporter:
         self._classifier = classifier or DefaultSectionClassifier()
         self._extension = extension
         self._repository = repository
+        self._prepare_extension = prepare_extension
+        self._bound = False
+        self._prepared: PreparedImport | None = None
 
     def using(self, store, queue):
         """Bind an import to the caller's atomic store/queue transaction."""
         bound = copy(self)
         bound._store, bound._queue, bound._repository = store, queue, None
+        bound._bound = True
         bound._merge = copy(self._merge)
         bound._merge._store, bound._merge._queue = store, queue
         if self._history is not None:
@@ -127,6 +178,10 @@ class SkillImporter:
             bound._history._store = store
             bound._history._publisher = copy(self._history._publisher)
             bound._history._publisher._store = store
+            events = self._history._admin_events
+            if events is not None and hasattr(events, "_driver"):
+                bound._history._admin_events = copy(events)
+                bound._history._admin_events._driver = store._driver
         return bound
 
     def prepare_directory(self, root: Path, tenant_id: str):
@@ -154,65 +209,191 @@ class SkillImporter:
         return TenantVocabulary(tenant_id=vocab.tenant_id, version=vocab.version,
                                 body=body)
 
-    def import_directory(self, root: Path, tenant_id: str,
-                         limit: int | None = None,
+    def capture_state(self, tenant_id: str) -> ImportState:
+        """Capture content and binding fences before parsing or external checks."""
+        def read(store, queue):
+            sources = source_repository(store)
+            generations = {row.skill: row for row in sources.generations_for_tenant(tenant_id=tenant_id)}
+            skills = tuple(sorted(SkillRef(tenant_id, skill.id) for skill in store.skills_for_tenant(tenant_id)))
+            for ref in skills:
+                generations.setdefault(ref, Generations(skill=ref, content=0, binding=0))
+            return ImportState(tenant_id, skills, tuple(generations[key] for key in sorted(generations)))
+        if self._repository is not None:
+            # Under the workspace lock, so an in-flight write commits before the fences are read.
+            return self._repository.metadata("prepare-import", tenant_id, read)
+        return read(self._store, self._queue)
+
+    def prepare_import_directory(self, root: Path, tenant_id: str, *, limit: int | None = None,
+                                 filename: str | None = None,
+                                 expected_identities: dict[str, str] | None = None,
+                                 state: ImportState | None = None) -> PreparedImport:
+        if self._bound:
+            raise ValueError("Prepare an import before entering the write transaction")
+        if state is not None and state.tenant_id != tenant_id:
+            raise ValueError("Import preparation crosses tenant ownership")
+        if self._extension is not None and self._repository is not None and self._prepare_extension is None:
+            raise ValueError("Guarded import enrichment requires a prepared extension")
+        state = state or self.capture_state(tenant_id)
+        vocabulary = self._vocabulary(tenant_id)
+        parsed = parse_directory(Path(root), vocabulary=vocabulary, classifier=self._classifier)
+        skills = parsed.skills if limit is None else parsed.skills[:limit]
+        return self._prepare(skills, parsed.constraints, vocabulary, state,
+                             filename, expected_identities)
+
+    def prepare_import_file(self, path: Path, tenant_id: str, *, filename: str | None = None,
+                            state: ImportState | None = None) -> PreparedImport:
+        if self._bound:
+            raise ValueError("Prepare an import before entering the write transaction")
+        if state is not None and state.tenant_id != tenant_id:
+            raise ValueError("Import preparation crosses tenant ownership")
+        if self._extension is not None and self._repository is not None and self._prepare_extension is None:
+            raise ValueError("Guarded import enrichment requires a prepared extension")
+        state = state or self.capture_state(tenant_id)
+        vocabulary = self._vocabulary(tenant_id)
+        path = Path(path)
+        skill = parse_skill_file(path.read_text(encoding="utf-8"), source_ref=path.as_posix(),
+                                vocabulary=vocabulary, classifier=self._classifier)
+        return self._prepare([skill] if skill is not None else [], [], vocabulary, state, filename, None)
+
+    def _prepare(self, skills, constraints, vocabulary, state, filename, expected_identities):
+        tenant_id = vocabulary.tenant_id
+        if state.tenant_id != tenant_id:
+            raise ValueError("Import preparation crosses tenant ownership")
+        original = tuple(deepcopy(skills))
+        resolved = tuple(resolve_identities(skills, self._store, self._queue, tenant_id))
+        targets = {skill.source_path or skill.source_ref: skill.id for skill in resolved}
+        if expected_identities is not None and targets != expected_identities:
+            raise ImportIdentityConflict("Import targets changed after preview; upload the package again to review its current targets.")
+        transactions, screens, blobs = {}, {}, {}
+        sources = source_repository(self._store)
+        for skill in resolved:
+            ref = SkillRef(tenant_id, skill.id)
+            if sources.get_binding(ref) is not None or sources.get_local_stream(ref) is not None:
+                raise SourceConflict("reconciliation_required", "source reconciliation required")
+        for skill in resolved:
+            txn_id = import_transaction_id(tenant_id, skill.source_ref, _revision(skill))
+            existing = self._store.get_transaction(txn_id)
+            if existing is None:
+                context = self._sanitiser.sanitise(ExecutionContext(
+                    user_input=f"skill import: {skill.source_ref}", agent_raw_output="",
+                    user_correction="\n".join(rule.body for rule in skill.rules))).context
+                payload = self._payloads.put(txn_id, context)
+                transactions[skill.id] = Transaction(id=txn_id, signal_type=SignalType.SKILL_IMPORT,
+                    source_runtime=SourceRuntime.MANUAL, sanitised_payload_ref=payload,
+                    timestamp=datetime.now(timezone.utc), tenant_id=tenant_id,
+                    source_ref=skill.source_ref, summary=summarise(context))
+            else:
+                if existing.tenant_id != tenant_id:
+                    raise ImportIdentityConflict("Import transaction belongs to another workspace")
+                if existing.signal_type is not SignalType.SKILL_IMPORT or existing.source_ref != skill.source_ref:
+                    raise ImportIdentityConflict("Import transaction has incompatible provenance")
+                transactions[skill.id] = existing
+            for rule in skill.rules:
+                if rule.body not in screens:
+                    try:
+                        screens[rule.body] = self._merge._screen.screen(rule.body)
+                    except Exception:
+                        logger.exception("Import screening failed during preparation")
+                        screens[rule.body] = CLEAN
+            for artefact in skill.artefacts:
+                digest = hashlib.sha256(artefact.body).hexdigest()
+                blobs[digest] = (self._blob_store.put(artefact.body) if self._blob_store is not None
+                                 else f"sha256-{digest}")
+        extension = self._extension
+        if extension is not None and self._prepare_extension is not None:
+            extension = self._prepare_extension(resolved, self._store, tenant_id)
+        elif extension is not None and self._repository is not None:
+            raise ValueError("Guarded import enrichment requires a prepared extension")
+        threshold = tenant_threshold(self._settings_store, tenant_id, "injection_threshold_import",
+                                     self._merge._injection_threshold)
+        return PreparedImport(state, vocabulary, original, resolved, tuple(constraints),
+                              transactions, screens, blobs, threshold, filename, extension)
+
+    def apply_prepared(self, prepared: PreparedImport,
+                       on_skill: Callable[[int, int, str], None] | None = None) -> ImportReport:
+        """Write a prepared import in one transaction.
+
+        `on_skill(index, total, name)` runs inside that transaction, immediately
+        before each skill, so it must be fast: it holds the write lock. A retried
+        transaction does not report an index again, so progress only advances.
+        """
+        tenant_id = prepared.state.tenant_id
+        reported = 0
+        generations = {row.skill: row for row in prepared.state.generations}
+        for skill in prepared.skills:
+            ref = SkillRef(tenant_id, skill.id)
+            generations.setdefault(ref, Generations(skill=ref, content=0, binding=0))
+        expected = tuple(generations[key] for key in sorted(generations))
+        def apply(store, queue):
+            nonlocal reported
+            bound = self.using(store, queue)
+            sources = source_repository(store)
+            sources.compare_generations(expected)
+            current = tuple(sorted(SkillRef(tenant_id, skill.id) for skill in store.skills_for_tenant(tenant_id)))
+            if current != prepared.state.skills:
+                raise StaleMutation("content_changed", "import inventory changed")
+            resolved = resolve_identities(deepcopy(list(prepared.original_skills)), store, queue, tenant_id)
+            if {skill.source_ref: skill.id for skill in resolved} != {skill.source_ref: skill.id for skill in prepared.skills}:
+                raise StaleMutation("content_changed", "import identity changed")
+            for skill in prepared.skills:
+                if sources.open_update(SkillRef(tenant_id, skill.id)) is not None:
+                    raise SourceConflict("reconciliation_required", "skill update requires reconciliation")
+            content_changes = watch_changes(store, tenant_id) if bound._history is not None else None
+            bound._prepared = prepared
+            bound._extension = prepared.extension
+            if prepared.extension is not None and hasattr(prepared.extension, "using"):
+                bound._extension = prepared.extension.using(store, queue)
+            bound._merge._extension = bound._extension
+            bound._merge._screen = _PreparedScreen(prepared.screens)
+            bound._merge._settings_store = None
+            bound._merge._injection_threshold = prepared.injection_threshold
+            report = ImportReport(identities={skill.source_ref: skill.id for skill in prepared.skills})
+            for constraint in prepared.constraints:
+                bound._upsert_constraint(constraint, tenant_id)
+                report.constraints += 1
+            for index, skill in enumerate(prepared.skills, start=1):
+                if on_skill is not None and index > reported:
+                    reported = index
+                    on_skill(index, len(prepared.skills), skill.name)
+                bound._import_skill(skill, tenant_id, prepared.vocabulary, report, filename=prepared.filename)
+            for skill in prepared.skills:
+                bound._import_routing(skill, tenant_id)
+            if bound._history is not None:
+                from oms.skills.upload import clean_filename
+                sources_by_skill = {skill.id: skill.source_ref for skill in prepared.skills}
+                default_source = ", ".join(sorted(sources_by_skill.values()))
+                for ref in content_changes():
+                    if store.get_skill(ref.skill_id, tenant_id=tenant_id) is None:
+                        continue
+                    source = sources_by_skill.get(ref.skill_id, default_source)
+                    detail = (f"uploaded {clean_filename(prepared.filename)}" if prepared.filename
+                              else f"imported {source}")
+                    bound._history.capture_required(ref.skill_id, tenant_id,
+                        cause=SkillVersionCause.UPLOAD_IMPORT, detail=detail)
+            return report
+        if self._repository is not None:
+            participants = (self._history,) if self._history is not None else ()
+            if prepared.extension is not None and hasattr(prepared.extension, "rollback_participants"):
+                participants += prepared.extension.rollback_participants()
+            for participant in participants:
+                if hasattr(participant, "bind_workflow_lock") and hasattr(self._repository, "_mutex"):
+                    participant.bind_workflow_lock(self._repository._mutex)
+            return self._repository.atomic("skill-import", tenant_id, apply,
+                expected_generations=expected, rollback_participants=participants)
+        return apply(self._store, self._queue)
+
+    def import_directory(self, root: Path, tenant_id: str, limit: int | None = None,
                          on_skill: Callable[[int, int, str], None] | None = None,
                          filename: str | None = None,
                          expected_identities: dict[str, str] | None = None,
-                         ) -> ImportReport:
-        """Import every skill under `root`. `on_skill(index, total, name)` is
-        called before each skill (1-based, total after `limit`) so callers can
-        show progress; ledger no-op skips still count as progress.
+                         *, state: ImportState | None = None) -> ImportReport:
+        prepared = self.prepare_import_directory(root, tenant_id, limit=limit, filename=filename,
+                                                 expected_identities=expected_identities, state=state)
+        return self.apply_prepared(prepared, on_skill)
 
-        `filename` names the archive or tree this came from, for a caller
-        with a `history` to snapshot against - optional and defaulted, so a
-        directory checkout (the CLI's own caller) or an existing call site
-        that never had one to give need not name anything.
-        """
-        if self._repository is not None:
-            return self._repository.atomic("skill-import", tenant_id,
-                lambda store, queue: self.using(store, queue).import_directory(
-                    root, tenant_id, limit, on_skill, filename, expected_identities))
-        vocab = self._vocabulary(tenant_id)
-        parsed = self.prepare_directory(root, tenant_id)
-        identities = {skill.source_ref: skill.id for skill in parsed.skills}
-        file_targets = {skill.source_path or skill.source_ref: skill.id for skill in parsed.skills}
-        if expected_identities is not None and file_targets != expected_identities:
-            raise ImportIdentityConflict("Import targets changed after preview; upload the package again to review its current targets.")
-        report = ImportReport(identities=identities)
-        for pc in parsed.constraints:
-            self._upsert_constraint(pc, tenant_id)
-            report.constraints += 1
-        # limit caps how many skills are imported (a faster subset for testing);
-        # None imports all. Constraints are always applied in full.
-        skills = parsed.skills if limit is None else parsed.skills[:limit]
-        for i, pskill in enumerate(skills, start=1):
-            if on_skill is not None:
-                on_skill(i, len(skills), pskill.name)
-            self._import_skill(pskill, tenant_id, vocab, report, filename=filename)
-        # Forward routing targets only exist after every skill has been stored.
-        for pskill in skills:
-            self._import_routing(pskill)
-        return report
-
-    def import_file(self, path: Path, tenant_id: str,
-                    filename: str | None = None) -> ImportReport:
-        if self._repository is not None:
-            return self._repository.atomic("skill-import", tenant_id,
-                lambda store, queue: self.using(store, queue).import_file(path, tenant_id, filename))
-        path = Path(path)
-        vocab = self._vocabulary(tenant_id)
-        skill = parse_skill_file(
-            path.read_text(encoding="utf-8"), source_ref=path.as_posix(),
-            vocabulary=vocab, classifier=self._classifier,
-        )
-        report = ImportReport()
-        if skill is not None:
-            skill = resolve_identities([skill], self._store, self._queue, tenant_id)[0]
-            report.identities[skill.source_ref] = skill.id
-            self._import_skill(skill, tenant_id, vocab, report, filename=filename)
-            self._import_routing(skill)
-        return report
+    def import_file(self, path: Path, tenant_id: str, filename: str | None = None,
+                    *, state: ImportState | None = None) -> ImportReport:
+        return self.apply_prepared(self.prepare_import_file(path, tenant_id, filename=filename, state=state))
 
     def _upsert_constraint(self, pc: ParsedConstraint, tenant_id: str) -> None:
         cid = _constraint_id(tenant_id, pc.body)
@@ -224,6 +405,8 @@ class SkillImporter:
         self, skill: ParsedSkill, tenant_id: str, vocab: TenantVocabulary,
         report: ImportReport, filename: str | None = None,
     ) -> None:
+        if self._prepared is None:
+            raise ValueError("Import content must be prepared before writing")
         # Publication-ledger no-op: if the source file's hash matches the last
         # publication we wrote, skip entirely.
         if self._is_unchanged_against_ledger(skill, tenant_id):
@@ -231,7 +414,7 @@ class SkillImporter:
 
         # Source files may update metadata only where the user has not curated
         # it. Re-import must preserve both those edits and the review status.
-        existing = self._store.get_skill(skill.id)
+        existing = self._store.get_skill(skill.id, tenant_id=tenant_id)
         curated = existing.curated if existing is not None else frozenset()
 
         def _keep(field: str, from_file: str) -> str:
@@ -253,34 +436,14 @@ class SkillImporter:
             repo=existing.repo if existing is not None else None,
             import_source_ref=existing.import_source_ref if existing and existing.import_source_ref else skill.source_ref,
             import_name=existing.import_name if existing and existing.import_name else skill.import_name or skill.id,
+            declared_license=getattr(skill, "declared_license", None),
+            document_mode=getattr(skill, "source_mode", None),
         ))
         self._import_tags(skill, tenant_id, curated)
-        revision = hashlib.sha256(json.dumps({
-            "frontmatter": skill.frontmatter_body, "name": skill.name,
-            "rules": [(r.body, r.polarity.value, r.reference_only) for r in skill.rules],
-            "sections": [(s.heading, s.kind.value, s.body) for s in skill.sections],
-            "artefacts": [(a.path, hashlib.sha256(a.body).hexdigest()) for a in skill.artefacts],
-        }, sort_keys=True).encode()).hexdigest()[:16]
-        txn_id = import_transaction_id(tenant_id, skill.source_ref, revision)
-        body_text = "\n".join(r.body for r in skill.rules)
-        # `.context`: the sanitiser returns the redactions alongside the
-        # scrubbed text now, and the import path takes no interest in them.
-        # There is no vault entry and no reveal surface here on purpose
-        # (redaction-vault design §4): an import is not a human review queue.
-        sanitised = self._sanitiser.sanitise(ExecutionContext(
-            user_input=f"skill import: {skill.source_ref}", agent_raw_output="",
-            user_correction=body_text)).context
-        # Payload files are outside the graph transaction. An immutable revision
-        # ID prevents a rolled-back import from overwriting earlier evidence.
+        transaction = self._prepared.transactions[skill.id]
+        txn_id = transaction.id
         if self._store.get_transaction(txn_id) is None:
-            ref = self._payloads.put(txn_id, sanitised)
-            self._store.upsert_transaction(Transaction(
-                id=txn_id, signal_type=SignalType.SKILL_IMPORT,
-                source_runtime=SourceRuntime.MANUAL,
-                sanitised_payload_ref=ref, timestamp=datetime.now(timezone.utc),
-                tenant_id=tenant_id, source_ref=skill.source_ref,
-                summary=summarise(sanitised),
-            ))
+            self._store.upsert_transaction(transaction)
 
         # Run the existing merge step (rule-level dedup, polarity, examples).
         # Only rules actually matched or created by this import earn a source
@@ -302,30 +465,6 @@ class SkillImporter:
         # Cross-skill detection (informational, embedding-gated, never blocks publish).
         self._detect_cross_skill_relationships(skill, tenant_id, vocab, report)
 
-        if self._history is not None:
-            # Wrapped whole, not just around the capture: `SkillHistory.capture`
-            # already swallows its own failures, but the module import and the
-            # cleaner below run on this stack, after every graph write for this
-            # skill has landed. A capture must never fail the write it follows.
-            try:
-                # Local import: `oms.skills.upload` imports THIS module (to run
-                # the real importer over a staged upload), so a module-level
-                # import here would be a cycle. `clean_filename` is the one
-                # place a filename is made safe to show back (design: never a
-                # second cleaner writing the same field a different way), and
-                # it is idempotent - a name that already went through it there
-                # comes back unchanged here.
-                from oms.skills.upload import clean_filename
-                cleaned = clean_filename(filename) if filename else None
-                detail = (f"uploaded {cleaned}" if cleaned
-                         else f"imported {skill.source_ref}")
-                self._history.capture(skill.id, tenant_id,
-                                      cause=SkillVersionCause.UPLOAD_IMPORT,
-                                      detail=detail)
-            except Exception:
-                logger.exception("skill history capture failed for import of %s",
-                                 skill.id)
-
     def _import_tags(self, skill: ParsedSkill, tenant_id: str,
                      curated: frozenset[str] = frozenset()) -> None:
         """Put the file's `tags:` on the SKILL, as the file meant them.
@@ -342,34 +481,25 @@ class SkillImporter:
         if "tags" in curated:
             return
         wanted = list(dict.fromkeys(skill.tags))
-        current = set(self._store.tags_for_skill(skill.id))
+        current = set(self._store.tags_for_skill(skill.id, tenant_id=tenant_id))
         for tag in wanted:
             if tag in current:
                 continue
             self._store.upsert_tag(tag, tag)
             self._store.attach_edge(Edge(type=EdgeType.TAGGED_WITH,
-                                         from_id=skill.id, to_id=tag))
+                                         from_id=skill.id, to_id=tag), tenant_id=tenant_id)
         for stale in sorted(current - set(wanted)):
             # The Tag node itself stays: other skills and rules may still point
             # at it, and nothing here can see whether they do.
             self._store.detach_edge(Edge(type=EdgeType.TAGGED_WITH,
-                                         from_id=skill.id, to_id=stale))
+                                         from_id=skill.id, to_id=stale), tenant_id=tenant_id)
 
     def _is_unchanged_against_ledger(self, skill: ParsedSkill, tenant_id: str) -> bool:
-        """Return True iff every file referenced by this skill matches the
-        publication ledger's hash (so re-importing is a strict no-op).
-
-        Currently checks the primary SKILL.md content_hash against
-        get_publication(tenant, source_ref). Artefact ledgers are tracked but
-        not currently used to short-circuit; that's a future tightening.
-        """
+        """A no-op requires proof for the complete package, modes and policy."""
         publication = self._store.get_publication(tenant_id, skill.source_ref)
         if publication is None:
             return False
-        # Hash the reconstituted skill content (frontmatter + sections).
-        reconstituted = self._reconstitute_skill_text(skill)
-        h = hashlib.sha256(reconstituted.encode("utf-8")).hexdigest()
-        return h == publication.content_hash
+        return is_package_echo(publication, skill)
 
     def _reconstitute_skill_text(self, skill: ParsedSkill) -> str:
         # Used only by the ledger check; matches what publish would write so
@@ -391,7 +521,7 @@ class SkillImporter:
         # can wire each parsed rule to its corresponding stored Rule.
         stored_by_key = {
             (_normalise(r.body), r.polarity): r
-            for r in self._store.rules_for_skill(skill.id)
+            for r in self._store.rules_for_skill(skill.id, tenant_id=tenant_id)
         }
 
         for psec in skill.sections:
@@ -412,7 +542,7 @@ class SkillImporter:
                     stored = stored_by_key.get(key)
                     if stored is not None:
                         self._store.attach_rule(stored, section_id=sec.id,
-                                                order=idx, group=prule.group)
+                                                order=idx, group=prule.group, tenant_id=tenant_id)
                 # Section-level examples, keeping their authorial sequence.
                 for idx, pex in enumerate(psec.examples):
                     example = Example(
@@ -422,7 +552,7 @@ class SkillImporter:
                         parent_section_id=sec.id, source_ref=skill.source_ref,
                         order=idx,
                     )
-                    self._store.upsert_example(example)
+                    self._store.upsert_example(example, tenant_id=tenant_id)
             else:
                 # Authorial section: content-hash supersession path. The text
                 # lives on the node whatever its length; `content_ref` is the
@@ -442,11 +572,11 @@ class SkillImporter:
                 # a source-file edit and supersedes it (provenance: the import
                 # transaction). Same id is an idempotent no-op; no active block
                 # means a first import, so attach as today.
-                active = self._store.blocks_for_section(sec.id)
+                active = self._store.blocks_for_section(sec.id, tenant_id=tenant_id)
                 current = active[0] if active else None
                 if current is None:
                     self._store.upsert_content_block(block)
-                    self._store.attach_block(block, section_id=sec.id)
+                    self._store.attach_block(block, section_id=sec.id, tenant_id=tenant_id)
                 elif current.id != block.id:
                     if canonical_source(current.source_ref.partition("#")[0],
                                         skill.import_name or skill.id) != skill.source_ref:
@@ -456,7 +586,7 @@ class SkillImporter:
                         # decision, so escalate instead of guessing.
                         from oms.domain.models import ReviewItem
                         from oms.domain.types import Verdict
-                        review_id = f"review-threeway-{sec.id}-{block.id[-16:]}"
+                        review_id = f"review-threeway-{hashlib.sha256(tenant_id.encode()).hexdigest()[:16]}-{sec.id}-{block.id[-16:]}"
                         # A review addresses this incoming source revision.
                         # Upload retries must preserve its original baseline,
                         # timestamps and any explicit decision, including a
@@ -476,25 +606,26 @@ class SkillImporter:
                     else:
                         self._store.supersede_block(
                             current.id, block, section_id=sec.id, transaction_id=txn_id,
+                            tenant_id=tenant_id,
                         )
 
                 # Routing / reference edges, when the section type carries referents.
                 for ref in psec.reference_targets:
                     self._safe_attach_edge(
-                        EdgeType.HAS_REFERENCE, skill.id, ref.path, {"prose": ref.prose}
+                        EdgeType.HAS_REFERENCE, skill.id, ref.path, {"prose": ref.prose}, tenant_id
                     )
 
-    def _import_routing(self, skill):
+    def _import_routing(self, skill, tenant_id):
         for section in skill.sections:
             for target in section.routing_targets:
                 self._safe_attach_edge(EdgeType.ROUTES_TO, skill.id, target.skill_id,
-                                       {"prose": target.prose})
+                                       {"prose": target.prose}, tenant_id)
 
-    def _safe_attach_edge(self, edge_type, from_id, to_id, properties):
+    def _safe_attach_edge(self, edge_type, from_id, to_id, properties, tenant_id):
         from oms.domain.models import Edge
         try:
-            self._store.attach_edge(Edge(type=edge_type, from_id=from_id, to_id=to_id, properties=properties))
-        except Exception:
+            self._store.attach_edge(Edge(type=edge_type, from_id=from_id, to_id=to_id, properties=properties), tenant_id=tenant_id)
+        except KeyError:
             # Edge target may not exist yet (forward reference); ignore.
             pass
 
@@ -502,16 +633,16 @@ class SkillImporter:
         self, skill: ParsedSkill, tenant_id: str, report: ImportReport,
     ) -> None:
         for pa in skill.artefacts:
-            if self._blob_store is not None:
-                content_ref = self._blob_store.put(pa.body)
-            else:
-                content_ref = f"sha256-{hashlib.sha256(pa.body).hexdigest()}"
+            if self._prepared is None:
+                raise ValueError("Import files must be staged before writing")
+            content_ref = self._prepared.blob_refs[hashlib.sha256(pa.body).hexdigest()]
             artefact = Artefact(
                 id=_artefact_id(content_ref.split("-", 1)[1]),
                 content_ref=content_ref, kind=pa.kind, name=pa.name,
                 size=len(pa.body), tenant_id=tenant_id, source_ref=pa.source_ref,
+                mode=pa.mode,
             )
-            self._store.upsert_artefact(artefact, skill_id=skill.id, path=pa.path)
+            self._store.upsert_artefact(artefact, skill_id=skill.id, path=pa.path, tenant_id=tenant_id)
             report.artefacts += 1
 
     def _detect_cross_skill_relationships(self, skill, tenant_id, vocab, report):

@@ -100,7 +100,7 @@ def test_removing_a_shared_rule_requires_the_complete_reviewed_impact(workspace)
     skill_id = _import(workspace)
     _seed_skill(workspace, "another-skill")
     rule_id = _part(_document(workspace, skill_id), RULE)["source_id"]
-    workspace.services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id="another-skill"))
+    workspace.services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id="another-skill"), tenant_id="acme")
     document = _document(workspace, skill_id)
     contribute(workspace)
     body = decision(skill_id, document, [(RULE, "")])
@@ -127,7 +127,7 @@ def test_shared_rule_requires_exact_reviewed_impact_and_captures_both_skills(wor
     skill_id = _import(workspace)
     _seed_skill(workspace, "another-skill")
     rule_id = _part(_document(workspace, skill_id), RULE)["source_id"]
-    workspace.services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id="another-skill"))
+    workspace.services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id="another-skill"), tenant_id="acme")
     document = _document(workspace, skill_id)
     assert {row["id"] for row in _part(document, RULE)["affected_skills"]} == {skill_id, "another-skill"}
     contribute(workspace)

@@ -83,7 +83,7 @@ def store(graph: InMemoryGraphStore | None = None) -> InMemoryGraphStore:
                              domain="engineering", tenant_id="acme"))
     graph.upsert_rule(Rule(id="check-rule", body="Check the result before publishing.",
                            tenant_id="acme"))
-    graph.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="check-rule", to_id="checks"))
+    graph.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id="check-rule", to_id="checks"), tenant_id="acme")
     return graph
 
 

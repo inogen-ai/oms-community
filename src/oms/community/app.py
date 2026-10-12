@@ -1,5 +1,5 @@
 """Community composition: adapters are selected here, outside the HTTP factory."""
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 from oms.community.principal import LocalPrincipalResolver, NullNotifier
@@ -26,6 +26,9 @@ from oms.settings.publication import ConfiguredPublisher, publication_settings
 from oms.skills.history import SkillHistory
 from oms.skills.service import SkillAdminService
 from oms.skills.upload import UploadService
+from oms.sources.reads import SourceReads
+from oms.sources.service import SourceService
+from oms.ports.source_reader import SourceReaderFactory
 
 
 @dataclass(frozen=True)
@@ -49,11 +52,23 @@ class CoreServices:
     settings: CoreSettings
     blobs: BlobStore
     payloads: FilePayloadStore
+    sources: SourceService | None = None
+    source_reads: SourceReads | None = None
 
     def validate(self):
         for field in fields(self):
+            if field.name in {"sources", "source_reads"}:
+                continue
             if getattr(self, field.name) is None:
                 raise ValueError(f"required core service is missing: {field.name}")
+        if (self.sources is None) != (self.source_reads is None):
+            raise ValueError("source service and read service must be composed together")
+        if self.sources is not None:
+            required = ("discover", "install", "check", "link", "relink", "retarget", "save_draft", "recheck",
+                        "apply", "skip", "adopt", "undo", "bulk_apply", "unlink", "remove_source", "relocate_source", "get_operation",
+                        "create_source", "submit_local", "submit_local_batch", "undo_status")
+            if any(not callable(getattr(self.sources, name, None)) for name in required):
+                raise ValueError("source lifecycle is incomplete")
         methods = {
             "store": ("get_skill", "upsert_rule", "lineage"), "queue": ("pending", "resolve"),
             "repository": ("atomic", "undisposed"), "coordinator": ("ingest", "reconcile"),
@@ -75,7 +90,7 @@ class CoreServices:
         return self
 
 
-def _compose(store, queue, repository, settings_store, settings):
+def _compose(store, queue, repository, settings_store, settings, *, source_reader_factory=None):
     from oms.adapters.blobs.file_blob_store import FileBlobStore
     from oms.adapters.vocabulary.in_memory import InMemoryVocabularyStore
     data = Path(settings.data_dir)
@@ -107,7 +122,7 @@ def _compose(store, queue, repository, settings_store, settings):
     importer = SkillImporter(store, sanitiser, payloads, queue, blob_store=blobs,
         vocabulary_store=vocabulary, injection_screen=DeterministicScreen(), history=history,
         repository=repository)
-    return CoreServices(store, queue, repository, coordinator,
+    services = CoreServices(store, queue, repository, coordinator,
         ManualReviewService(repository, payloads, retention, blob_store=blobs,
                             history_factory=history_for,
                             publisher_factory=lambda repository_store: ConfiguredPublisher(
@@ -115,24 +130,36 @@ def _compose(store, queue, repository, settings_store, settings):
                                 tenant_id=settings.tenant_id, blob_store=blobs,
                                 **endpoints)), ImportReviewService(repository, history_for), importer,
         UploadService(store=store, importer=importer, staging_root=data / "uploads", sanitiser=sanitiser),
-        SkillAdminService(store=store), history, publisher,
+        SkillAdminService(store=store, repository=repository, history_factory=history_for), history, publisher,
         SkillCatalogue(store, publisher, blob_store=blobs,
                        read_policy=SingleWorkspaceReadPolicy(settings.tenant_id)),
         settings_store, LocalPrincipalResolver(settings.tenant_id), NullNotifier(), retention,
-        settings, blobs, payloads).validate()
+        settings, blobs, payloads)
+    if settings.github_skill_sources:
+        from oms.community.sources import compose_sources
+        from oms.sources.settings import SourceSettings
+        sources, reads = compose_sources(repository, blobs,
+            settings.source_settings or SourceSettings.from_env(data), tenant_id=settings.tenant_id,
+            actor_id=services.principal_resolver.resolve().id, history_factory=history_for,
+            publisher_factory=lambda graph: ConfiguredPublisher(graph, settings_store=settings_store,
+                tenant_id=settings.tenant_id, blob_store=blobs, **endpoints), reader_factory=source_reader_factory)
+        services = replace(services, sources=sources, source_reads=reads)
+        services.uploads.configure_sources(sources)
+    return services.validate()
 
 
-def build_memory(data_dir: Path, tenant="local") -> CoreServices:
+def build_memory(data_dir: Path, tenant="local", *, github_skill_sources: bool = False) -> CoreServices:
     """Disposable explicit adapter choice for tests and examples."""
     from oms.adapters.memory.store import InMemoryGraphStore
     from oms.adapters.memory.review_queue import InMemoryReviewQueue
     from oms.adapters.memory.settings import InMemorySettingsStore
     store, queue = InMemoryGraphStore(), InMemoryReviewQueue()
     return _compose(store, queue, MemoryWorkflowRepository(store, queue),
-        InMemorySettingsStore(), CoreSettings(data_dir=Path(data_dir), tenant_id=tenant))
+        InMemorySettingsStore(), CoreSettings(data_dir=Path(data_dir), tenant_id=tenant,
+                                             github_skill_sources=github_skill_sources))
 
 
-def build_community(settings: CoreSettings, driver) -> CoreServices:
+def build_community(settings: CoreSettings, driver, *, source_reader_factory: SourceReaderFactory | None = None) -> CoreServices:
     from oms.adapters.neo4j.store import Neo4jGraphStore
     from oms.adapters.neo4j.review_queue import Neo4jReviewQueue
     from oms.adapters.neo4j.settings import Neo4jSettingsStore
@@ -141,6 +168,6 @@ def build_community(settings: CoreSettings, driver) -> CoreServices:
     store.ensure_schema()  # ownership refusal precedes every other write
     queue = Neo4jReviewQueue(driver)
     services = _compose(store, queue, Neo4jWorkflowRepository(driver, store, queue),
-                        Neo4jSettingsStore(driver), settings)
+                        Neo4jSettingsStore(driver), settings, source_reader_factory=source_reader_factory)
     services.coordinator.reconcile(settings.tenant_id)
     return services

@@ -2,11 +2,11 @@
 from dataclasses import dataclass
 from fastapi import APIRouter
 
-API_CONTRACT_VERSION = "1.1"
+API_CONTRACT_VERSION = "1.2"
 FEATURES = (
     "manual_learning", "semantic_compilation", "multi_user_identity", "team_scoping",
     "personal_mutes", "contributor_portal", "redaction_vault", "model_settings",
-    "scheduled_publish", "managed_publish", "graph_query_console", "advanced_review", "usage_analytics")
+    "scheduled_publish", "managed_publish", "graph_query_console", "advanced_review", "usage_analytics", "github_skill_sources")
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ def capabilities_for(edition: str, services, bundles: tuple[RouteBundle, ...], *
             paths.add(key)
         enabled.update(bundle.capabilities)
     result = {"edition": edition, "api_contract_version": API_CONTRACT_VERSION,
-              "schema_version": 1, **{name: name in enabled for name in FEATURES}}
+              "schema_version": 2, **{name: name in enabled for name in FEATURES}}
     if advertised is not None and dict(advertised) != result:
         raise ValueError("advertised capabilities disagree with constructed services and routes")
     return result

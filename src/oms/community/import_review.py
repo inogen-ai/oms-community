@@ -22,12 +22,12 @@ class ImportReviewService:
         for item in self.repository.queue.pending(tenant_id):
             if item.kind not in KINDS:
                 continue
-            section = store.get_section(item.other_id) if item.kind == "block_revision" else None
+            section = store.get_section(item.other_id, tenant_id=tenant_id) if item.kind == "block_revision" else None
             rule = store.get_rule(item.subject_id) if item.kind != "block_revision" else None
             if (section is not None and section.tenant_id != tenant_id
                     or rule is not None and rule.tenant_id != tenant_id):
                 continue
-            skills = store.skills_for_rule(rule.id) if rule and rule.tenant_id == tenant_id else []
+            skills = store.skills_for_rule(rule.id, tenant_id=tenant_id) if rule and rule.tenant_id == tenant_id else []
             rows.append({"id": item.id, "kind": item.kind, "subject_id": item.subject_id,
                 "other_id": item.other_id, "reason": item.reason,
                 "proposed_body": item.proposed_body or (rule.body if rule else ""),
@@ -51,11 +51,11 @@ class ImportReviewService:
                 return {"id": item.id, "resolved": True}
             affected = []
             if item.kind == "block_revision":
-                section = store.get_section(item.other_id)
+                section = store.get_section(item.other_id, tenant_id=tenant_id)
                 if section is None or section.tenant_id != tenant_id:
                     raise ManualDecisionError("the reviewed section no longer exists")
                 if action == "accept":
-                    active = store.blocks_for_section(section.id)
+                    active = store.blocks_for_section(section.id, tenant_id=tenant_id)
                     if len(active) != 1 or active[0].id != item.subject_id:
                         raise DecisionConflict("the section changed; review its current text before editing")
                     wording = item.proposed_body if body is None else body
@@ -81,7 +81,7 @@ class ImportReviewService:
                 if rule.status is RuleStatus.ACTIVE and rule.plane.value != "data":
                     raise ManualDecisionError("a control-plane rule cannot be published")
                 store.upsert_rule(rule)
-                affected = [skill.id for skill in store.skills_for_rule(rule.id)]
+                affected = [skill.id for skill in store.skills_for_rule(rule.id, tenant_id=tenant_id)]
             for skill_id in affected:
                 self.history_factory(store).capture_required(skill_id, tenant_id,
                     cause=SkillVersionCause.RULE_EDIT, actor=actor,
