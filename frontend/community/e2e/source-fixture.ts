@@ -18,7 +18,7 @@ export async function sourceFixture(page: Page, options: { enabled?: boolean; bl
   if (options.unlinked) { binding.binding = null; binding.local_stream = { format_version, origin: { ...origin, origin_id: "local-origin", kind: "local" }, baseline: null, transport: "zip", uploader_id: "local-operator", filename: "earlier.zip" }; }
   const update: Mutable<SourceUpdateView> = { format_version, update_id: "update-1", generation: 1, status: "open", review_item_id: "review-1", drafts: [], operation_id: null, stale: false, part_fingerprints: { "section:intro": "part-1" }, ownership: { "section:intro": "shared" }, resolved_check: { format_version, state: "passed", code: "checked", reasons: [] }, plan: { format_version, skill: skillRef, origin, base: { format_version, snapshot_id: "base", origin }, incoming: { format_version, snapshot_id: "incoming", origin }, fingerprint: { format_version, content_generation: 1, binding_generation: 1, update_generation: 1, policy_version: "p", policy_digest: "policy", local_digest: "local", candidate_digest: "incoming" }, changes: [{ format_version, part_id: "section:intro", kind: "section", action: "conflict", base: evidence("Check receipts."), local: evidence("Keep receipt references."), incoming: evidence("Compare receipts and orders."), linked_removals: [] }], conflicts: [{ format_version, part_id: "section:intro", reason: "Both sides changed", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] }], flags: ["conflict", "first_reconciliation"] } };
   if (options.file) update.plan = { ...update.plan, flags: [], conflicts: [], changes: [{ ...update.plan.changes[0], part_id: "file:references/guide.md", kind: "file", action: "replace", base: { ...evidence(""), value: { path: "references/guide.md", digest: "base-digest", size: 12 } }, local: { ...evidence(""), value: { path: "references/guide.md", digest: "local-digest", size: 12 } }, incoming: { ...evidence(""), value: { path: "references/guide.md", digest: "upstream-digest", size: 12, published: false, exclusion_reason: "reserved output" } } }] };
-  // A new file held for personal data on lines 40 and 263; nothing of it is in OMS yet.
+  // A new file held for personal data on lines 40, 263 and 400 (beyond its 300 lines); nothing of it is in OMS yet.
   const flaggedPath = "references/contacts.md";
   if (options.flagged) {
     const absent = { format_version, kind: "absent" as const, value: null, source_digest: null, policy_version: "p" };
@@ -28,7 +28,7 @@ export async function sourceFixture(page: Page, options: { enabled?: boolean; bl
     update.part_fingerprints = { [part_id]: "part-contacts" };
     update.ownership = {};
     update.parts = { [part_id]: { format_version, part_id, kind: "file", label: flaggedPath, attention: "decide", risks: ["personal_data"], default: null, overridable: ["phone"],
-      findings: [40, 263].map(line => ({ path: flaggedPath, part_id: null, line, category: "phone", summary: `${flaggedPath}, line ${line}: looks like a phone number` })) } };
+      findings: [40, 263, 400].map(line => ({ path: flaggedPath, part_id: null, line, category: "phone", summary: `${flaggedPath}, line ${line}: looks like a phone number` })) } };
   }
   if (options.removal) update.plan = { ...update.plan, flags: ["deletion_consent"], conflicts: [], changes: [{ ...update.plan.changes[0], action: "remove", incoming: { ...evidence(""), kind: "absent", value: null } }] };
   if (options.clean) update.plan = { ...update.plan, flags: [], conflicts: [], changes: [{ ...update.plan.changes[0], action: "replace" }] };

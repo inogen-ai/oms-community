@@ -315,7 +315,7 @@ test("file previews remain inert and downloads use authorised side paths", async
   await expect(page.locator(".oms-source-files pre")).toHaveText(Array(3).fill("<script>window.bad = true</script>"));
   expect(await page.evaluate(() => "bad" in window)).toBe(false);
   const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Download incoming", exact: true }).click();
+  await page.getByRole("button", { name: "Download this version (New on GitHub)", exact: true }).click();
   expect((await download).suggestedFilename()).toBe("guide.md");
   expect(state.requests.some(row => row.path.endsWith("/files"))).toBe(true);
 });
@@ -324,7 +324,7 @@ test("opening a flagged file shows its first flagged line, marked and tagged, an
   const state = await sourceFixture(page, { flagged: true });
   await page.goto("/import/?github=sources&update=update-1");
   const item = page.getByRole("region", { name: "Item references/contacts.md" });
-  await expect(item.getByText("2 lines look like a phone number: lines 40, 263")).toBeVisible();
+  await expect(item.getByText("3 lines look like a phone number: lines 40, 263, 400")).toBeVisible();
   await item.locator(".oms-source-show > summary").click();
   const preview = item.locator(".oms-source-numbered");
   const first = preview.locator('[data-line="40"]');
@@ -336,7 +336,8 @@ test("opening a flagged file shows its first flagged line, marked and tagged, an
   await expect(item.getByText("This file is new. OMS does not have it yet.")).toBeVisible();
   await expect(item.getByRole("heading", { name: "New on GitHub" })).toBeVisible();
   await expect(item.getByRole("heading", { name: "Last version taken from GitHub" })).toHaveCount(0);
-  await expect(item.getByRole("button", { name: /^Download (base|current)$/ })).toHaveCount(0);
+  await expect(item.getByRole("button", { name: /^Download this version/ })).toHaveCount(1);
+  await expect(item.getByRole("button", { name: "Download this version (New on GitHub)" })).toBeVisible();
   const files = state.requests.filter(row => row.path.endsWith("/files"));
   expect(files.length).toBeGreaterThan(0);
   expect(files.every(row => new URLSearchParams(row.query).get("side") === "upstream")).toBe(true);
@@ -358,6 +359,28 @@ test("a line number in the reason opens Show at that line", async ({ page }) => 
   await item.getByRole("button", { name: "Show line 40 of references/contacts.md" }).click();
   await expect(preview.locator('[data-line="40"]')).toBeInViewport();
   await expect(preview.locator('[data-line="263"]')).not.toBeInViewport();
+  // A line the preview does not hold: the button takes the reader to the note that says so.
+  await item.getByRole("button", { name: "Show line 400 of references/contacts.md" }).click();
+  const note = item.getByText("Line 400 is beyond this preview.");
+  await expect(note).toBeFocused();
+  await expect(note).toBeInViewport();
+});
+
+test("a line number clicked before the preview loads scrolls to that line once it arrives", async ({ page }) => {
+  await sourceFixture(page, { flagged: true });
+  let release!: () => void;
+  const loaded = new Promise<void>(resolve => { release = resolve; });
+  await page.route(url => url.pathname.endsWith("/files"), async route => { await loaded; await route.fallback(); });
+  await page.goto("/import/?github=sources&update=update-1");
+  const item = page.getByRole("region", { name: "Item references/contacts.md" });
+  await item.getByRole("button", { name: "Show line 263 of references/contacts.md" }).click();
+  await expect(item.locator(".oms-source-show")).toHaveAttribute("open", "");
+  await expect(item.getByText("Loading preview…")).toBeVisible();
+  release();
+  const preview = item.locator(".oms-source-numbered");
+  await expect(preview.locator('[data-line="263"]')).toBeInViewport();
+  await expect(preview.locator('[data-line="40"]')).not.toBeInViewport();
+  await expect(preview).toBeFocused();
 });
 
 test("Community rejects a runtime workspace override before contacting the API", async ({ page }) => {

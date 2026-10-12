@@ -77,8 +77,11 @@ export function sourceReviewParts(update: SourceCardUpdate): Readonly<Record<str
 export function sourceFindingReasons(findings?: readonly SourceCardFinding[]): string[];
 /** The part's own flagged lines (a file's by its path, a prose part's by its id), each with its plain tag. */
 export function sourceFlaggedLines(part: Pick<SourceCardPart, "part_id" | "kind" | "findings">): SourceFlaggedLine[];
-/** What the card hands the host's file preview: the part's flagged lines and the sides OMS has no copy of. */
-export interface SourceCardFileView { flagged: readonly SourceFlaggedLine[]; absent: readonly SourceFileSide[] }
+/**
+ * What the card hands the host's file preview: the part's flagged lines, the sides OMS has no copy of, and where
+ * the update comes from ("local" for a re-imported package), which names the columns.
+ */
+export interface SourceCardFileView { flagged: readonly SourceFlaggedLine[]; absent: readonly SourceFileSide[]; origin: "github" | "local" }
 export function sourceChoiceOptions(update: SourceCardUpdate, change: SourceCardChange, part: SourceCardPart,
   conflict?: { allowed_choices: readonly string[] } | null): SourceCardOption[];
 /** The draft's choices plus each safe part's default. */

@@ -1,6 +1,6 @@
 import { createElement as h, Fragment } from "react";
 import { Button, EmptyState, Notice, Panel } from "./primitives.js";
-import { boundedSourceText, numberedSourceText, revealSourceLine, sourceAbsentSides } from "./source-files.js";
+import { boundedSourceText, numberedSourceText, revealSourceLine, sourceAbsentSides, sourceSideTitles, sourceTextLines } from "./source-files.js";
 import { SourceRepositoryLine } from "./source-repository.js";
 import { sourceFlagLabels } from "./source-status.js";
 
@@ -134,6 +134,8 @@ const showLine = line => event => {
 };
 const SCRIPT_NOTE = "Agents can run these files when they use the skill (choosing them adds them to the skill's files as the author intended)";
 
+// The take choice names where the new version comes from (ruling FB-1).
+const takeLabel = update => update.plan.origin.kind === "github" ? "Take GitHub's version" : "Take the package's version";
 export function sourceChoiceOptions(update, change, part, conflict) {
   const allowed = (conflict?.allowed_choices ?? ["keep_oms", "use_upstream"]).filter(choice => choice !== "merged_text" || PROSE.includes(change.kind));
   const fresh = update.held_install === true || change.local.kind === "absent";
@@ -141,7 +143,7 @@ export function sourceChoiceOptions(update, change, part, conflict) {
   const options = [];
   if (allowed.includes("keep_oms")) options.push({ choice: "keep_oms", label: removal ? "Keep it" : fresh ? "Leave out" : "Keep yours" });
   if (allowed.includes("use_upstream") && !part.risks.some(risk => CHECK_RISKS.includes(risk))) {
-    if (!part.risks.includes("personal_data")) options.push({ choice: "use_upstream", label: removal ? "Remove it in OMS too" : "Take GitHub's version" });
+    if (!part.risks.includes("personal_data")) options.push({ choice: "use_upstream", label: removal ? "Remove it in OMS too" : takeLabel(update) });
     else if (part.overridable.length) options.push({ choice: "use_upstream", acknowledged: [...part.overridable], label: "Take it anyway", note: "This keeps the personal data in the skill." });
   }
   if (allowed.includes("merged_text")) options.push({ choice: "merged_text", label: "Edit the text" });
@@ -171,13 +173,13 @@ export function sourceNeedsYou(update) {
 }
 
 // The group forms of the spec labels (Global Constraints, ruling P5); scripts use Chris's wording (follow-up B).
-function groupLabel(risk, choice, count, fresh, acknowledged) {
+function groupLabel(risk, choice, count, fresh, acknowledged, take) {
   if (choice === "keep_oms") return risk === "removed_upstream" ? "Keep them" : risk === "script" ? (count === 1 ? "Leave it out" : "Leave them out")
     : fresh ? "Leave all out" : `Keep yours for all ${count}`;
   if (risk === "removed_upstream") return "Remove them in OMS too";
   if (risk === "script") return count === 1 ? "Include this script in the skill" : `Include these ${count} scripts in the skill`;
   if (acknowledged) return `Take all ${count} anyway`;
-  return `Take GitHub's version for all ${count}`;
+  return `${take} for all ${count}`;
 }
 export function sourceGroupOptions(update, group) {
   const changes = new Map(update.plan.changes.map(change => [change.part_id, change]));
@@ -190,7 +192,7 @@ export function sourceGroupOptions(update, group) {
     .map(choice => {
       const first = per[0].find(option => option.choice === choice);
       // Every "anyway" form shows the note, the group's as well as each item's.
-      return { choice, label: groupLabel(group.risk, choice, group.parts.length, fresh, !!first.acknowledged),
+      return { choice, label: groupLabel(group.risk, choice, group.parts.length, fresh, !!first.acknowledged, takeLabel(update)),
         ...(first.note ? { note: first.note } : {}),
         ...(choice === "use_upstream" && linked.size ? { removalNote: `This also removes ${plural(linked.size, "part", "parts")} in OMS.` } : {}),
         optionFor: index => per[index].find(option => option.choice === choice) };
@@ -268,11 +270,11 @@ export function carrySourceDraft(draft, update, partFingerprints = {}) {
 function evidence(title, side, flagged = null) {
   const value = side.kind === "known" ? (typeof side.value === "string" ? side.value : JSON.stringify(side.value, null, 2))
     : side.kind === "absent" ? "Not present" : "Not known";
-  const preview = boundedSourceText(value);
   // Only prose text is numbered: the lines of a structured value's JSON are not the lines a check counted.
-  const numbered = flagged && side.kind === "known" && typeof side.value === "string";
+  const numbered = flagged && side.kind === "known" && typeof side.value === "string" ? sourceTextLines(side.value) : null;
+  const preview = numbered ?? boundedSourceText(value);
   return h("section", { className: "oms-source-side" }, h("h5", null, title),
-    numbered ? numberedSourceText(preview.text, title, flagged) : h("pre", { tabIndex: 0, "aria-label": title }, preview.text),
+    numbered ? numberedSourceText(numbered, title, flagged) : h("pre", { tabIndex: 0, "aria-label": title }, preview.text),
     preview.truncated ? h("p", null, "Bounded excerpt") : null);
 }
 // A choice's label and notes; each note has an id its radio names in aria-describedby (ruling T6-4).
@@ -333,17 +335,19 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
   const act = (callback, payload) => () => { if (!disabled && callback) callback(payload); };
 
   // The file preview comes from the host; it gets the part's flagged lines and the sides OMS has no copy of.
+  const origin = github ? "github" : "local";
+  const titles = sourceSideTitles(origin);
   const comparison = (change, part) => {
     const flagged = part ? sourceFlaggedLines(part) : [];
     const absent = sourceAbsentSides(change, heldInstall);
-    if (change.kind === "file" && renderFile) return renderFile(change, { flagged, absent });
+    if (change.kind === "file" && renderFile) return renderFile(change, { flagged, absent, origin });
     const fresh = absent.includes("base") && absent.includes("local");
     return h(Fragment, null,
       fresh ? h("p", { className: "oms-source-new" }, change.kind === "file" ? "This file is new. OMS does not have it yet." : "This is new. OMS does not have it yet.") : null,
       h("div", { className: fresh ? "oms-source-columns oms-source-columns-single" : "oms-source-columns" },
-        fresh || change.base.kind !== "known" ? null : evidence("Last version taken from GitHub", change.base),
-        fresh || heldInstall ? null : evidence("In OMS now", change.local),
-        evidence("New on GitHub", change.incoming, flagged)));
+        fresh || change.base.kind !== "known" ? null : evidence(titles.base, change.base),
+        fresh || heldInstall ? null : evidence(titles.local, change.local),
+        evidence(titles.upstream, change.incoming, flagged)));
   };
 
   const item = part => {
@@ -357,14 +361,16 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
       linked ? { text: `Replaces ${plural(linked, "part", "parts")} that GitHub removed; taking it removes ${linked === 1 ? "that part" : "them"} in OMS.` } : null]
       .filter(Boolean).map(reason => [reason.text, reason]));
     // Each line number is a button that opens "Show" at that line; the reason still never quotes the flagged text (ruling P4).
-    const reasonLine = reason => reason.lines ? [reason.prefix, ...reason.lines.flatMap((line, index) => [index ? ", " : null,
+    // Only a host's file preview or prose text is numbered, so other line numbers stay plain text (ruling FB-2).
+    const numbered = change.incoming.kind === "known" && (change.kind === "file" ? !!renderFile : typeof change.incoming.value === "string");
+    const reasonLine = reason => reason.lines && numbered ? [reason.prefix, ...reason.lines.flatMap((line, index) => [index ? ", " : null,
       h("button", { key: line, type: "button", className: "oms-source-line-link", "aria-label": `Show line ${line} of ${part.label}`, onClick: showLine(line) }, String(line))]),
     reason.more] : [reason.text];
     return h("section", { key: part.part_id, id: changeId(part.part_id), tabIndex: -1, className: "oms-source-item", "aria-label": `Item ${part.label}` },
       h("h4", null, part.label),
       reasons.size ? h("ul", { className: "oms-source-reasons" }, [...reasons.values()].map(reason => h("li", { key: reason.text }, ...reasonLine(reason)))) : null,
       h("details", { className: "oms-source-show", onToggle: revealOnToggle }, h("summary", null, "Show"), comparison(change, part)),
-      h("fieldset", { className: "oms-source-choices", role: "radiogroup", "aria-label": `Decision for ${part.part_id}` },
+      h("fieldset", { className: "oms-source-choices", role: "radiogroup", "aria-label": `Decision for ${part.label}` },
         optionsFor(part).map(option => {
           const notes = choiceNotes(option, `${changeId(part.part_id)}-${escapeId(update.update_id)}-${option.choice}`);
           return h("label", { key: option.choice, className: "oms-source-check" },
@@ -381,11 +387,12 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
   const group = row => {
     const members = row.parts;
     const scripts = row.risk === "script";
-    return h("section", { key: row.risk, className: "oms-source-group", "aria-label": `${row.label}: ${plural(members.length, "item", "items")}` },
-      h("h4", null, `${scripts && members.length > 1 ? "Scripts" : row.label} (${members.length})`),
+    const name = scripts && members.length > 1 ? "Scripts" : row.label;
+    return h("section", { key: row.risk, className: "oms-source-group", "aria-label": `${name}: ${plural(members.length, "item", "items")}` },
+      h("h4", null, `${name} (${members.length})`),
       scripts ? h("p", { className: "oms-source-group-note" }, SCRIPT_NOTE) : null,
       h("ul", null, members.map(part => h("li", { key: part.part_id }, part.label))),
-      h("fieldset", { className: "oms-source-choices", role: "radiogroup", "aria-label": `Decision for every item in ${row.label}` },
+      h("fieldset", { className: "oms-source-choices", role: "radiogroup", "aria-label": `Decision for every item in ${name}` },
         sourceGroupOptions(update, row).map(option => {
           const notes = choiceNotes(option, `oms-source-group-${escapeId(update.update_id)}-${row.risk}-${option.choice}`);
           return h("label", { key: option.choice, className: "oms-source-check" },

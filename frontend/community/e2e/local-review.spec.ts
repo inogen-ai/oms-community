@@ -13,6 +13,12 @@ test("a local re-import is reviewed on Import review, reached from the upload re
   await expect(page.getByLabel("Decision for section:intro")).toBeVisible();
   await expect(page.getByText("Changes found when you re-imported a package appear here for a decision.")).toBeVisible();
   await expect(page.getByText("Local package", { exact: true })).toBeVisible();
+  // A re-imported package is not GitHub: the card names the package (ruling FB-1).
+  await expect(page.getByLabel("Take the package's version for section:intro")).toBeVisible();
+  await expect(page.getByText(/GitHub's version/)).toHaveCount(0);
+  await page.locator(".oms-source-show > summary").first().click();
+  for (const name of ["Last version imported", "In OMS now", "New in this package"]) await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "New on GitHub" })).toHaveCount(0);
   // GitHub cards stay under View GitHub sources, and the local card is not listed in that view.
   await page.goto("/import/?github=sources");
   const githubView = page.getByRole("region", { name: "GitHub source updates" });

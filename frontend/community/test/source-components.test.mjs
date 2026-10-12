@@ -178,6 +178,9 @@ const tagOf = node => text(nodes(node).find(child => classes(child).includes("om
 const numberedLines = tree => nodes(tree).filter(node => node.props?.["data-line"] !== undefined);
 const headings = tree => nodes(tree).filter(node => node.type === "h5").map(text);
 const show = tree => nodes(tree).find(node => node.type === "details" && node.props.className === "oms-source-show");
+const downloads = tree => nodes(tree).filter(node => node.type === "button").map(node => [text(node), node.props["aria-label"]]);
+const download = title => ["Download this version", `Download this version (${title})`];
+const lineLinks = tree => nodes(tree).filter(node => node.type === "button" && node.props.className === "oms-source-line-link");
 
 test("the GitHub preview numbers its lines and marks each flagged line with a plain tag", () => {
   const flagged = [{ line: 4, label: "looks like an email address" }, { line: 263, label: "looks like a phone number" }, { line: 264, label: "looks like a phone number" }];
@@ -205,8 +208,8 @@ test("an excerpt marks only the flagged lines it holds and names the ones beyond
 test("the card hands each file's own flagged lines and its absent sides to the host's preview", () => {
   const seen = new Map();
   component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints, renderFile: (row, view) => { seen.set(row.part_id, view); return null; } });
-  assert.deepEqual(seen.get("file:visual-companion.md"), { flagged: [263, 264, 265].map(line => ({ line, label: "looks like a phone number" })), absent: ["base", "local"] });
-  assert.deepEqual(seen.get("file:b.md"), { flagged: [], absent: ["base", "local"] });
+  assert.deepEqual(seen.get("file:visual-companion.md"), { flagged: [263, 264, 265].map(line => ({ line, label: "looks like a phone number" })), absent: ["base", "local"], origin: "github" });
+  assert.deepEqual(seen.get("file:b.md"), { flagged: [], absent: ["base", "local"], origin: "github" });
   const f = (path, part_id, line, category) => ({ path, part_id, line, category, summary: "" });
   assert.deepEqual(ui.sourceFlaggedLines(part("file:a.md", "file", { findings: [f("a.md", null, 7, "injection:instruction-override"), f("a.md", null, 3, "phone"),
     f("a.md", null, 3, "email"), f("b.md", null, 9, "phone"), f("a.md", null, null, "file_size")] })),
@@ -262,21 +265,23 @@ test("file columns use plain names, and a side that is absent has no column body
   let tree = component("SourceFileComparison", { path: "guide.md", base: { text: "old" }, local: { text: "local" }, upstream: { text: "new" }, onDownload() {} });
   assert.deepEqual(headings(tree).slice(0, 3), ["Last version taken from GitHub", "In OMS now", "New on GitHub"]);
   for (const old of ["Base (B)", "Current OMS (L)", "Incoming (U)"]) assert.ok(!text(tree).includes(old), old);
-  assert.deepEqual(nodes(tree).filter(node => node.type === "button").map(text), ["Download base", "Download current", "Download incoming"]);
+  assert.deepEqual(downloads(tree), [download("Last version taken from GitHub"), download("In OMS now"), download("New on GitHub")]);
+  assert.deepEqual(headings(tree).slice(3), ["What changed in OMS", "What changed on GitHub"]);
+  assert.doesNotMatch(text(tree), /Base →|Download (base|current|incoming)/);
   // A new file, or any file of a new skill: only the GitHub side.
   tree = component("SourceFileComparison", { path: "guide.md", absent: ["base", "local"], upstream: { text: "new" }, onDownload() {} });
   assert.deepEqual(headings(tree), ["New on GitHub"]);
   assert.match(text(tree), /This file is new\. OMS does not have it yet\./);
-  assert.deepEqual(nodes(tree).filter(node => node.type === "button").map(text), ["Download incoming"]);
+  assert.deepEqual(downloads(tree), [download("New on GitHub")]);
   // Removed on GitHub: the column stays and says so, with no Download button.
   tree = component("SourceFileComparison", { path: "guide.md", absent: ["upstream"], base: { text: "old" }, local: { text: "old" }, onDownload() {} });
   assert.deepEqual(headings(tree), ["Last version taken from GitHub", "In OMS now", "New on GitHub"]);
   assert.match(text(nodes(tree).find(node => node.props?.["aria-label"] === "New on GitHub: guide.md")), /Not present/);
-  assert.deepEqual(nodes(tree).filter(node => node.type === "button").map(text), ["Download base", "Download current"]);
+  assert.deepEqual(downloads(tree), [download("Last version taken from GitHub"), download("In OMS now")]);
   assert.doesNotMatch(text(tree), /This file is new/);
   tree = component("SourceFileComparison", { path: "guide.md", absent: ["base"], local: { text: "mine" }, upstream: { text: "new" }, onDownload() {} });
   assert.deepEqual(headings(tree), ["Last version taken from GitHub", "In OMS now", "New on GitHub"]);
-  assert.deepEqual(nodes(tree).filter(node => node.type === "button").map(text), ["Download current", "Download incoming"]);
+  assert.deepEqual(downloads(tree), [download("In OMS now"), download("New on GitHub")]);
 });
 
 test("prose comparisons use the same plain names, and a new part shows only what is on GitHub", () => {
@@ -335,6 +340,9 @@ test("scripts are one decision in plain words, for five scripts or for one", () 
     const group = nodes(tree).find(node => node.type === "section" && node.props.className === "oms-source-group");
     assert.ok(group, heading);
     assert.equal(text(nodes(group).find(node => node.type === "h4")), heading);
+    const word = count === 1 ? "Script" : "Scripts";
+    assert.equal(group.props["aria-label"], `${word}: ${count === 1 ? "1 item" : `${count} items`}`);
+    assert.ok(nodes(group).some(node => node.type === "fieldset" && node.props["aria-label"] === `Decision for every item in ${word}`), word);
     assert.ok(nodes(group).some(node => node.type === "p" && text(node) === line), heading);
     assert.ok(input(tree, include), include); assert.ok(input(tree, leave), leave);
     assert.ok(button(tree, "Install skill"));
@@ -342,6 +350,117 @@ test("scripts are one decision in plain words, for five scripts or for one", () 
     assert.equal(draft.choices.length, count);
     assert.ok(draft.choices.every(row => row.choice === "use_upstream"));
   }
+});
+
+test("a local package card names its columns, downloads, changes and take choice after the package", () => {
+  // Ruling FB-1: a card for a re-imported local package never claims GitHub.
+  let tree = component("SourceFileComparison", { path: "guide.md", origin: "local", base: { text: "old" }, local: { text: "local" }, upstream: { text: "new" }, onDownload() {} });
+  assert.deepEqual(headings(tree), ["Last version imported", "In OMS now", "New in this package", "What changed in OMS", "What changed in this package"]);
+  assert.deepEqual(downloads(tree), [download("Last version imported"), download("In OMS now"), download("New in this package")]);
+  assert.doesNotMatch(text(tree), /GitHub/);
+  tree = component("SourceFileComparison", { path: "guide.md", origin: "local", absent: ["base", "local"], upstream: { text: "new" }, onDownload() {} });
+  assert.deepEqual(headings(tree), ["New in this package"]);
+  assert.match(text(tree), /This file is new\. OMS does not have it yet\./);
+  assert.ok(input(tree, "New in this package text"));
+  const local = { kind: "local", origin_id: "o", generation: 1 };
+  const changes = [change("section:intro"), change("section:more"), change("file:guide.md", { kind: "file" })];
+  const card = update({ origin: local, changes, conflicts: changes.map(row => ({ part_id: row.part_id, reason: "local_divergence", allowed_choices: ["keep_oms", "use_upstream"] })) });
+  card.parts = { "section:intro": part("section:intro", "section", { label: "Section: Intro", attention: "decide", risks: ["your_edits"], default: null }),
+    "section:more": part("section:more", "section", { label: "Section: More", attention: "decide", risks: ["your_edits"], default: null }),
+    "file:guide.md": part("file:guide.md", "file", { label: "guide.md", attention: "safe" }) };
+  const seen = new Map();
+  tree = component("SourceUpdateCard", { update: card, title: "Writing", partFingerprints: { "section:intro": "a", "section:more": "b", "file:guide.md": "c" }, onDraftChange() {},
+    renderFile: (row, view) => { seen.set(row.part_id, view); return null; } });
+  assert.equal(seen.get("file:guide.md").origin, "local");
+  assert.deepEqual(headings(show(tree)), ["Last version imported", "In OMS now", "New in this package"]);
+  assert.ok(input(tree, "Take the package's version for all 2"));
+  assert.ok(input(tree, "Take the package's version for Section: Intro"));
+  assert.ok(nodes(tree).some(node => node.type === "fieldset" && node.props["aria-label"] === "Decision for Section: Intro"));
+  assert.doesNotMatch(text(tree), /GitHub/);
+  // A GitHub card keeps its words, and its fieldsets are named by the item label, not the part id.
+  tree = component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints, onDraftChange() {} });
+  assert.ok(nodes(tree).some(node => node.type === "fieldset" && node.props["aria-label"] === "Decision for visual-companion.md"));
+  assert.equal(nodes(tree).some(node => node.type === "fieldset" && /Decision for file:/.test(node.props["aria-label"])), false);
+});
+
+test("the GitHub side is numbered as the server counts lines", () => {
+  // Ruling FB-2: only a line feed ends a line; CRLF is one break, a lone CR is not one, and a final newline adds no line.
+  const tree = component("SourceFileComparison", { path: "guide.md", absent: ["base", "local"], upstream: { text: "one\r\ntwo\rstill two\nthree\n" },
+    flagged: [{ line: 3, label: "looks like a phone number" }], onDownload() {} });
+  const lines = numberedLines(tree);
+  assert.deepEqual(lines.map(node => node.props["data-line"]), [1, 2, 3]);
+  assert.equal(text(lines[0]), "one");
+  assert.equal(text(lines[1]), "two\rstill two");
+  assert.deepEqual(flaggedLines(tree).map(node => node.props["data-line"]), [3]);
+  assert.doesNotMatch(text(tree), /beyond this preview/);
+});
+
+test("a cut excerpt does not hold its last line, unless the excerpt ends at a line break", () => {
+  // Ruling FB-2: the server's excerpt can stop in the middle of a line.
+  const flagged = [2, 3].map(line => ({ line, label: "looks like a phone number" }));
+  let tree = component("SourceFileComparison", { path: "long.md", absent: ["base", "local"], upstream: { text: "first\nsecond\nthird, cut sh", truncated: true }, flagged, onDownload() {} });
+  assert.deepEqual(numberedLines(tree).map(node => node.props["data-line"]), [1, 2]);
+  assert.deepEqual(flaggedLines(tree).map(node => node.props["data-line"]), [2]);
+  assert.match(text(input(tree, "New on GitHub text")), /third, cut sh/);
+  assert.match(text(tree), /Line 3 is beyond this preview\./);
+  tree = component("SourceFileComparison", { path: "long.md", absent: ["base", "local"], upstream: { text: "first\nsecond\nthird\n", truncated: true }, flagged, onDownload() {} });
+  assert.deepEqual(flaggedLines(tree).map(node => node.props["data-line"]), [2, 3]);
+  assert.doesNotMatch(text(tree), /beyond this preview/);
+});
+
+test("line numbers that nothing can show are plain text, not buttons", () => {
+  // Ruling FB-2: a structured prose value has no numbered text, nor does a file with no host preview.
+  const changes = [change("rule:phone", { kind: "rule", base: unknownSide, local: absentSide, incoming: evidence({ body: "Call +44 20 7946 0958 about receipts." }) })];
+  const card = { ...update({ base: null, changes, conflicts: [{ part_id: "rule:phone", reason: "source_text_hold", allowed_choices: ["keep_oms", "use_upstream"] }] }), held_install: true,
+    parts: { "rule:phone": part("rule:phone", "rule", { label: "Rule with flagged text", attention: "decide", risks: ["personal_data"], default: null, overridable: ["phone"],
+      findings: [{ path: null, part_id: "rule:phone", line: 1, category: "phone", summary: "" }] }) } };
+  let tree = component("SourceUpdateCard", { update: card, partFingerprints: { "rule:phone": "p" } });
+  assert.match(visibleText(tree), /1 line looks like a phone number: line 1/);
+  assert.equal(lineLinks(tree).length, 0);
+  tree = component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints });
+  assert.match(visibleText(tree), /3 lines look like a phone number: lines 263, 264, 265/);
+  assert.equal(lineLinks(tree).length, 0);
+  assert.equal(lineLinks(component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints, renderFile: () => null })).length, 3);
+});
+
+test("a line beyond the preview takes the reader to the note that says so", () => {
+  const card = held();
+  card.parts["file:visual-companion.md"] = { ...card.parts["file:visual-companion.md"], findings: [{ path: "visual-companion.md", part_id: null, line: 2000, category: "phone", summary: "" }] };
+  const tree = component("SourceUpdateCard", { update: card, partFingerprints: fingerprints, renderFile: () => null });
+  const item = nodes(tree).find(node => node.props?.className === "oms-source-item");
+  const note = { focus(options) { this.focused = options; }, scrollIntoView() { this.scrolled = true; } };
+  const preview = { scrollTop: 7, getBoundingClientRect: () => ({ top: 0, height: 360 }), focus() { assert.fail("the note takes focus, not the preview"); }, querySelector: () => null };
+  const details = { open: false, dataset: {}, querySelector: selector => selector === ".oms-source-numbered" ? preview : selector === '[data-beyond="2000"]' ? note : null };
+  lineLinks(item)[0].props.onClick({ currentTarget: { closest: () => ({ querySelector: () => details }) } });
+  show(item).props.onToggle({ currentTarget: details });
+  assert.ok(note.focused); assert.ok(note.scrolled);
+  assert.equal(preview.scrollTop, 7);
+  assert.equal(details.dataset.omsLine, undefined);
+  // The note itself can take focus and names its line.
+  const excerpt = component("SourceFileComparison", { path: "a.md", absent: ["base", "local"], upstream: { text: "one" }, flagged: [{ line: 2000, label: "looks like a phone number" }], onDownload() {} });
+  const shown = nodes(excerpt).find(node => node.props?.["data-beyond"] === 2000);
+  assert.equal(text(shown), "Line 2000 is beyond this preview.");
+  assert.equal(shown.props.tabIndex, -1);
+});
+
+test("a preview that loads after Show opened scrolls itself to the asked line", () => {
+  // The path a slow preview takes: its ref runs once it is in the page, inside an open Show.
+  const tree = component("SourceFileComparison", { path: "a.md", absent: ["base", "local"], upstream: { text: numbered(300) }, flagged: [{ line: 40, label: "looks like a phone number" }], onDownload() {} });
+  const ref = input(tree, "New on GitHub text").props.ref;
+  assert.equal(typeof ref, "function");
+  const line = { getBoundingClientRect: () => ({ top: 3000, height: 20 }), scrollIntoView() {} };
+  const details = { open: true, dataset: { omsLine: "263" }, querySelector: () => preview };
+  const preview = { scrollTop: 0, getBoundingClientRect: () => ({ top: 100, height: 360 }), focus(options) { this.focused = options; },
+    closest: selector => selector === "details" ? details : null, querySelector: selector => selector === '[data-line="263"]' ? line : null };
+  ref(preview);
+  assert.equal(preview.scrollTop, ui.sourceLineScrollTop({ top: 100, height: 360 }, { top: 3000, height: 20 }, 0));
+  assert.ok(preview.focused);
+  assert.equal(details.dataset.omsLine, undefined);
+  // In a closed Show it waits for the toggle, and React's unmount call with null is harmless.
+  preview.scrollTop = 0; details.open = false; details.dataset.omsLine = "263";
+  ref(preview);
+  assert.equal(preview.scrollTop, 0);
+  ref(null);
 });
 
 test("several personal-data items share one 'Take all N anyway' choice, and it shows the note", () => {
@@ -676,12 +795,13 @@ test("oversized previews are capped before diff; binary metadata and publication
   assert.match(text(tree), /excerpt/i); assert.ok(!renderToStaticMarkup(tree).includes("oms-line-diff__line")); assert.ok(text(tree).length < 12000);
   tree = component("SourceFileComparison", { path: "asset.bin", upstream: { binary: true, text: null, size: 42, digest: "sha256:fixture" }, publicationWarning: "Reserved filename: retained but excluded from publication.", onDownload() {} });
   assert.match(text(tree), /sha256:fixture/); assert.match(text(tree), /excluded from publication/);
-  assert.equal(nodes(tree).some(node => node.type === "textarea"), false); assert.equal(button(tree, "Download incoming").props.disabled, false);
+  assert.equal(nodes(tree).some(node => node.type === "textarea"), false); assert.equal(input(tree, "Download this version (New on GitHub)").props.disabled, false);
 });
 test("small file diffs stay inert and downloads use the supplied side and manifest path", () => {
   let sent; const tree = component("SourceFileComparison", { path: "guide.md", base: { text: "old" }, local: { text: "local" }, upstream: { text: "<img src=x onerror=bad()>" }, onDownload: (side, path) => { sent = [side, path]; } });
   const html = renderToStaticMarkup(tree); assert.ok(html.includes("oms-line-diff__line")); assert.ok(!html.includes("<img"));
-  button(tree, "Download incoming").props.onClick(); assert.deepEqual(sent, ["upstream", "guide.md"]);
+  input(tree, "Download this version (New on GitHub)").props.onClick(); assert.deepEqual(sent, ["upstream", "guide.md"]);
+  input(tree, "Download this version (In OMS now)").props.onClick(); assert.deepEqual(sent, ["local", "guide.md"]);
 });
 test("bulk exclusions, pinned refs, first reconciliation and per-skill partial results are explicit", () => {
   assert.equal(typeof ui.sourceBulkExclusions, "function");

@@ -16,11 +16,12 @@ export function sourceAbsentSides(change: { base: SourceEvidenceKind; local: Sou
 /** The preview's new scrollTop that puts `line` up to two lines (at most a quarter of the preview) below its top edge. */
 export function sourceLineScrollTop(container: { top: number; height: number }, line: { top: number; height: number }, scrollTop: number): number;
 /**
- * `absent` sides show "Not present" and no Download button; with both "base" and "local" absent only the GitHub
- * side shows, as a new file. The GitHub side shows line numbers and marks each of `flagged`.
+ * `absent` sides show "Not present" and no Download button; with both "base" and "local" absent only the incoming
+ * side shows, as a new file. The incoming side shows line numbers as the server counts them and marks each of
+ * `flagged`. `origin` (default "github") names the columns: "local" is a re-imported package, never GitHub.
  */
 export function SourceFileComparison(props: {
   path: string; base?: SourceFileSidePreview | null; local?: SourceFileSidePreview | null; upstream?: SourceFileSidePreview | null;
-  absent?: readonly SourceFileSide[]; flagged?: readonly SourceFlaggedLine[];
+  absent?: readonly SourceFileSide[]; flagged?: readonly SourceFlaggedLine[]; origin?: "github" | "local";
   onDownload?: (side: SourceFileSide, path: string) => void; publicationWarning?: string; busy?: boolean;
 }): ReactNode;
