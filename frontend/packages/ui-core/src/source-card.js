@@ -1,6 +1,6 @@
-import { createElement as h } from "react";
+import { createElement as h, Fragment } from "react";
 import { Button, EmptyState, Notice, Panel } from "./primitives.js";
-import { boundedSourceText } from "./source-files.js";
+import { boundedSourceText, numberedSourceText, revealSourceLine, sourceAbsentSides } from "./source-files.js";
 import { SourceRepositoryLine } from "./source-repository.js";
 import { sourceFlagLabels } from "./source-status.js";
 
@@ -78,24 +78,61 @@ export function sourceReviewParts(update) {
 }
 
 const FINDING_NOUNS = { phone: "a phone number", email: "an email address" };
-export function sourceFindingReasons(findings = []) {
+// Each reason as text, and for a reason that names lines, its parts: the line numbers become buttons on the card.
+function findingReasonRows(findings = []) {
   const groups = new Map();
   for (const finding of findings) groups.set(finding.category, [...(groups.get(finding.category) ?? []), finding]);
   return [...groups].map(([category, rows]) => {
     const [kind, ...rest] = category.split(":");
     const detail = words(rest.join(":"));
-    if (category === "file_size") return "The file is larger than 10 MB";
-    if (kind === "check_unavailable" && rest.length) return `A required check could not run (${detail})`;
-    if (kind === "policy" && rest.length) return `Conflicts with a workspace safety rule (${detail})`;
+    if (category === "file_size") return { text: "The file is larger than 10 MB" };
+    if (kind === "check_unavailable" && rest.length) return { text: `A required check could not run (${detail})` };
+    if (kind === "policy" && rest.length) return { text: `Conflicts with a workspace safety rule (${detail})` };
     const noun = Object.hasOwn(FINDING_NOUNS, category) ? FINDING_NOUNS[category]
       : kind === "injection" && rest.length ? `instructions to an AI (${detail})` : null;
-    if (!noun) return `Held by a check (${words(category)})`;
+    if (!noun) return { text: `Held by a check (${words(category)})` };
     const lines = [...new Set(rows.map(row => row.line).filter(Number.isInteger))].sort((a, b) => a - b);
-    if (!lines.length) return `Looks like ${noun}`;
+    if (!lines.length) return { text: `Looks like ${noun}` };
+    const shown = lines.slice(0, 10);
     const more = lines.length > 10 ? ` and ${lines.length - 10} more` : "";
-    return `${lines.length} ${lines.length === 1 ? "line looks" : "lines look"} like ${noun}: ${lines.length === 1 ? "line" : "lines"} ${lines.slice(0, 10).join(", ")}${more}`;
+    const prefix = `${lines.length} ${lines.length === 1 ? "line looks" : "lines look"} like ${noun}: ${lines.length === 1 ? "line" : "lines"} `;
+    return { text: `${prefix}${shown.join(", ")}${more}`, prefix, lines: shown, more };
   });
 }
+export function sourceFindingReasons(findings = []) {
+  return findingReasonRows(findings).map(row => row.text);
+}
+
+// The tag a flagged line carries in the preview: the plain words of the server's summary, never the matched text.
+const LINE_TAGS = { phone: "looks like a phone number", email: "looks like an email address" };
+const lineTag = category => Object.hasOwn(LINE_TAGS, category) ? LINE_TAGS[category]
+  : category.split(":")[0] === "injection" ? "looks like an instruction to an AI model" : "held by a check";
+export function sourceFlaggedLines(part) {
+  // A part's own findings: a file's by its path, a rule's, section's or example's by its part id.
+  const path = part.kind === "file" && part.part_id.startsWith("file:") ? part.part_id.slice(5) : null;
+  const tags = new Map();
+  for (const finding of part.findings ?? []) {
+    if (!Number.isInteger(finding.line) || !(finding.part_id === part.part_id || (path !== null && finding.path === path))) continue;
+    tags.set(finding.line, new Set([...(tags.get(finding.line) ?? []), lineTag(finding.category)]));
+  }
+  return [...tags].sort(([a], [b]) => a - b).map(([line, labels]) => ({ line, label: [...labels].join("; ") }));
+}
+// Opening a part's "Show" scrolls its GitHub preview to the asked-for or first flagged line (event
+// handlers only: the card stays hook-free).
+function revealOnToggle(event) {
+  const details = event.currentTarget;
+  if (details.open) revealSourceLine(details);
+  else delete details.dataset.omsLine;
+}
+// A line-number button opens its item's "Show" at that line; the console routes by hash, so no link is used.
+const showLine = line => event => {
+  const details = event.currentTarget.closest(".oms-source-item")?.querySelector("details.oms-source-show");
+  if (!details) return;
+  details.dataset.omsLine = String(line);
+  if (details.open) revealSourceLine(details);
+  else details.open = true;
+};
+const SCRIPT_NOTE = "Agents can run these files when they use the skill (choosing them adds them to the skill's files as the author intended)";
 
 export function sourceChoiceOptions(update, change, part, conflict) {
   const allowed = (conflict?.allowed_choices ?? ["keep_oms", "use_upstream"]).filter(choice => choice !== "merged_text" || PROSE.includes(change.kind));
@@ -133,12 +170,12 @@ export function sourceNeedsYou(update) {
   return [...SOURCE_RISK_ORDER, "other"].filter(risk => groups.has(risk)).map(risk => ({ risk, label: SOURCE_RISK_LABELS[risk], parts: groups.get(risk) }));
 }
 
-// The group forms of the spec labels (Global Constraints, ruling P5).
+// The group forms of the spec labels (Global Constraints, ruling P5); scripts use Chris's wording (follow-up B).
 function groupLabel(risk, choice, count, fresh, acknowledged) {
-  if (choice === "keep_oms") return risk === "removed_upstream" ? "Keep them" : risk === "script" ? "Leave them out"
+  if (choice === "keep_oms") return risk === "removed_upstream" ? "Keep them" : risk === "script" ? (count === 1 ? "Leave it out" : "Leave them out")
     : fresh ? "Leave all out" : `Keep yours for all ${count}`;
   if (risk === "removed_upstream") return "Remove them in OMS too";
-  if (risk === "script") return `Install these ${count} scripts`;
+  if (risk === "script") return count === 1 ? "Include this script in the skill" : `Include these ${count} scripts in the skill`;
   if (acknowledged) return `Take all ${count} anyway`;
   return `Take GitHub's version for all ${count}`;
 }
@@ -227,12 +264,16 @@ export function carrySourceDraft(draft, update, partFingerprints = {}) {
 }
 
 // Plain render helpers, called inline: the card stays hook-free and never mounts inner components.
-function evidence(title, side) {
+// `flagged` is set for the GitHub side: prose text there shows line numbers and its flagged lines.
+function evidence(title, side, flagged = null) {
   const value = side.kind === "known" ? (typeof side.value === "string" ? side.value : JSON.stringify(side.value, null, 2))
     : side.kind === "absent" ? "Not present" : "Not known";
   const preview = boundedSourceText(value);
+  // Only prose text is numbered: the lines of a structured value's JSON are not the lines a check counted.
+  const numbered = flagged && side.kind === "known" && typeof side.value === "string";
   return h("section", { className: "oms-source-side" }, h("h5", null, title),
-    h("pre", { tabIndex: 0, "aria-label": title }, preview.text), preview.truncated ? h("p", null, "Bounded excerpt") : null);
+    numbered ? numberedSourceText(preview.text, title, flagged) : h("pre", { tabIndex: 0, "aria-label": title }, preview.text),
+    preview.truncated ? h("p", null, "Bounded excerpt") : null);
 }
 // A choice's label and notes; each note has an id its radio names in aria-describedby (ruling T6-4).
 function choiceNotes(option, idBase) {
@@ -291,10 +332,19 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
   };
   const act = (callback, payload) => () => { if (!disabled && callback) callback(payload); };
 
-  const comparison = change => change.kind === "file" && renderFile ? renderFile(change) : h("div", { className: "oms-source-columns" },
-    change.base.kind === "known" ? evidence("Last installed", change.base) : null,
-    heldInstall ? null : evidence("In OMS now", change.local),
-    evidence("On GitHub", change.incoming));
+  // The file preview comes from the host; it gets the part's flagged lines and the sides OMS has no copy of.
+  const comparison = (change, part) => {
+    const flagged = part ? sourceFlaggedLines(part) : [];
+    const absent = sourceAbsentSides(change, heldInstall);
+    if (change.kind === "file" && renderFile) return renderFile(change, { flagged, absent });
+    const fresh = absent.includes("base") && absent.includes("local");
+    return h(Fragment, null,
+      fresh ? h("p", { className: "oms-source-new" }, change.kind === "file" ? "This file is new. OMS does not have it yet." : "This is new. OMS does not have it yet.") : null,
+      h("div", { className: fresh ? "oms-source-columns oms-source-columns-single" : "oms-source-columns" },
+        fresh || change.base.kind !== "known" ? null : evidence("Last version taken from GitHub", change.base),
+        fresh || heldInstall ? null : evidence("In OMS now", change.local),
+        evidence("New on GitHub", change.incoming, flagged)));
+  };
 
   const item = part => {
     const change = changes.get(part.part_id);
@@ -303,12 +353,17 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
     const editable = canEdit && identified;
     const chosen = effective.get(part.part_id);
     const linked = change.linked_removals?.length ?? 0;
-    const reasons = [...new Set([...part.risks.map(risk => SOURCE_RISK_LABELS[risk] ?? SOURCE_RISK_LABELS.other), ...sourceFindingReasons(part.findings),
-      linked ? `Replaces ${plural(linked, "part", "parts")} that GitHub removed; taking it removes ${linked === 1 ? "that part" : "them"} in OMS.` : null])].filter(Boolean);
+    const reasons = new Map([...part.risks.map(risk => ({ text: SOURCE_RISK_LABELS[risk] ?? SOURCE_RISK_LABELS.other })), ...findingReasonRows(part.findings),
+      linked ? { text: `Replaces ${plural(linked, "part", "parts")} that GitHub removed; taking it removes ${linked === 1 ? "that part" : "them"} in OMS.` } : null]
+      .filter(Boolean).map(reason => [reason.text, reason]));
+    // Each line number is a button that opens "Show" at that line; the reason still never quotes the flagged text (ruling P4).
+    const reasonLine = reason => reason.lines ? [reason.prefix, ...reason.lines.flatMap((line, index) => [index ? ", " : null,
+      h("button", { key: line, type: "button", className: "oms-source-line-link", "aria-label": `Show line ${line} of ${part.label}`, onClick: showLine(line) }, String(line))]),
+    reason.more] : [reason.text];
     return h("section", { key: part.part_id, id: changeId(part.part_id), tabIndex: -1, className: "oms-source-item", "aria-label": `Item ${part.label}` },
       h("h4", null, part.label),
-      reasons.length ? h("ul", { className: "oms-source-reasons" }, reasons.map(reason => h("li", { key: reason }, reason))) : null,
-      h("details", { className: "oms-source-show" }, h("summary", null, "Show"), comparison(change)),
+      reasons.size ? h("ul", { className: "oms-source-reasons" }, [...reasons.values()].map(reason => h("li", { key: reason.text }, ...reasonLine(reason)))) : null,
+      h("details", { className: "oms-source-show", onToggle: revealOnToggle }, h("summary", null, "Show"), comparison(change, part)),
       h("fieldset", { className: "oms-source-choices", role: "radiogroup", "aria-label": `Decision for ${part.part_id}` },
         optionsFor(part).map(option => {
           const notes = choiceNotes(option, `${changeId(part.part_id)}-${escapeId(update.update_id)}-${option.choice}`);
@@ -325,8 +380,10 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
 
   const group = row => {
     const members = row.parts;
-    return h("section", { key: row.risk, className: "oms-source-group", "aria-label": `${row.label}: ${members.length} items` },
-      h("h4", null, `${row.label} (${members.length})`),
+    const scripts = row.risk === "script";
+    return h("section", { key: row.risk, className: "oms-source-group", "aria-label": `${row.label}: ${plural(members.length, "item", "items")}` },
+      h("h4", null, `${scripts && members.length > 1 ? "Scripts" : row.label} (${members.length})`),
+      scripts ? h("p", { className: "oms-source-group-note" }, SCRIPT_NOTE) : null,
       h("ul", null, members.map(part => h("li", { key: part.part_id }, part.label))),
       h("fieldset", { className: "oms-source-choices", role: "radiogroup", "aria-label": `Decision for every item in ${row.label}` },
         sourceGroupOptions(update, row).map(option => {
@@ -346,12 +403,12 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
   const automatic = Object.values(parts).filter(part => part.attention === "automatic" && changes.has(part.part_id) && changes.get(part.part_id).action !== "keep");
   const safeSummary = sourceSafeSummary(update, state.choices);
   const safeItem = part => h("details", { key: part.part_id, className: "oms-source-safe-item" }, h("summary", null, part.label),
-    comparison(changes.get(part.part_id)),
+    comparison(changes.get(part.part_id), part),
     h("label", { className: "oms-source-check" }, h("input", { type: "checkbox", "aria-label": `Leave out ${part.label}`,
       checked: effective.get(part.part_id)?.choice === "keep_oms",
       disabled: !canEdit || !partFingerprints[part.part_id] || !optionsFor(part).some(option => option.choice === "keep_oms"),
       onChange: event => leaveOut(part, event.target.checked) }), "Leave out"));
-  const automaticItem = part => h("details", { key: part.part_id, className: "oms-source-safe-item" }, h("summary", null, part.label), comparison(changes.get(part.part_id)));
+  const automaticItem = part => h("details", { key: part.part_id, className: "oms-source-safe-item" }, h("summary", null, part.label), comparison(changes.get(part.part_id), part));
 
   // The decision column: the effective choice on an open card, the recorded one on a closed card.
   const decisionLabel = change => {
@@ -383,7 +440,8 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
       h("ul", null, update.summary.whole_skill.map((finding, index) => h("li", { key: `${finding.category}-${index}` }, finding.summary))),
       h("p", null, `These do not belong to one part. OMS checks them again when you ${verb}.`)) : null,
     !closed && needs.length ? h("section", { className: "oms-source-needs", "aria-label": "Needs you" }, h("h3", null, "Needs you"),
-      needs.map(row => row.parts.length === 1 ? item(row.parts[0]) : group(row))) : null,
+      // Scripts are always one group decision, even a single script (follow-up B).
+      needs.map(row => row.parts.length === 1 && row.risk !== "script" ? item(row.parts[0]) : group(row))) : null,
     !closed && (safe.length || automatic.length) ? h("section", { className: "oms-source-safe", "aria-label": "Passed the checks" },
       safeSummary ? h("p", null, safeSummary) : null,
       automatic.length ? h("p", null, `${plural(automatic.length, "other change applies", "other changes apply")} with the update.`) : null,

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { applyReviewedChoices, type SourceChange, type SourceFilePreview, type SourceReviewStop } from "@inogen/oms-client";
-import { Button, Notice, SkillDeleteConfirmation, SourceFileComparison, SourceUpdateCard, carrySourceDraft, type SourceCardDraft, type SourceFileSide, type SourceFileSidePreview } from "@inogen/oms-ui-core";
+import { Button, Notice, SkillDeleteConfirmation, SourceFileComparison, SourceUpdateCard, carrySourceDraft, type SourceCardDraft, type SourceCardFileView, type SourceFileSide, type SourceFileSidePreview } from "@inogen/oms-ui-core";
 import { useWorkspace, useAction, Feedback, ResourceStatus, message } from "@/lib/workspace";
 import { useSourceAction, useSourceResource } from "@/lib/source-state";
 import { saveSourceDownload } from "@/lib/sources";
@@ -45,7 +45,7 @@ export default function SourceReview({ id, title, draft, onDraftChange }: { id: 
       onAdopt={body => { setStopped(null); void action.run(key => sources!.client.adopt(id, body, key), JSON.stringify(["adopt", id, body])); }}
       onRecheck={body => { setStopped(null); void action.run(key => sources!.client.recheck(id, body, key), JSON.stringify(["recheck", id, body])); }}
       onDeleteSkill={resource.data.held_install ? () => setDeleting("") : undefined}
-      renderFile={change => <SourceFiles key={change.part_id} id={id} change={resource.data!.plan.changes.find(row => row.part_id === change.part_id)!} revision={sourceRevision} />} />
+      renderFile={(change, view) => <SourceFiles key={change.part_id} id={id} change={resource.data!.plan.changes.find(row => row.part_id === change.part_id)!} revision={sourceRevision} view={view} />} />
       {deleting !== null && <SkillDeleteConfirmation name={skillName} confirmation={deleting} onConfirmationChange={setDeleting} busy={deletion.busy}
         onCancel={() => setDeleting(null)} onConfirm={() => {
           if (deleting !== skillName || deletion.busy || !resource.data) return;
@@ -58,11 +58,12 @@ export default function SourceReview({ id, title, draft, onDraftChange }: { id: 
   </>;
 }
 
-function SourceFiles({ id, change, revision }: { id: string; change: SourceChange; revision: number }) {
+// The card says which lines are flagged and which sides OMS has no copy of; an absent side is never fetched.
+function SourceFiles({ id, change, revision, view }: { id: string; change: SourceChange; revision: number; view: SourceCardFileView }) {
   const { sources } = useWorkspace();
   const [error, setError] = useState("");
   const path = change.part_id.startsWith("file:") ? change.part_id.slice(5) : change.part_id;
-  const sides: SourceFileSide[] = ["base", "local", "upstream"];
+  const sides = (["base", "local", "upstream"] as SourceFileSide[]).filter(side => !view.absent.includes(side));
   const resource = useSourceResource(async () => {
     const results = await Promise.allSettled(sides.map(side => sources!.client.updateFile(id, { side, path, preview: true })));
     return Object.fromEntries(results.map((result, index) => [sides[index], result.status === "fulfilled" ? result.value : { unavailable: message(result.reason) }])) as Record<SourceFileSide, SourceFilePreview | SourceFileSidePreview>;
@@ -75,6 +76,6 @@ function SourceFiles({ id, change, revision }: { id: string; change: SourceChang
   const incoming = change.incoming.value;
   const publicationWarning = incoming && typeof incoming === "object" && !Array.isArray(incoming) && incoming.published === false
     ? `Retained but excluded from publication${typeof incoming.exclusion_reason === "string" ? `: ${incoming.exclusion_reason}` : "."}` : undefined;
-  return <>{error && <Notice kind="error">{error}</Notice>}<SourceFileComparison path={path} base={value("base")} local={value("local")} upstream={value("upstream")} publicationWarning={publicationWarning}
+  return <>{error && <Notice kind="error">{error}</Notice>}<SourceFileComparison path={path} {...view} base={value("base")} local={value("local")} upstream={value("upstream")} publicationWarning={publicationWarning}
     onDownload={(side, file) => { setError(""); void sources!.client.updateFile(id, { side, path: file }).then(result => saveSourceDownload(result.bytes, file)).catch(failure => setError(message(failure))); }} /></>;
 }

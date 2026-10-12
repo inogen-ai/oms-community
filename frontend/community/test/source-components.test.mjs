@@ -108,7 +108,7 @@ test("two scripts are confirmed as a group, with each one a click away", () => {
   let tree = component("SourceUpdateCard", props);
   // One group is one decision, however many scripts it holds (ruling F4).
   assert.match(text(tree), /1 item needs you\./);
-  assert.ok(input(tree, "Install these 2 scripts"));
+  assert.ok(input(tree, "Include these 2 scripts in the skill"));
   const each = nodes(tree).find(node => node.type === "details" && node.props.className === "oms-source-each");
   assert.equal(text(nodes(each).find(node => node.type === "summary")), "Choose each");
   input(tree, "Leave them out").props.onChange({ target: { checked: true } });
@@ -136,7 +136,7 @@ test("the status sentence counts decisions, so a file and a group of five script
   input(tree, "Take GitHub's version for scripts/a.sh").props.onChange({ target: { checked: true } });
   tree = component("SourceUpdateCard", { ...props, draft });
   assert.match(text(tree), /1 item needs you\./);
-  input(tree, "Install these 5 scripts").props.onChange({ target: { checked: true } });
+  input(tree, "Include these 5 scripts in the skill").props.onChange({ target: { checked: true } });
   tree = component("SourceUpdateCard", { ...props, draft });
   assert.match(text(tree), /Ready to install\./);
 });
@@ -169,6 +169,179 @@ test("a flagged rule's label and reasons never quote its text; Show and Edit the
   assert.deepEqual(draft.choices, [{ part_id: "rule:phone", part_fingerprint: "p", choice: "merged_text", merged_text: "Call +44 20 7946 0958 about receipts." }]);
   tree = component("SourceUpdateCard", { ...props, draft });
   assert.equal(input(tree, "Text for Rule with flagged text").props.value, "Call +44 20 7946 0958 about receipts.");
+});
+
+const numbered = (count, at = index => `Line ${index + 1}`) => Array.from({ length: count }, (_, index) => at(index)).join("\n");
+const classes = node => typeof node?.props?.className === "string" ? node.props.className.split(" ") : [];
+const flaggedLines = tree => nodes(tree).filter(node => classes(node).includes("oms-source-flagged"));
+const tagOf = node => text(nodes(node).find(child => classes(child).includes("oms-source-flag")));
+const numberedLines = tree => nodes(tree).filter(node => node.props?.["data-line"] !== undefined);
+const headings = tree => nodes(tree).filter(node => node.type === "h5").map(text);
+const show = tree => nodes(tree).find(node => node.type === "details" && node.props.className === "oms-source-show");
+
+test("the GitHub preview numbers its lines and marks each flagged line with a plain tag", () => {
+  const flagged = [{ line: 4, label: "looks like an email address" }, { line: 263, label: "looks like a phone number" }, { line: 264, label: "looks like a phone number" }];
+  const tree = component("SourceFileComparison", { path: "guide.md", base: { text: "old" }, local: { text: "local" }, upstream: { text: numbered(300) }, flagged, onDownload() {} });
+  const preview = input(tree, "New on GitHub text");
+  assert.deepEqual(numberedLines(preview).map(node => node.props["data-line"]), Array.from({ length: 300 }, (_, index) => index + 1));
+  assert.match(text(numberedLines(preview)[262]), /^Line 263/);
+  assert.deepEqual(flaggedLines(preview).map(node => [node.props["data-line"], tagOf(node)]),
+    [[4, "looks like an email address"], [263, "looks like a phone number"], [264, "looks like a phone number"]]);
+  // Only the GitHub side is numbered.
+  for (const label of ["Last version taken from GitHub text", "In OMS now text"]) assert.equal(numberedLines(input(tree, label)).length, 0, label);
+  assert.doesNotMatch(text(tree), /beyond this preview/);
+});
+
+test("an excerpt marks only the flagged lines it holds and names the ones beyond it", () => {
+  const flagged = [{ line: 5, label: "looks like a phone number" }, { line: 1200, label: "looks like a phone number" }];
+  const tree = component("SourceFileComparison", { path: "long.md", absent: ["base", "local"], upstream: { text: numbered(1000), truncated: true, size: 90000 }, flagged, onDownload() {} });
+  assert.match(text(tree), /excerpt/i);
+  assert.deepEqual(flaggedLines(tree).map(node => node.props["data-line"]), [5]);
+  assert.equal(numberedLines(tree).some(node => node.props["data-line"] === 1200), false);
+  assert.match(text(tree), /Line 1200 is beyond this preview\./);
+  assert.doesNotMatch(text(tree), /Line 5 is beyond/);
+});
+
+test("the card hands each file's own flagged lines and its absent sides to the host's preview", () => {
+  const seen = new Map();
+  component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints, renderFile: (row, view) => { seen.set(row.part_id, view); return null; } });
+  assert.deepEqual(seen.get("file:visual-companion.md"), { flagged: [263, 264, 265].map(line => ({ line, label: "looks like a phone number" })), absent: ["base", "local"] });
+  assert.deepEqual(seen.get("file:b.md"), { flagged: [], absent: ["base", "local"] });
+  const f = (path, part_id, line, category) => ({ path, part_id, line, category, summary: "" });
+  assert.deepEqual(ui.sourceFlaggedLines(part("file:a.md", "file", { findings: [f("a.md", null, 7, "injection:instruction-override"), f("a.md", null, 3, "phone"),
+    f("a.md", null, 3, "email"), f("b.md", null, 9, "phone"), f("a.md", null, null, "file_size")] })),
+  [{ line: 3, label: "looks like a phone number; looks like an email address" }, { line: 7, label: "looks like an instruction to an AI model" }]);
+  assert.deepEqual(ui.sourceFlaggedLines(part("rule:r", "rule", { findings: [f(null, "rule:r", 2, "email"), f(null, "rule:other", 5, "phone")] })), [{ line: 2, label: "looks like an email address" }]);
+  assert.deepEqual(ui.sourceAbsentSides(change("file:c.md", { kind: "file" })), []);
+  assert.deepEqual(ui.sourceAbsentSides(change("file:c.md", { kind: "file", incoming: absentSide })), ["upstream"]);
+  assert.deepEqual(ui.sourceAbsentSides(change("file:c.md", { kind: "file", base: unknownSide })), ["base"]);
+  assert.deepEqual(ui.sourceAbsentSides(change("file:c.md", { kind: "file", base: absentSide, local: absentSide })), ["base", "local"]);
+  assert.deepEqual(ui.sourceAbsentSides(change("file:c.md", { kind: "file", base: unknownSide }), true), ["base", "local"]);
+});
+
+test("each line number in a reason is a button that opens Show at that line", () => {
+  const tree = component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints, renderFile: () => null });
+  const item = nodes(tree).find(node => node.props?.className === "oms-source-item");
+  const reasons = nodes(item).find(node => node.props?.className === "oms-source-reasons");
+  assert.match(visibleText(reasons), /3 lines look like a phone number: lines 263, 264, 265/);
+  const buttons = nodes(reasons).filter(node => node.type === "button");
+  assert.deepEqual(buttons.map(node => [text(node), node.props.type, node.props["aria-label"]]),
+    [263, 264, 265].map(line => [String(line), "button", `Show line ${line} of visual-companion.md`]));
+  // The consoles use hash routing, so a line is never a hash link.
+  assert.equal(nodes(item).some(node => node.type === "a"), false);
+  // A stand-in for the browser: the item, its closed Show, the GitHub preview and its lines.
+  const rect = (top, height) => ({ top, height });
+  const at = { 264: { getBoundingClientRect: () => rect(700, 20), scrollIntoView() {} } };
+  const first = { getBoundingClientRect: () => rect(400, 20), scrollIntoView() {} };
+  const preview = { scrollTop: 0, getBoundingClientRect: () => rect(100, 360), focus(options) { this.focused = options; },
+    querySelector: selector => selector === ".oms-source-flagged" ? first : at[/^\[data-line="(\d+)"\]$/.exec(selector)?.[1]] ?? null };
+  const details = { open: false, dataset: {}, querySelector: selector => selector === ".oms-source-numbered" ? preview : null };
+  const section = { querySelector: selector => selector === "details.oms-source-show" ? details : null };
+  buttons[1].props.onClick({ currentTarget: { closest: selector => selector === ".oms-source-item" ? section : null } });
+  assert.equal(details.open, true);
+  // Opening the disclosure fires its toggle event; the handler scrolls the preview to the asked line and moves focus there.
+  show(item).props.onToggle({ currentTarget: details });
+  assert.equal(preview.scrollTop, ui.sourceLineScrollTop(rect(100, 360), rect(700, 20), 0));
+  assert.ok(preview.focused);
+  assert.equal(details.dataset.omsLine, undefined);
+  // Opened from its summary, Show scrolls to the first flagged line and leaves focus where it is.
+  delete preview.focused; preview.scrollTop = 0;
+  show(item).props.onToggle({ currentTarget: details });
+  assert.equal(preview.scrollTop, ui.sourceLineScrollTop(rect(100, 360), rect(400, 20), 0));
+  assert.equal(preview.focused, undefined);
+});
+
+test("the preview scrolls a line into view with up to two lines of context above it", () => {
+  assert.equal(ui.sourceLineScrollTop({ top: 100, height: 360 }, { top: 700, height: 20 }, 50), 50 + 600 - 40);
+  assert.equal(ui.sourceLineScrollTop({ top: 100, height: 360 }, { top: 110, height: 20 }, 0), 0);
+  // A short preview keeps the line within a quarter of its height from the top.
+  assert.equal(ui.sourceLineScrollTop({ top: 0, height: 40 }, { top: 500, height: 20 }, 0), 490);
+});
+
+test("file columns use plain names, and a side that is absent has no column body or Download button", () => {
+  let tree = component("SourceFileComparison", { path: "guide.md", base: { text: "old" }, local: { text: "local" }, upstream: { text: "new" }, onDownload() {} });
+  assert.deepEqual(headings(tree).slice(0, 3), ["Last version taken from GitHub", "In OMS now", "New on GitHub"]);
+  for (const old of ["Base (B)", "Current OMS (L)", "Incoming (U)"]) assert.ok(!text(tree).includes(old), old);
+  assert.deepEqual(nodes(tree).filter(node => node.type === "button").map(text), ["Download base", "Download current", "Download incoming"]);
+  // A new file, or any file of a new skill: only the GitHub side.
+  tree = component("SourceFileComparison", { path: "guide.md", absent: ["base", "local"], upstream: { text: "new" }, onDownload() {} });
+  assert.deepEqual(headings(tree), ["New on GitHub"]);
+  assert.match(text(tree), /This file is new\. OMS does not have it yet\./);
+  assert.deepEqual(nodes(tree).filter(node => node.type === "button").map(text), ["Download incoming"]);
+  // Removed on GitHub: the column stays and says so, with no Download button.
+  tree = component("SourceFileComparison", { path: "guide.md", absent: ["upstream"], base: { text: "old" }, local: { text: "old" }, onDownload() {} });
+  assert.deepEqual(headings(tree), ["Last version taken from GitHub", "In OMS now", "New on GitHub"]);
+  assert.match(text(nodes(tree).find(node => node.props?.["aria-label"] === "New on GitHub: guide.md")), /Not present/);
+  assert.deepEqual(nodes(tree).filter(node => node.type === "button").map(text), ["Download base", "Download current"]);
+  assert.doesNotMatch(text(tree), /This file is new/);
+  tree = component("SourceFileComparison", { path: "guide.md", absent: ["base"], local: { text: "mine" }, upstream: { text: "new" }, onDownload() {} });
+  assert.deepEqual(headings(tree), ["Last version taken from GitHub", "In OMS now", "New on GitHub"]);
+  assert.deepEqual(nodes(tree).filter(node => node.type === "button").map(text), ["Download current", "Download incoming"]);
+});
+
+test("prose comparisons use the same plain names, and a new part shows only what is on GitHub", () => {
+  const card = update(); card.parts = { "section:intro": part("section:intro", "section", { label: "Section: Intro", attention: "decide", risks: ["your_edits"], default: null }) };
+  const normal = show(component("SourceUpdateCard", { update: card, partFingerprints: { "section:intro": "p" } }));
+  assert.deepEqual(headings(normal), ["Last version taken from GitHub", "In OMS now", "New on GitHub"]);
+  assert.doesNotMatch(text(normal), /Last installed|On GitHub[^:]|is new/);
+  // Every part of a new skill is new; its file previews come from the host.
+  const tree = component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints });
+  const rule = nodes(tree).find(node => node.props?.className === "oms-source-safe-item" && text(nodes(node).find(child => child.type === "summary")) === "Rule: Always write tests");
+  assert.deepEqual(headings(rule), ["New on GitHub"]);
+  assert.match(text(rule), /This is new\. OMS does not have it yet\./);
+  const file = nodes(tree).find(node => node.props?.className === "oms-source-safe-item" && text(nodes(node).find(child => child.type === "summary")) === "b.md");
+  assert.match(text(file), /This file is new\. OMS does not have it yet\./);
+});
+
+test("a flagged prose part marks its flagged line inside Show and never quotes it outside", () => {
+  const changes = [change("rule:phone", { kind: "rule", base: unknownSide, local: absentSide, incoming: evidence("Ask the finance desk.\nCall +44 20 7946 0958 about receipts.") })];
+  const card = { ...update({ base: null, changes, conflicts: [{ part_id: "rule:phone", reason: "unknown_base,source_text_hold", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] }] }), held_install: true,
+    parts: { "rule:phone": part("rule:phone", "rule", { label: "Rule with flagged text", attention: "decide", risks: ["personal_data"], default: null, overridable: ["phone"],
+      findings: [{ path: null, part_id: "rule:phone", line: 2, category: "phone", summary: "SKILL.md text, line 2: looks like a phone number" }] }) } };
+  const tree = component("SourceUpdateCard", { update: card, partFingerprints: { "rule:phone": "p" } });
+  assert.doesNotMatch(visibleText(tree), /7946/);
+  assert.ok(button(tree, "2"));
+  assert.equal(button(tree, "2").props["aria-label"], "Show line 2 of Rule with flagged text");
+  const preview = input(show(tree), "New on GitHub");
+  assert.deepEqual(flaggedLines(preview).map(node => [node.props["data-line"], tagOf(node)]), [[2, "looks like a phone number"]]);
+  assert.match(text(preview), /7946/);
+});
+
+test("a flagged file's text shows only inside the Show the reader opens", () => {
+  // Ruling P4: the reason line, its line buttons and the tags never carry the flagged text.
+  const body = numbered(265, index => index >= 262 ? `Call +44 20 7946 0${index + 1}` : `Line ${index + 1}`);
+  const tree = component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints,
+    renderFile: (row, view) => h(ui.SourceFileComparison, { path: row.part_id.slice(5), ...view, upstream: { text: body }, onDownload() {} }) });
+  assert.doesNotMatch(visibleText(tree), /7946/);
+  const item = nodes(tree).find(node => node.props?.className === "oms-source-item");
+  assert.match(text(show(item)), /7946/);
+  assert.deepEqual(flaggedLines(show(item)).map(node => node.props["data-line"]), [263, 264, 265]);
+  for (const node of nodes(item).filter(row => row.type === "button")) assert.doesNotMatch(`${text(node)} ${node.props["aria-label"]}`, /7946/);
+});
+
+test("scripts are one decision in plain words, for five scripts or for one", () => {
+  const scripts = count => {
+    const paths = Array.from({ length: count }, (_, index) => `scripts/${index}.sh`);
+    const changes = paths.map(path => change(`file:${path}`, { kind: "file", base: unknownSide, local: absentSide, incoming: evidence({ path, digest: path, size: 1, mode: 33261 }) }));
+    return { update: { ...update({ base: null, changes, conflicts: changes.map(row => ({ part_id: row.part_id, reason: "unknown_base", allowed_choices: ["keep_oms", "use_upstream"] })) }), held_install: true,
+      parts: Object.fromEntries(paths.map(path => [`file:${path}`, part(`file:${path}`, "file", { label: path, attention: "decide", risks: ["script"], default: null })])) },
+    partFingerprints: Object.fromEntries(paths.map(path => [`file:${path}`, `fp-${path}`])) };
+  };
+  const line = "Agents can run these files when they use the skill (choosing them adds them to the skill's files as the author intended)";
+  let draft;
+  for (const [count, heading, include, leave] of [[5, "Scripts (5)", "Include these 5 scripts in the skill", "Leave them out"], [1, "Script (1)", "Include this script in the skill", "Leave it out"]]) {
+    const props = { ...scripts(count), onDraftChange: value => { draft = value; }, onApply() {} };
+    const tree = component("SourceUpdateCard", props);
+    const group = nodes(tree).find(node => node.type === "section" && node.props.className === "oms-source-group");
+    assert.ok(group, heading);
+    assert.equal(text(nodes(group).find(node => node.type === "h4")), heading);
+    assert.ok(nodes(group).some(node => node.type === "p" && text(node) === line), heading);
+    assert.ok(input(tree, include), include); assert.ok(input(tree, leave), leave);
+    assert.ok(button(tree, "Install skill"));
+    input(tree, include).props.onChange({ target: { checked: true } });
+    assert.equal(draft.choices.length, count);
+    assert.ok(draft.choices.every(row => row.choice === "use_upstream"));
+  }
 });
 
 test("several personal-data items share one 'Take all N anyway' choice, and it shows the note", () => {

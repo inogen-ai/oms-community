@@ -320,6 +320,46 @@ test("file previews remain inert and downloads use authorised side paths", async
   expect(state.requests.some(row => row.path.endsWith("/files"))).toBe(true);
 });
 
+test("opening a flagged file shows its first flagged line, marked and tagged, and fetches only the GitHub side", async ({ page }) => {
+  const state = await sourceFixture(page, { flagged: true });
+  await page.goto("/import/?github=sources&update=update-1");
+  const item = page.getByRole("region", { name: "Item references/contacts.md" });
+  await expect(item.getByText("2 lines look like a phone number: lines 40, 263")).toBeVisible();
+  await item.locator(".oms-source-show > summary").click();
+  const preview = item.locator(".oms-source-numbered");
+  const first = preview.locator('[data-line="40"]');
+  await expect(first).toHaveClass(/oms-source-flagged/);
+  await expect(first.locator(".oms-source-flag")).toHaveText("looks like a phone number");
+  await expect(first).toBeInViewport();
+  await expect(preview.locator('[data-line="263"]')).not.toBeInViewport();
+  // A new file: only the GitHub side, and no Download button for the sides OMS does not have.
+  await expect(item.getByText("This file is new. OMS does not have it yet.")).toBeVisible();
+  await expect(item.getByRole("heading", { name: "New on GitHub" })).toBeVisible();
+  await expect(item.getByRole("heading", { name: "Last version taken from GitHub" })).toHaveCount(0);
+  await expect(item.getByRole("button", { name: /^Download (base|current)$/ })).toHaveCount(0);
+  const files = state.requests.filter(row => row.path.endsWith("/files"));
+  expect(files.length).toBeGreaterThan(0);
+  expect(files.every(row => new URLSearchParams(row.query).get("side") === "upstream")).toBe(true);
+});
+
+test("a line number in the reason opens Show at that line", async ({ page }) => {
+  await sourceFixture(page, { flagged: true });
+  await page.goto("/import/?github=sources&update=update-1");
+  const item = page.getByRole("region", { name: "Item references/contacts.md" });
+  const preview = item.locator(".oms-source-numbered");
+  // Wait for the preview to load inside the closed disclosure.
+  await expect(preview.locator('[data-line="263"]')).toHaveCount(1);
+  await item.getByRole("button", { name: "Show line 263 of references/contacts.md" }).click();
+  await expect(item.locator(".oms-source-show")).toHaveAttribute("open", "");
+  await expect(preview.locator('[data-line="263"]')).toBeInViewport();
+  await expect(preview.locator('[data-line="40"]')).not.toBeInViewport();
+  await expect(preview).toBeFocused();
+  // With Show already open, another line number scrolls the same preview.
+  await item.getByRole("button", { name: "Show line 40 of references/contacts.md" }).click();
+  await expect(preview.locator('[data-line="40"]')).toBeInViewport();
+  await expect(preview.locator('[data-line="263"]')).not.toBeInViewport();
+});
+
 test("Community rejects a runtime workspace override before contacting the API", async ({ page }) => {
   const state = await sourceFixture(page);
   await page.route("**/oms-config.json", route => route.fulfill({ json: { api_url: "", tenant: "other-workspace" } }));

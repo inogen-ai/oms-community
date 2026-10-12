@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { SourceRefDisplay } from "./source-status.js";
 import type { SourceRepositoryDisplay } from "./source-repository.js";
+import type { SourceFileSide, SourceFlaggedLine } from "./source-files.js";
 export interface SourceCardFingerprint {
   content_generation: number; binding_generation: number; update_generation: number;
   policy_version: string; policy_digest?: string | null; local_digest: string; candidate_digest: string;
@@ -74,6 +75,10 @@ export function carrySourceDraft<T extends SourceCardDraft | undefined>(draft: T
 export function sourceReviewParts(update: SourceCardUpdate): Readonly<Record<string, SourceCardPart>>;
 /** Plain reason lines for a part's findings: places and counts, never the matched text. */
 export function sourceFindingReasons(findings?: readonly SourceCardFinding[]): string[];
+/** The part's own flagged lines (a file's by its path, a prose part's by its id), each with its plain tag. */
+export function sourceFlaggedLines(part: Pick<SourceCardPart, "part_id" | "kind" | "findings">): SourceFlaggedLine[];
+/** What the card hands the host's file preview: the part's flagged lines and the sides OMS has no copy of. */
+export interface SourceCardFileView { flagged: readonly SourceFlaggedLine[]; absent: readonly SourceFileSide[] }
 export function sourceChoiceOptions(update: SourceCardUpdate, change: SourceCardChange, part: SourceCardPart,
   conflict?: { allowed_choices: readonly string[] } | null): SourceCardOption[];
 /** The draft's choices plus each safe part's default. */
@@ -106,5 +111,5 @@ export function SourceUpdateCard(props: {
   onSkip?: (body: SourceCardAction) => void; onAdopt?: (body: SourceCardAction) => void; onRecheck?: (body: SourceCardAction) => void;
   /** Offered on a held install only; the host asks for confirmation before it deletes. */
   onDeleteSkill?: () => void;
-  renderFile?: (change: SourceCardChange) => ReactNode;
+  renderFile?: (change: SourceCardChange, view: SourceCardFileView) => ReactNode;
 }): ReactNode;

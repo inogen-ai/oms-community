@@ -11,13 +11,25 @@ const skillRef = { tenant_id: "local", skill_id: skill.id };
 const origin = { format_version, skill: skillRef, origin_id: "origin-1", kind: "github" as const, generation: 1 };
 const ref = { format_version, canonical_url: "https://github.com/fixture/skills", kind: "branch" as const, name: "main", package_path: "expenses", commit: "a".repeat(40) };
 const evidence = (value: string) => ({ format_version, kind: "known" as const, value, source_digest: null, policy_version: "p" });
-export async function sourceFixture(page: Page, options: { enabled?: boolean; blocked?: boolean; loseApply?: boolean; removal?: boolean; clean?: boolean; script?: boolean; loseLocal?: boolean; blockLocal?: boolean; blockRetarget?: boolean; undo?: boolean; unlinked?: boolean; file?: boolean; loseDiscovery?: boolean; loseInstall?: boolean; invalidOperation?: boolean; bindingCount?: number; localReview?: boolean } = {}) {
+export async function sourceFixture(page: Page, options: { enabled?: boolean; blocked?: boolean; loseApply?: boolean; removal?: boolean; clean?: boolean; script?: boolean; loseLocal?: boolean; blockLocal?: boolean; blockRetarget?: boolean; undo?: boolean; unlinked?: boolean; file?: boolean; flagged?: boolean; loseDiscovery?: boolean; loseInstall?: boolean; invalidOperation?: boolean; bindingCount?: number; localReview?: boolean } = {}) {
   const source: SkillSource = { format_version, source_id: "source-1", tenant_id: "local", canonical_url: ref.canonical_url, confirmed_aliases: [], discovery_root: "", credential_profile_id: null, generation: 1, scheduled: false, status: { format_version, state: "updates_available", checked_at: null, code: null } };
   const binding: Mutable<SourceBindingView> = { binding: { format_version, origin, source_id: source.source_id, package_path: "expenses", ref, baseline: { format_version, snapshot_id: "base", origin }, automatic_apply: false, automation_actor_id: null, first_reconciliation: true, status: source.status, active: true }, local_stream: null, generations: { format_version, skill: skillRef, content: 1, binding: 1 }, blocked_attempts: options.blocked ? [{ format_version, attempt_id: "blocked-1", origin, actor_id: "local-operator", reason: "Other-origin update remains open", existing_update_id: "update-1", retry_needed: true }] : [] };
   const originalBinding = structuredClone(binding.binding);
   if (options.unlinked) { binding.binding = null; binding.local_stream = { format_version, origin: { ...origin, origin_id: "local-origin", kind: "local" }, baseline: null, transport: "zip", uploader_id: "local-operator", filename: "earlier.zip" }; }
   const update: Mutable<SourceUpdateView> = { format_version, update_id: "update-1", generation: 1, status: "open", review_item_id: "review-1", drafts: [], operation_id: null, stale: false, part_fingerprints: { "section:intro": "part-1" }, ownership: { "section:intro": "shared" }, resolved_check: { format_version, state: "passed", code: "checked", reasons: [] }, plan: { format_version, skill: skillRef, origin, base: { format_version, snapshot_id: "base", origin }, incoming: { format_version, snapshot_id: "incoming", origin }, fingerprint: { format_version, content_generation: 1, binding_generation: 1, update_generation: 1, policy_version: "p", policy_digest: "policy", local_digest: "local", candidate_digest: "incoming" }, changes: [{ format_version, part_id: "section:intro", kind: "section", action: "conflict", base: evidence("Check receipts."), local: evidence("Keep receipt references."), incoming: evidence("Compare receipts and orders."), linked_removals: [] }], conflicts: [{ format_version, part_id: "section:intro", reason: "Both sides changed", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] }], flags: ["conflict", "first_reconciliation"] } };
   if (options.file) update.plan = { ...update.plan, flags: [], conflicts: [], changes: [{ ...update.plan.changes[0], part_id: "file:references/guide.md", kind: "file", action: "replace", base: { ...evidence(""), value: { path: "references/guide.md", digest: "base-digest", size: 12 } }, local: { ...evidence(""), value: { path: "references/guide.md", digest: "local-digest", size: 12 } }, incoming: { ...evidence(""), value: { path: "references/guide.md", digest: "upstream-digest", size: 12, published: false, exclusion_reason: "reserved output" } } }] };
+  // A new file held for personal data on lines 40 and 263; nothing of it is in OMS yet.
+  const flaggedPath = "references/contacts.md";
+  if (options.flagged) {
+    const absent = { format_version, kind: "absent" as const, value: null, source_digest: null, policy_version: "p" };
+    const part_id = `file:${flaggedPath}`;
+    update.plan = { ...update.plan, flags: ["conflict", "safety_hold"], conflicts: [{ format_version, part_id, reason: "source_text_hold", allowed_choices: ["keep_oms", "use_upstream"] }],
+      changes: [{ format_version, part_id, kind: "file", action: "conflict", base: absent, local: absent, incoming: { ...evidence(""), value: { path: flaggedPath, digest: "contacts-digest", size: 9000, mode: 33188 } }, linked_removals: [] }] };
+    update.part_fingerprints = { [part_id]: "part-contacts" };
+    update.ownership = {};
+    update.parts = { [part_id]: { format_version, part_id, kind: "file", label: flaggedPath, attention: "decide", risks: ["personal_data"], default: null, overridable: ["phone"],
+      findings: [40, 263].map(line => ({ path: flaggedPath, part_id: null, line, category: "phone", summary: `${flaggedPath}, line ${line}: looks like a phone number` })) } };
+  }
   if (options.removal) update.plan = { ...update.plan, flags: ["deletion_consent"], conflicts: [], changes: [{ ...update.plan.changes[0], action: "remove", incoming: { ...evidence(""), kind: "absent", value: null } }] };
   if (options.clean) update.plan = { ...update.plan, flags: [], conflicts: [], changes: [{ ...update.plan.changes[0], action: "replace" }] };
   const localOrigin = { ...origin, origin_id: "local-origin", kind: "local" as const };
@@ -79,7 +91,10 @@ export async function sourceFixture(page: Page, options: { enabled?: boolean; bl
     if (path.startsWith("/api/skill-source-operations/")) return reply(state.operations.get(decodeURIComponent(path.split("/").at(-1)!)) ?? { code: "missing" });
     if (path.endsWith("/files")) {
       if (url.searchParams.get("preview") === "false") return route.fulfill({ status: 200, headers: { ...headers, "Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="guide.md"' }, body: "Fixture file" });
-      return reply({ path: url.searchParams.get("path"), side: url.searchParams.get("side") ?? "discovery", size: 12, binary: false, text: "<script>window.bad = true</script>", truncated: false, byte_limit: 65536, line_limit: 1000, media_type: "text/plain" });
+      const text = options.flagged && url.searchParams.get("path") === flaggedPath
+        ? Array.from({ length: 300 }, (_, index) => [40, 263].includes(index + 1) ? `Call the office on 020 7946 0${index + 100}` : `Line ${index + 1} of the contacts guide`).join("\n")
+        : "<script>window.bad = true</script>";
+      return reply({ path: url.searchParams.get("path"), side: url.searchParams.get("side") ?? "discovery", size: text.length, binary: false, text, truncated: false, byte_limit: 65536, line_limit: 1000, media_type: "text/plain" });
     }
     if (path === "/api/import" || path === "/api/import/directory") {
       state.uploadCount++;
