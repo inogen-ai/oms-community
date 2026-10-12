@@ -163,5 +163,5 @@ export function createClient({ baseUrl = "", fetch: fetcher, requestPolicy = "lo
   };
 }
 
-export { createSourcesClient } from "./sources.js";
+export { applyReviewedChoices, createSourcesClient } from "./sources.js";
 export { createSourceRequests, StaleSourceResponseError } from "./source-requests.js";

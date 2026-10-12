@@ -13,10 +13,10 @@ test("remounted source reviews recover the original Apply instead of sending a f
     return route.fallback();
   });
   await page.goto("/import/?github=sources&update=update-1");
-  await page.getByRole("button", { name: "Apply whole skill" }).click();
+  await page.getByRole("button", { name: "Apply update" }).click();
   await expect(page.getByRole("button", { name: "Check result" }).first()).toBeEnabled();
   await page.reload();
-  await page.getByRole("button", { name: "Apply whole skill" }).click();
+  await page.getByRole("button", { name: "Apply update" }).click();
   await expect(page.getByText(/A previous attempt needs recovery/)).toBeVisible();
   expect(writes).toHaveLength(1);
   await page.getByRole("button", { name: "Check result" }).first().click();
@@ -36,26 +36,26 @@ test("private draft recovery requires the exact original input after remount", a
   await page.route(`${api}/api/skill-source-operations?*`, route => route.request().method() === "GET"
     ? route.fulfill({ status: 404, headers, json: { code: "operation_not_found", message: "No receipt" } }) : route.fallback());
   const fill = async (value: string) => {
-    await page.getByLabel("Decision for section:intro").selectOption("merged_text");
-    await page.getByLabel("Merged text for section:intro").fill(value);
+    await page.getByLabel("Edit the text for section:intro").check();
+    await page.getByLabel("Text for section:intro", { exact: true }).fill(value);
   };
   await page.goto("/import/?github=sources&update=update-1");
   await fill("Original private prose");
-  await page.getByRole("button", { name: "Save choices", exact: true }).click();
+  await page.getByRole("button", { name: "Apply update" }).click();
   await expect(page.getByRole("button", { name: "Check result" }).first()).toBeEnabled();
   expect(await page.evaluate(() => JSON.stringify({ ...sessionStorage }))).not.toContain("Original private prose");
   await page.reload();
   await fill("Changed prose");
-  await page.getByRole("button", { name: "Save choices", exact: true }).click();
+  await page.getByRole("button", { name: "Apply update" }).click();
   await page.getByRole("button", { name: "Check result" }).first().click();
   await expect(page.getByText(/No receipt is recorded yet/)).toBeVisible();
   await page.getByRole("checkbox", { name: /exact original input/ }).check();
-  await page.getByRole("button", { name: "Save choices", exact: true }).click();
+  await page.getByRole("button", { name: "Apply update" }).click();
   await expect(page.getByText(/original request identity does not match/)).toBeVisible();
   expect(writes).toHaveLength(1);
   await fill("Original private prose");
   await page.getByRole("checkbox", { name: /exact original input/ }).check();
-  await page.getByRole("button", { name: "Save choices", exact: true }).click();
+  await page.getByRole("button", { name: "Apply update" }).click();
   await expect.poll(() => writes.length).toBe(2);
   expect(writes[1]).toEqual(writes[0]);
 });

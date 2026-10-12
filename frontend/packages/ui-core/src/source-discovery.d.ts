@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { SourceRefDisplay } from "./source-status.js";
+import type { SourceRepositoryDisplay } from "./source-repository.js";
 export interface SourcePackageDisplay {
   path: string; valid: boolean; upstream_name?: string | null; description?: string | null;
   file_count: number; total_bytes: number; reasons: readonly string[]; unsupported_metadata?: readonly string[];
@@ -7,6 +8,8 @@ export interface SourcePackageDisplay {
 export interface SourceDiscoveryDisplay {
   discovery_id: string; resolved_ref: SourceRefDisplay; preselected_path: string | null;
   packages: { items: readonly SourcePackageDisplay[]; next_cursor: string | null };
+  /** The repository line above the package list: its GitHub facts and concerns. */
+  repository?: SourceRepositoryDisplay | null;
 }
 /** The skill id OMS gives a local name (matches oms.domain.ids.slug). */
 export function sourceSkillId(name: string): string;
@@ -20,4 +23,6 @@ export function SourceDiscovery(props: {
   onSelectionsChange?: (selections: SourceSelection[]) => void;
   onInstall?: (body: { discovery_id: string; selections: readonly SourceSelection[] }) => void;
   onLoadMore?: (cursor: string) => void;
+  /** The time "updated 2 days ago" counts from; the current time when omitted. */
+  now?: Date;
 }): ReactNode;

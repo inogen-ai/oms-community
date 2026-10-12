@@ -1,27 +1,46 @@
-import { createElement as h, Fragment } from "react";
+import { createElement as h } from "react";
 import { Button, EmptyState, Notice, Panel } from "./primitives.js";
 import { boundedSourceText } from "./source-files.js";
-import { SourceStatus, sourceFlagLabels } from "./source-status.js";
+import { SourceRepositoryLine } from "./source-repository.js";
+import { sourceFlagLabels } from "./source-status.js";
 
-const CHOICES = { keep_oms: "Keep OMS", use_upstream: "Use upstream", merged_text: "Merged text" };
-const OWNERSHIP = { source: "Source-owned content", shared: "Shared ownership — other owners are preserved", local: "Local ownership — preserve local additions", unknown: "Ownership not proven" };
 const FP_FIELDS = ["content_generation", "binding_generation", "update_generation", "policy_version", "policy_digest", "local_digest", "candidate_digest"];
 const sameFingerprint = (a, b) => !!a && !!b && FP_FIELDS.every(key => (a[key] ?? null) === (b[key] ?? null));
-const sameChoices = (a, b) => a.length === b.length && a.every(choice => b.some(other =>
-  choice.part_id === other.part_id && choice.choice === other.choice && choice.part_fingerprint === other.part_fingerprint
-  && (choice.merged_text ?? null) === (other.merged_text ?? null)));
-const allowedChoices = (change, conflict) => (conflict?.allowed_choices ?? ["keep_oms", "use_upstream"])
-  .filter(choice => Object.hasOwn(CHOICES, choice) && (choice !== "merged_text" || ["section", "rule", "example"].includes(change.kind)));
 const TAKEN_KINDS = ["rule", "section", "example", "file"];
 // A change row's element id. Every character outside [A-Za-z0-9-] is escaped, so two parts never share one.
 const changeId = partId => "oms-source-change-" + [...partId].map(c => /[A-Za-z0-9-]/.test(c) ? c : `_${c.codePointAt(0).toString(16)}_`).join("");
-// A button, not a fragment link: the paid console routes on the URL hash.
-const showChange = partId => () => {
-  const target = globalThis.document?.getElementById(changeId(partId));
-  target?.scrollIntoView?.({ block: "start" });
-  target?.focus?.({ preventScroll: true });
-};
 const removes = change => change.action === "remove" || (change.incoming.kind === "absent" && change.local.kind !== "absent");
+
+export const SOURCE_RISK_ORDER = Object.freeze(["injection", "check_failed", "check_unavailable", "personal_data", "removed_upstream", "your_edits", "unclear_identity", "script"]);
+export const SOURCE_RISK_LABELS = Object.freeze({
+  personal_data: "Looks like personal data", injection: "Looks like instructions to an AI", check_failed: "Failed a safety check",
+  check_unavailable: "Could not be checked", your_edits: "You changed this in OMS", removed_upstream: "Removed on GitHub",
+  unclear_identity: "OMS cannot match this to an existing part", script: "Script", other: "Needs a decision",
+});
+const CHECK_RISKS = ["injection", "check_failed", "check_unavailable"];
+const PROSE = ["section", "rule", "example"];
+const KIND_ORDER = ["rule", "section", "example", "file", "field", "placement"];
+const KIND_NOUNS = { rule: ["rule", "rules"], section: ["section", "sections"], example: ["example", "examples"], file: ["file", "files"], field: ["skill detail", "skill details"], placement: ["placement change", "placement changes"] };
+const OWNERSHIP = { source: "Source-owned", shared: "Shared: other owners are kept", local: "Local: local additions are kept", unknown: "Ownership not proven" };
+const words = value => String(value).replaceAll("_", " ").replaceAll("-", " ");
+const plural = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+const listWords = items => items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+const capital = value => value.charAt(0).toUpperCase() + value.slice(1);
+const acknowledgedKey = row => [...(row?.acknowledged ?? [])].sort().join(",");
+const sameChoice = (a, b) => a.part_id === b.part_id && a.choice === b.choice && a.part_fingerprint === b.part_fingerprint
+  && (a.merged_text ?? null) === (b.merged_text ?? null) && acknowledgedKey(a) === acknowledgedKey(b);
+const sameChoices = (a, b) => a.length === b.length && a.every(choice => b.some(other => sameChoice(choice, other)));
+const isOption = (choice, option) => !!choice && choice.choice === option.choice && acknowledgedKey(choice) === acknowledgedKey(option);
+// "Edit the text" starts from GitHub's wording, flagged or not (ruling P4): the administrator
+// redacts the flagged lines in the editor; the server checks the result before saving it.
+const prefill = change => {
+  for (const side of [change.incoming, change.local]) {
+    if (side.kind !== "known") continue;
+    if (typeof side.value === "string") return side.value;
+    if (side.value && typeof side.value.body === "string") return side.value.body;
+  }
+  return "";
+};
 
 export function initialSourceDraft(update) {
   return { fingerprint: update.plan.fingerprint, choices: [...(update.drafts ?? [])], removal_consents: [] };
@@ -45,41 +64,154 @@ function deletionGroups(changes, choices) {
   }
   return groups.map(group => [...group]);
 }
+
+export function sourceReviewParts(update) {
+  if (update.parts) return update.parts;
+  // A server without triage: every conflict or removal needs a decision, labelled by its part id.
+  const conflicts = new Set(update.plan.conflicts.map(row => row.part_id));
+  return Object.fromEntries(update.plan.changes.map(change => {
+    const decide = conflicts.has(change.part_id) || removes(change) || !!change.linked_removals?.length;
+    return [change.part_id, { part_id: change.part_id, kind: change.kind, label: change.part_id, attention: decide ? "decide" : "automatic",
+      risks: removes(change) ? ["removed_upstream"] : [], default: null, overridable: [], findings: [] }];
+  }));
+}
+
+const FINDING_NOUNS = { phone: "a phone number", email: "an email address" };
+export function sourceFindingReasons(findings = []) {
+  const groups = new Map();
+  for (const finding of findings) groups.set(finding.category, [...(groups.get(finding.category) ?? []), finding]);
+  return [...groups].map(([category, rows]) => {
+    const [kind, ...rest] = category.split(":");
+    const detail = words(rest.join(":"));
+    if (category === "file_size") return "The file is larger than 10 MB";
+    if (kind === "check_unavailable" && rest.length) return `A required check could not run (${detail})`;
+    if (kind === "policy" && rest.length) return `Conflicts with a workspace safety rule (${detail})`;
+    const noun = Object.hasOwn(FINDING_NOUNS, category) ? FINDING_NOUNS[category]
+      : kind === "injection" && rest.length ? `instructions to an AI (${detail})` : null;
+    if (!noun) return `Held by a check (${words(category)})`;
+    const lines = [...new Set(rows.map(row => row.line).filter(Number.isInteger))].sort((a, b) => a - b);
+    if (!lines.length) return `Looks like ${noun}`;
+    const more = lines.length > 10 ? ` and ${lines.length - 10} more` : "";
+    return `${lines.length} ${lines.length === 1 ? "line looks" : "lines look"} like ${noun}: ${lines.length === 1 ? "line" : "lines"} ${lines.slice(0, 10).join(", ")}${more}`;
+  });
+}
+
+export function sourceChoiceOptions(update, change, part, conflict) {
+  const allowed = (conflict?.allowed_choices ?? ["keep_oms", "use_upstream"]).filter(choice => choice !== "merged_text" || PROSE.includes(change.kind));
+  const fresh = update.held_install === true || change.local.kind === "absent";
+  const removal = removes(change);
+  const options = [];
+  if (allowed.includes("keep_oms")) options.push({ choice: "keep_oms", label: removal ? "Keep it" : fresh ? "Leave out" : "Keep yours" });
+  if (allowed.includes("use_upstream") && !part.risks.some(risk => CHECK_RISKS.includes(risk))) {
+    if (!part.risks.includes("personal_data")) options.push({ choice: "use_upstream", label: removal ? "Remove it in OMS too" : "Take GitHub's version" });
+    else if (part.overridable.length) options.push({ choice: "use_upstream", acknowledged: [...part.overridable], label: "Take it anyway", note: "This keeps the personal data in the skill." });
+  }
+  if (allowed.includes("merged_text")) options.push({ choice: "merged_text", label: "Edit the text" });
+  return options;
+}
+
+export function sourceEffectiveChoices(update, draft = initialSourceDraft(update), partFingerprints = {}) {
+  const parts = sourceReviewParts(update);
+  const explicit = new Set(draft.choices.map(choice => choice.part_id));
+  const result = [...draft.choices];
+  for (const conflict of update.plan.conflicts) {
+    const part = parts[conflict.part_id];
+    if (!explicit.has(conflict.part_id) && part?.attention === "safe" && part.default === "use_upstream" && partFingerprints[conflict.part_id])
+      result.push({ part_id: conflict.part_id, part_fingerprint: partFingerprints[conflict.part_id], choice: "use_upstream", merged_text: null });
+  }
+  return result;
+}
+
+export function sourceNeedsYou(update) {
+  const groups = new Map();
+  for (const part of Object.values(sourceReviewParts(update))) {
+    if (part.attention !== "decide") continue;
+    const risk = SOURCE_RISK_ORDER.find(code => part.risks.includes(code)) ?? "other";
+    groups.set(risk, [...(groups.get(risk) ?? []), part]);
+  }
+  return [...SOURCE_RISK_ORDER, "other"].filter(risk => groups.has(risk)).map(risk => ({ risk, label: SOURCE_RISK_LABELS[risk], parts: groups.get(risk) }));
+}
+
+// The group forms of the spec labels (Global Constraints, ruling P5).
+function groupLabel(risk, choice, count, fresh, acknowledged) {
+  if (choice === "keep_oms") return risk === "removed_upstream" ? "Keep them" : risk === "script" ? "Leave them out"
+    : fresh ? "Leave all out" : `Keep yours for all ${count}`;
+  if (risk === "removed_upstream") return "Remove them in OMS too";
+  if (risk === "script") return `Install these ${count} scripts`;
+  if (acknowledged) return `Take all ${count} anyway`;
+  return `Take GitHub's version for all ${count}`;
+}
+export function sourceGroupOptions(update, group) {
+  const changes = new Map(update.plan.changes.map(change => [change.part_id, change]));
+  const conflicts = new Map(update.plan.conflicts.map(conflict => [conflict.part_id, conflict]));
+  const per = group.parts.map(part => sourceChoiceOptions(update, changes.get(part.part_id), part, conflicts.get(part.part_id)));
+  const fresh = group.parts.every(part => update.held_install === true || changes.get(part.part_id).local.kind === "absent");
+  return ["use_upstream", "keep_oms"].filter(choice => per.every(options => options.some(option => option.choice === choice)))
+    .map(choice => {
+      const first = per[0].find(option => option.choice === choice);
+      // Every "anyway" form shows the note, the group's as well as each item's.
+      return { choice, label: groupLabel(group.risk, choice, group.parts.length, fresh, !!first.acknowledged),
+        ...(first.note ? { note: first.note } : {}), optionFor: index => per[index].find(option => option.choice === choice) };
+    });
+}
+
+export function sourceSafeSummary(update, choices) {
+  const safe = Object.values(sourceReviewParts(update)).filter(part => part.attention === "safe");
+  if (!safe.length) return "";
+  const listed = listWords(KIND_ORDER.map(kind => [kind, safe.filter(part => part.kind === kind).length]).filter(([, count]) => count)
+    .map(([kind, count]) => plural(count, ...KIND_NOUNS[kind])));
+  const left = safe.filter(part => choices.some(choice => choice.part_id === part.part_id && choice.choice === "keep_oms")).length;
+  return `${listed} passed the checks. ${safe.length === 1 ? "It" : "They"} will be ${update.held_install === true ? "installed" : "applied"}.${left ? ` ${left} left out.` : ""}`;
+}
+
+export function sourceStatusSentence(update, state) {
+  if (state.waiting) return `${plural(state.waiting, "item needs", "items need")} you.`;
+  const verb = update.held_install === true ? "install" : "apply";
+  if (update.summary?.whole_skill?.length) return `Held: see the reasons below before you ${verb}.`;
+  return update.held_install === true ? "Ready to install." : "Ready to apply.";
+}
+
 export function sourceCardState(update, draft = initialSourceDraft(update), partFingerprints = {}) {
+  const parts = sourceReviewParts(update);
   const changes = new Map(update.plan.changes.map(change => [change.part_id, change]));
   const conflicts = new Map(update.plan.conflicts.map(conflict => [conflict.part_id, conflict]));
   const stale = update.stale === true || !sameFingerprint(draft.fingerprint, update.plan.fingerprint);
-  const validChoices = draft.choices.every(choice => {
-    const change = changes.get(choice.part_id);
-    return change && partFingerprints[choice.part_id] && partFingerprints[choice.part_id] === choice.part_fingerprint
-      && allowedChoices(change, conflicts.get(choice.part_id)).includes(choice.choice)
-      && (choice.choice === "merged_text" ? typeof choice.merged_text === "string" && !!choice.merged_text.trim() : choice.merged_text == null);
-  }) && new Set(draft.choices.map(choice => choice.part_id)).size === draft.choices.length;
-  const resolved = update.plan.conflicts.every(conflict => draft.choices.some(choice => choice.part_id === conflict.part_id))
+  const validChoices = new Set(draft.choices.map(choice => choice.part_id)).size === draft.choices.length && draft.choices.every(choice => {
+    const change = changes.get(choice.part_id), part = parts[choice.part_id];
+    if (!change || !part || !partFingerprints[choice.part_id] || partFingerprints[choice.part_id] !== choice.part_fingerprint) return false;
+    const option = sourceChoiceOptions(update, change, part, conflicts.get(choice.part_id)).find(row => isOption(choice, row));
+    return !!option && (choice.choice === "merged_text" ? typeof choice.merged_text === "string" && !!choice.merged_text.trim() : choice.merged_text == null);
+  });
+  const choices = sourceEffectiveChoices(update, draft, partFingerprints);
+  const chosen = new Set(choices.map(choice => choice.part_id));
+  const resolved = update.plan.conflicts.every(conflict => chosen.has(conflict.part_id))
     && update.plan.changes.every(change => change.action !== "conflict" || conflicts.has(change.part_id));
-  const groups = deletionGroups(update.plan.changes, draft.choices);
-  const consented = groups.every(group => group.every(id => draft.removal_consents.includes(id)));
-  const saved = sameChoices(draft.choices, update.drafts ?? []);
-  const held = update.resolved_check
-    ? update.resolved_check.state !== "passed"
-    : update.plan.flags.some(flag => ["safety_hold", "required_check_unavailable"].includes(flag));
-  // A held new skill needs at least one saved rule, section, example or file part taken; the server refuses an empty apply anyway.
-  const taken = update.held_install === true ? (update.drafts ?? []).some(choice => choice.choice !== "keep_oms"
-    && TAKEN_KINDS.includes(changes.get(choice.part_id)?.kind)) : true;
-  return { stale, validChoices, resolved, groups, consented, saved, held, taken,
-    canSave: update.status === "open" && !stale && validChoices && !saved,
-    canApply: update.status === "open" && !stale && validChoices && resolved && consented && saved && !held && taken };
+  const waiting = Object.values(parts).filter(part => part.attention === "decide" && !chosen.has(part.part_id)).length;
+  const groups = deletionGroups(update.plan.changes, choices);
+  const saved = sameChoices(choices, update.drafts ?? []);
+  // Only a complete saved selection can be held: until every decision is made, the server's hold
+  // means "decisions required", which the status sentence already says.
+  const held = saved && waiting === 0 && !!update.resolved_check && update.resolved_check.state !== "passed";
+  // A held new skill needs at least one rule, section, example or file taken; the server refuses an empty apply anyway.
+  const taken = update.held_install === true ? choices.some(choice => choice.choice !== "keep_oms" && TAKEN_KINDS.includes(changes.get(choice.part_id)?.kind)) : true;
+  return { stale, validChoices, resolved, groups, saved, held, taken, choices, waiting,
+    canApply: update.status === "open" && !stale && validChoices && resolved && waiting === 0 && taken && !held };
 }
-function Evidence({ title, evidence }) {
-  const value = evidence.kind === "known" ? (typeof evidence.value === "string" ? evidence.value : JSON.stringify(evidence.value, null, 2))
-    : evidence.kind === "absent" ? "Known absence" : "Unknown — no proven evidence";
+
+// Plain render helpers, called inline: the card stays hook-free and never mounts inner components.
+function evidence(title, side) {
+  const value = side.kind === "known" ? (typeof side.value === "string" ? side.value : JSON.stringify(side.value, null, 2))
+    : side.kind === "absent" ? "Not present" : "Not known";
   const preview = boundedSourceText(value);
   return h("section", { className: "oms-source-side" }, h("h5", null, title),
     h("pre", { tabIndex: 0, "aria-label": title }, preview.text), preview.truncated ? h("p", null, "Bounded excerpt") : null);
 }
+function choiceLabel(option) {
+  return [option.label, option.note ? h("span", { className: "oms-source-note" }, option.note) : null];
+}
 
-export function SourceUpdateCard({ update, title, draft: controlledDraft, partFingerprints = {}, ownership = {}, ref,
-  onDraftChange, onSaveDraft, onApply, onSkip, onAdopt, onRecheck, renderFile,
+export function SourceUpdateCard({ update, title, draft: controlledDraft, partFingerprints = {}, ownership = {}, ref, now,
+  onDraftChange, onApply, onSkip, onAdopt, onRecheck, onDeleteSkill, renderFile,
   busy = false, loading = false, error, unavailable, freshness = "fresh" }) {
   if (loading) return h(Notice, null, "Loading source comparison…");
   if (unavailable) return h(Notice, null, unavailable);
@@ -87,90 +219,159 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
   const closed = update.status !== "open";
   const draft = controlledDraft ?? initialSourceDraft(update);
   const state = sourceCardState(update, draft, partFingerprints);
-  const disabled = busy || !!error || freshness !== "fresh" || state.stale || update.status !== "open";
-  const recheckDisabled = busy || !!error || update.status !== "open";
+  const disabled = busy || !!error || freshness !== "fresh" || state.stale || closed;
+  const recheckDisabled = busy || !!error || closed;
   const canEdit = !disabled && !!onDraftChange;
-  const body = { skill_id: update.plan.skill.skill_id, fingerprint: update.plan.fingerprint };
-  const edit = next => { if (canEdit) onDraftChange(next); };
-  const decide = (part_id, choice, merged_text = null) => {
-    const change = update.plan.changes.find(row => row.part_id === part_id);
-    const conflict = update.plan.conflicts.find(row => row.part_id === part_id);
-    if (!change || !partFingerprints[part_id] || (choice && !allowedChoices(change, conflict).includes(choice))) return;
-    const choices = draft.choices.filter(row => row.part_id !== part_id);
-    if (choice) choices.push({ part_id, part_fingerprint: partFingerprints[part_id], choice, merged_text: choice === "merged_text" ? merged_text ?? "" : null });
-    edit({ ...draft, choices, removal_consents: draft.removal_consents.filter(id => id !== part_id) });
-  };
-  const action = (callback, enabled, payload) => () => { if (!disabled && enabled && callback) callback(payload); };
   const heldInstall = update.held_install === true;
-  // After a recheck passes the plan has no hold flag and no findings: the skill
-  // is still new and not live until Apply, but nothing holds it any more.
-  const stillHeld = heldInstall && (!!update.check_findings?.length
-    || update.plan.flags.some(flag => ["safety_hold", "required_check_unavailable"].includes(flag)));
+  const github = update.plan.origin.kind === "github";
   const name = title || update.plan.skill.skill_id;
-  return h(Panel, { title: stillHeld ? `New skill held for review: ${name}` : heldInstall ? `New skill from GitHub: ${name}` : name, className: "oms-source-card", "aria-busy": busy },
-    h(SourceStatus, { status: closed ? update.status : "awaiting_review", flags: closed ? [] : update.plan.flags, ref }),
-    closed && update.plan.flags.length ? h("p", null, "Flags recorded at review: ", update.plan.flags.map(flag => Object.hasOwn(sourceFlagLabels, flag) ? sourceFlagLabels[flag] : flag.replaceAll("_", " ")).join("; ")) : null,
-    heldInstall && !closed ? h("section", { className: "oms-source-held", "aria-label": stillHeld ? "Why this is held" : "New skill" },
-      stillHeld ? h("h4", null, "Why this is held") : null,
-      !stillHeld ? null : update.check_findings?.length ? h("ul", null, update.check_findings.map((finding, index) => {
-        // A finding in a supporting file opens that file's change row, where its preview is (spec 7.4).
-        const file = finding.path && update.plan.changes.some(change => change.part_id === `file:${finding.path}`) ? `file:${finding.path}` : null;
-        return h("li", { key: `${finding.part_id}-${finding.line}-${index}` }, finding.summary,
-          file ? h(Fragment, null, " ", h(Button, { variant: "secondary", "aria-label": `Show ${finding.path} on this card`, onClick: showChange(file) }, "Show file")) : null);
-      })) : h("p", null, "Required checks hold this new skill."),
-      h("p", null, "Choose the parts to install and apply, or delete this skill. It is not live until you apply."),
-      !state.taken ? h("p", { role: "status" }, "Choose at least one part to install, or delete this skill.") : null) : null,
-    h("p", null, closed ? "Recorded historical comparison. The OMS side shows content at review time. This update no longer accepts decisions."
-      : "Review the whole skill. Local name and domain stay unchanged. Saving choices does not change live content; publishing is separate."),
-    h("dl", { className: "oms-source-metadata" },
-      h("div", null, h("dt", null, "Origin"), h("dd", null, update.plan.origin.kind)),
-      h("div", null, h("dt", null, "Base snapshot"), h("dd", null, update.plan.base?.snapshot_id || "Unknown — first reconciliation")),
-      h("div", null, h("dt", null, "Incoming snapshot"), h("dd", null, update.plan.incoming.snapshot_id)),
-      h("div", null, h("dt", null, "Review revision"), h("dd", null, `${update.generation} · content ${update.plan.fingerprint.content_generation} · binding ${update.plan.fingerprint.binding_generation}`))),
-    error ? h(Notice, { kind: "error" }, error) : null,
-    closed ? null : state.stale || freshness === "stale" ? h(Notice, { kind: "error" }, "This draft is out of date. Refresh the comparison before deciding.")
-      : freshness === "unavailable" ? h(Notice, null, "Freshness could not be verified. Decisions are unavailable.")
-        : h("p", { role: "status" }, state.saved ? "Choices match the saved review." : "Unsaved choices — save before Apply."),
-    !closed && update.resolved_check && state.saved ? h("p", { role: "status" }, update.resolved_check.state === "passed"
-      ? "Saved choices passed the required checks. Original source warnings remain visible."
-      : update.resolved_check.state === "held" ? "Required checks still hold this selection." : "Required checks for this selection are unavailable.") : null,
+  const body = { skill_id: update.plan.skill.skill_id, fingerprint: update.plan.fingerprint };
+  const parts = sourceReviewParts(update);
+  const changes = new Map(update.plan.changes.map(change => [change.part_id, change]));
+  const conflicts = new Map(update.plan.conflicts.map(conflict => [conflict.part_id, conflict]));
+  const effective = new Map(state.choices.map(choice => [choice.part_id, choice]));
+  const optionsFor = part => sourceChoiceOptions(update, changes.get(part.part_id), part, conflicts.get(part.part_id));
+
+  const toChoice = (part_id, option, merged_text) => ({ part_id, part_fingerprint: partFingerprints[part_id], choice: option.choice,
+    merged_text: option.choice === "merged_text" ? merged_text ?? prefill(changes.get(part_id)) : null,
+    ...(option.acknowledged ? { acknowledged: [...option.acknowledged] } : {}) });
+  const decide = (part_id, option, merged_text) => {
+    if (!canEdit || !partFingerprints[part_id]) return;
+    const choices = draft.choices.filter(row => row.part_id !== part_id);
+    choices.push(toChoice(part_id, option, merged_text));
+    onDraftChange({ ...draft, choices });
+  };
+  const decideMany = (members, optionFor) => {
+    if (!canEdit) return;
+    let choices = [...draft.choices];
+    members.forEach((part, index) => {
+      if (!partFingerprints[part.part_id]) return;
+      choices = choices.filter(row => row.part_id !== part.part_id);
+      choices.push(toChoice(part.part_id, optionFor(index)));
+    });
+    onDraftChange({ ...draft, choices });
+  };
+  const leaveOut = (part, checked) => {
+    if (!canEdit || !partFingerprints[part.part_id]) return;
+    const choices = draft.choices.filter(row => row.part_id !== part.part_id);
+    if (checked) choices.push({ part_id: part.part_id, part_fingerprint: partFingerprints[part.part_id], choice: "keep_oms", merged_text: null });
+    onDraftChange({ ...draft, choices });
+  };
+  const act = (callback, payload) => () => { if (!disabled && callback) callback(payload); };
+
+  const comparison = change => change.kind === "file" && renderFile ? renderFile(change) : h("div", { className: "oms-source-columns" },
+    change.base.kind === "known" ? evidence("Last installed", change.base) : null,
+    heldInstall ? null : evidence("In OMS now", change.local),
+    evidence("On GitHub", change.incoming));
+
+  const item = part => {
+    const change = changes.get(part.part_id);
+    if (!change) return null;
+    const identified = !!partFingerprints[part.part_id];
+    const editable = canEdit && identified;
+    const chosen = effective.get(part.part_id);
+    const linked = change.linked_removals?.length ?? 0;
+    const reasons = [...new Set([...part.risks.map(risk => SOURCE_RISK_LABELS[risk] ?? SOURCE_RISK_LABELS.other), ...sourceFindingReasons(part.findings),
+      linked ? `Replaces ${plural(linked, "part", "parts")} that GitHub removed; taking it removes ${linked === 1 ? "that part" : "them"} in OMS.` : null])].filter(Boolean);
+    return h("section", { key: part.part_id, id: changeId(part.part_id), tabIndex: -1, className: "oms-source-item", "aria-label": `Item ${part.label}` },
+      h("h4", null, part.label),
+      reasons.length ? h("ul", { className: "oms-source-reasons" }, reasons.map(reason => h("li", { key: reason }, reason))) : null,
+      h("details", { className: "oms-source-show" }, h("summary", null, "Show"), comparison(change)),
+      h("fieldset", { className: "oms-source-choices", role: "radiogroup", "aria-label": `Decision for ${part.part_id}` },
+        optionsFor(part).map(option => h("label", { key: option.choice, className: "oms-source-check" },
+          h("input", { type: "radio", name: `choice-${update.update_id}-${changeId(part.part_id)}`, "aria-label": `${option.label} for ${part.label}`,
+            checked: isOption(chosen, option), disabled: !editable, onChange: () => decide(part.part_id, option) }),
+          ...choiceLabel(option)))),
+      chosen?.choice === "merged_text" ? h("label", { className: "oms-source-field" }, "Your text", h("textarea", {
+        "aria-label": `Text for ${part.label}`, value: chosen.merged_text ?? "", rows: 6, disabled: !editable,
+        onChange: event => decide(part.part_id, { choice: "merged_text" }, event.target.value) })) : null,
+      identified ? null : h("p", null, "Part revision unavailable. Refresh before making choices."));
+  };
+
+  const group = row => {
+    const members = row.parts;
+    return h("section", { key: row.risk, className: "oms-source-group", "aria-label": `${row.label}: ${members.length} items` },
+      h("h4", null, `${row.label} (${members.length})`),
+      h("ul", null, members.map(part => h("li", { key: part.part_id }, part.label))),
+      h("fieldset", { className: "oms-source-choices", role: "radiogroup", "aria-label": `Decision for every item in ${row.label}` },
+        sourceGroupOptions(update, row).map(option => h("label", { key: option.choice, className: "oms-source-check" },
+          h("input", { type: "radio", name: `group-${update.update_id}-${row.risk}`, "aria-label": option.label, disabled: !canEdit,
+            checked: members.every((part, index) => isOption(effective.get(part.part_id), option.optionFor(index))),
+            onChange: () => decideMany(members, option.optionFor) }),
+          ...choiceLabel(option)))),
+      h("details", { className: "oms-source-each" }, h("summary", null, "Choose each"), members.map(item)));
+  };
+
+  const needs = sourceNeedsYou(update);
+  const safe = Object.values(parts).filter(part => part.attention === "safe" && changes.has(part.part_id));
+  // Only automatic changes that write something are listed (ruling R8).
+  const automatic = Object.values(parts).filter(part => part.attention === "automatic" && changes.has(part.part_id) && changes.get(part.part_id).action !== "keep");
+  const safeSummary = sourceSafeSummary(update, state.choices);
+  const safeItem = part => h("details", { key: part.part_id, className: "oms-source-safe-item" }, h("summary", null, part.label),
+    comparison(changes.get(part.part_id)),
+    h("label", { className: "oms-source-check" }, h("input", { type: "checkbox", "aria-label": `Leave out ${part.label}`,
+      checked: effective.get(part.part_id)?.choice === "keep_oms",
+      disabled: !canEdit || !partFingerprints[part.part_id] || !optionsFor(part).some(option => option.choice === "keep_oms"),
+      onChange: event => leaveOut(part, event.target.checked) }), "Leave out"));
+  const automaticItem = part => h("details", { key: part.part_id, className: "oms-source-safe-item" }, h("summary", null, part.label), comparison(changes.get(part.part_id)));
+
+  // The decision column: the effective choice on an open card, the recorded one on a closed card.
+  const decisionLabel = change => {
+    const choice = closed ? draft.choices.find(row => row.part_id === change.part_id) : effective.get(change.part_id);
+    const part = parts[change.part_id];
+    if (!choice || !part) return "";
+    const options = optionsFor(part);
+    return (options.find(option => isOption(choice, option)) ?? options.find(option => option.choice === choice.choice))?.label ?? "";
+  };
+  const owner = id => Object.hasOwn(OWNERSHIP, ownership[id] ?? "") ? OWNERSHIP[ownership[id]] : OWNERSHIP.unknown;
+  const flags = update.plan.flags.map(flag => Object.hasOwn(sourceFlagLabels, flag) ? sourceFlagLabels[flag] : words(flag));
+  const fact = (term, ...detail) => h("div", { key: term }, h("dt", null, term), h("dd", null, ...detail));
+  const fp = update.plan.fingerprint;
+  const verb = heldInstall ? "install" : "apply";
+
+  return h(Panel, { title: heldInstall ? `New skill from GitHub: ${name}` : github ? `Update from GitHub: ${name}` : `Update from a local package: ${name}`,
+    className: "oms-source-card", "aria-busy": busy },
+    github ? h(SourceRepositoryLine, { repository: update.repository ?? null, now }) : null,
+    closed ? h("p", null, "Recorded historical comparison. The OMS side shows content at review time. This update no longer accepts decisions.")
+      : h("p", { role: "status", className: "oms-source-sentence" }, sourceStatusSentence(update, state)),
+    !closed && error ? h(Notice, { kind: "error" }, error) : null,
+    !closed && (state.stale || freshness === "stale") ? h(Notice, { kind: "error" }, "This card is out of date. Check safety again before deciding.") : null,
+    !closed && freshness === "unavailable" ? h(Notice, null, "Freshness could not be verified. Decisions are unavailable.") : null,
+    !closed && state.held ? h(Notice, null, "Required checks still hold this selection.") : null,
     !closed && !state.validChoices ? h(Notice, { kind: "error" }, "A choice is incomplete, no longer permitted or belongs to a different part revision.") : null,
-    update.plan.changes.map(change => {
-      const conflict = update.plan.conflicts.find(row => row.part_id === change.part_id);
-      const choice = draft.choices.find(row => row.part_id === change.part_id);
-      const allowed = allowedChoices(change, conflict);
-      const identified = !!partFingerprints[change.part_id];
-      const removable = removes(change) || change.linked_removals?.includes(change.part_id);
-      const editable = canEdit && identified;
-      return h("section", { key: change.part_id, id: changeId(change.part_id), tabIndex: -1, className: "oms-source-part", "aria-label": `Change ${change.part_id}` },
-        h("h3", null, change.part_id), h("p", null, `${change.kind} · ${change.action}`),
-        h("p", null, Object.hasOwn(OWNERSHIP, ownership[change.part_id]) ? OWNERSHIP[ownership[change.part_id]] : OWNERSHIP.unknown),
-        conflict ? h("p", null, conflict.reason) : null,
-        h("div", { className: "oms-source-columns" }, h(Evidence, { title: "Base (B)", evidence: change.base }),
-          h(Evidence, { title: "Current OMS (L)", evidence: change.local }), h(Evidence, { title: "Incoming (U)", evidence: change.incoming })),
-        change.kind === "file" && renderFile ? renderFile(change) : null,
-        !closed && conflict ? h("label", { className: "oms-source-field" }, "Decision", h("select", { value: choice?.choice ?? "", disabled: !editable, "aria-label": `Decision for ${change.part_id}`,
-          onChange: event => decide(change.part_id, event.target.value) }, h("option", { value: "" }, "Choose a decision"), allowed.map(value => h("option", { key: value, value }, CHOICES[value])))) : null,
-        !closed && !identified && (conflict || removable) ? h("p", null, "Part revision unavailable. Refresh before making choices.") : null,
-        closed && choice ? h("p", null, `Recorded decision: ${CHOICES[choice.choice]}`) : null,
-        closed && choice?.choice === "merged_text" ? h("section", { className: "oms-source-side" }, h("h5", null, "Recorded merged text"), h("pre", { tabIndex: 0, "aria-label": `Recorded merged text for ${change.part_id}` }, boundedSourceText(choice.merged_text).text)) : null,
-        !closed && choice?.choice === "merged_text" && allowed.includes("merged_text") ? h("label", { className: "oms-source-field" }, "Human-written replacement", h("textarea", {
-          value: choice.merged_text ?? "", rows: 6, disabled: !editable, "aria-label": `Merged text for ${change.part_id}`,
-          onChange: event => decide(change.part_id, "merged_text", event.target.value),
-        })) : null,
-        !closed && removable && allowed.includes("keep_oms") ? h("label", { className: "oms-source-check" }, h("input", { type: "checkbox", checked: choice?.choice === "keep_oms", disabled: !editable,
-          "aria-label": `Keep ${change.part_id}`, onChange: event => decide(change.part_id, event.target.checked ? "keep_oms" : "") }), "Keep this current OMS part") : null);
-    }),
-    !closed && state.groups.length ? h("fieldset", { className: "oms-source-removals", disabled: !canEdit }, h("legend", null, "Explicit removal consent"),
-      h("p", null, "Linked removals are reviewed together. Keep an individual part above to exclude it from removal."),
-      state.groups.map((group, index) => h("label", { key: group.join("|"), className: "oms-source-check" }, h("input", { type: "checkbox", checked: group.every(id => draft.removal_consents.includes(id)),
-        "aria-label": `Consent to remove group ${index + 1}`, onChange: event => edit({ ...draft, removal_consents: event.target.checked
-          ? [...new Set([...draft.removal_consents, ...group])] : draft.removal_consents.filter(id => !group.includes(id)) }) }), `Remove group ${index + 1}: ${group.join(", ")}`))) : null,
-    !closed && !heldInstall && onAdopt ? h("p", null, "Keep-current-and-adopt advances only this source baseline. Current content and existing safety holds are preserved.") : null,
+    !closed && heldInstall && !state.taken ? h("p", { role: "status" }, "Choose at least one part to install, or delete this skill.") : null,
+    !closed && update.summary?.whole_skill?.length ? h("section", { className: "oms-source-whole", "aria-label": "Held for the whole skill" },
+      h("h3", null, "Held for the whole skill"),
+      h("ul", null, update.summary.whole_skill.map((finding, index) => h("li", { key: `${finding.category}-${index}` }, finding.summary))),
+      h("p", null, `These do not belong to one part. OMS checks them again when you ${verb}.`)) : null,
+    !closed && needs.length ? h("section", { className: "oms-source-needs", "aria-label": "Needs you" }, h("h3", null, "Needs you"),
+      needs.map(row => row.parts.length === 1 ? item(row.parts[0]) : group(row))) : null,
+    !closed && (safe.length || automatic.length) ? h("section", { className: "oms-source-safe", "aria-label": "Passed the checks" },
+      safeSummary ? h("p", null, safeSummary) : null,
+      automatic.length ? h("p", null, `${plural(automatic.length, "other change applies", "other changes apply")} with the update.`) : null,
+      h("details", { className: "oms-source-list" }, h("summary", null, "Show"),
+        KIND_ORDER.map(kind => [kind, safe.filter(part => part.kind === kind)]).filter(([, members]) => members.length)
+          .map(([kind, members]) => h("div", { key: kind }, h("h5", null, `${capital(KIND_NOUNS[kind][1])} (${members.length})`), members.map(safeItem))),
+        automatic.length ? h("div", null, h("h5", null, "Applied with the update"), automatic.map(automaticItem)) : null)) : null,
     !closed ? h("div", { className: "oms-source-actions" },
-      onSaveDraft ? h(Button, { variant: "secondary", disabled: disabled || !state.canSave, onClick: action(onSaveDraft, state.canSave, { ...body, choices: draft.choices }) }, "Save choices") : null,
-      onApply ? h(Button, { disabled: disabled || !state.canApply, onClick: action(onApply, state.canApply, { ...body, removal_consents: draft.removal_consents }) }, "Apply whole skill") : null,
-      onRecheck ? h(Button, { variant: "secondary", disabled: recheckDisabled, onClick: () => { if (!recheckDisabled) onRecheck(body); } }, "Recheck safety") : null,
-      onSkip && !heldInstall ? h(Button, { variant: "secondary", disabled, onClick: action(onSkip, true, body) }, "Skip this version") : null,
-      onAdopt && !heldInstall ? h(Button, { variant: "secondary", disabled, onClick: action(onAdopt, true, body) }, "Keep all current OMS content and adopt this revision") : null) : null);
+      onApply ? h(Button, { disabled: disabled || !state.canApply, onClick: () => {
+        if (!disabled && state.canApply) onApply({ ...body, choices: state.choices, removal_consents: [...new Set(state.groups.flat())], save: !state.saved });
+      } }, heldInstall ? "Install skill" : "Apply update") : null,
+      heldInstall && onDeleteSkill ? h(Button, { variant: "secondary", disabled: busy, onClick: () => { if (!busy) onDeleteSkill(); } }, "Delete skill") : null,
+      onSkip && !heldInstall ? h(Button, { variant: "secondary", disabled, onClick: act(onSkip, body) }, "Skip this version") : null,
+      onAdopt && !heldInstall ? h(Button, { variant: "secondary", disabled, onClick: act(onAdopt, body) }, "Keep my version and mark this update as seen") : null,
+      onRecheck ? h(Button, { variant: "secondary", disabled: recheckDisabled, onClick: () => { if (!recheckDisabled) onRecheck(body); } }, "Check safety again") : null) : null,
+    h("details", { className: "oms-source-technical" }, h("summary", null, "Technical details"),
+      h("dl", { className: "oms-source-metadata" },
+        fact("Origin", update.plan.origin.kind),
+        fact("Base snapshot", update.plan.base?.snapshot_id || "Unknown (first reconciliation)"),
+        fact("Incoming snapshot", update.plan.incoming.snapshot_id),
+        fact("Review revision", `${update.generation} · content ${fp.content_generation} · binding ${fp.binding_generation}`),
+        fact("Flags", flags.length ? flags.join("; ") : "None"),
+        ref ? fact("Ref", `${ref.kind}: ${ref.name}`, ...(ref.commit ? [" ", h("code", null, ref.commit)] : [])) : null),
+      h("div", { className: "oms-source-table" }, h("table", { className: "oms-source-parts" },
+        h("thead", null, h("tr", null, ["Part", "Kind", "Action", "Reason", "Ownership", "Decision"].map(column => h("th", { key: column, scope: "col" }, column)))),
+        h("tbody", null, update.plan.changes.map(change => h("tr", { key: change.part_id },
+          h("td", null, change.part_id), h("td", null, change.kind), h("td", null, change.action),
+          h("td", null, conflicts.get(change.part_id)?.reason ?? ""), h("td", null, owner(change.part_id)), h("td", null, decisionLabel(change)))))))));
 }

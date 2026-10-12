@@ -73,17 +73,17 @@ test("a selected package's local name and domain boxes line up", async ({ page }
   expect(Math.abs(name.height - domain.height)).toBeLessThanOrEqual(1);
 });
 
-test("merged choices survive save revisions and a lost Apply response recovers the same request", async ({ page }) => {
+test("edited text is saved and applied in one action, and a lost Apply response recovers the same request", async ({ page }) => {
   const state = await sourceFixture(page, { loseApply: true });
   await page.goto("/import/?github=sources&update=update-1");
-  await page.getByLabel("Decision for section:intro").selectOption("merged_text");
-  await page.getByLabel("Merged text for section:intro").fill("Retain receipts and verify each order.");
-  await expect(page.getByRole("button", { name: "Apply whole skill" })).toBeDisabled();
-  await page.getByRole("button", { name: "Save choices", exact: true }).click();
-  await expect(page.getByLabel("Merged text for section:intro")).toHaveValue("Retain receipts and verify each order.");
-  await expect(page.getByRole("button", { name: "Apply whole skill" })).toBeEnabled();
-  await page.getByRole("button", { name: "Apply whole skill" }).click();
+  await page.getByLabel("Edit the text for section:intro").check();
+  // Exact: a substring match would also find the "Edit the text for section:intro" radio.
+  await page.getByLabel("Text for section:intro", { exact: true }).fill("Retain receipts and verify each order.");
+  await page.getByRole("button", { name: "Apply update" }).click();
   await expect.poll(() => state.decisions).toEqual(["apply"]);
+  const draftAt = state.requests.findIndex(row => row.path.endsWith("/draft"));
+  expect(draftAt).toBeGreaterThanOrEqual(0);
+  expect(draftAt).toBeLessThan(state.requests.findIndex(row => row.path.endsWith("/apply")));
   await page.reload();
   await expect(page.getByText("A previous request did not confirm. Your browser sent it but did not get the answer. Check its result before trying again; checking does not start a new request.")).toBeVisible();
   await page.getByRole("button", { name: "Check result" }).click();
@@ -101,22 +101,18 @@ test("Skip and keep-current/adopt use distinct actions and do not claim an apply
   await expect.poll(() => state.decisions).toEqual(["skip"]);
   state.update.status = "open";
   await page.reload();
-  await page.getByRole("button", { name: "Keep all current OMS content and adopt this revision" }).click();
+  await page.getByRole("button", { name: "Keep my version and mark this update as seen" }).click();
   await expect.poll(() => state.decisions).toEqual(["skip", "adopt"]);
   expect(state.requests.filter(row => row.path.endsWith("/apply"))).toHaveLength(0);
 });
 
-test("removal consent and individual Keep are explicit whole-skill decisions", async ({ page }) => {
+test("a removal is one choice, and keeping it sends no consent", async ({ page }) => {
   const state = await sourceFixture(page, { removal: true });
   await page.goto("/import/?github=sources&update=update-1");
-  await expect(page.getByRole("button", { name: "Apply whole skill" })).toBeDisabled();
-  await page.getByLabel("Consent to remove group 1").check();
-  await expect(page.getByRole("button", { name: "Apply whole skill" })).toBeEnabled();
-  await page.getByLabel("Keep section:intro", { exact: true }).check();
-  await expect(page.getByRole("button", { name: "Apply whole skill" })).toBeDisabled();
-  await page.getByRole("button", { name: "Save choices", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Apply whole skill" })).toBeEnabled();
-  await page.getByRole("button", { name: "Apply whole skill" }).click();
+  await expect(page.getByRole("button", { name: "Apply update" })).toBeDisabled();
+  await page.getByLabel("Keep it for section:intro").check();
+  await expect(page.getByRole("button", { name: "Apply update" })).toBeEnabled();
+  await page.getByRole("button", { name: "Apply update" }).click();
   await expect.poll(() => state.decisions).toEqual(["apply"]);
   expect(state.requests.find(row => row.path.endsWith("/apply"))!.body).toMatchObject({ removal_consents: [] });
 });
@@ -246,6 +242,8 @@ test("late binding and card responses cannot restore the old ref after retarget"
   });
   await page.goto("/import/?github=sources&source=source-1&update=update-1");
   await expect(page.getByLabel("Decision for section:intro")).toBeVisible();
+  // The review revision sits in the card's closed "Technical details".
+  await page.locator(".oms-source-technical > summary").click();
   delaying = true;
   await page.getByRole("button", { name: "Check source now", exact: true }).click();
   await expect.poll(() => queued.length).toBe(2);
@@ -268,6 +266,9 @@ test("late binding and card responses cannot restore the old ref after retarget"
 test("file previews remain inert and downloads use authorised side paths", async ({ page }) => {
   const state = await sourceFixture(page, { file: true });
   await page.goto("/import/?github=sources&update=update-1");
+  // A change that needs no decision is listed under the card's closed "Show"; the file opens from there.
+  await page.locator(".oms-source-list > summary").click();
+  await page.locator(".oms-source-safe-item > summary").click();
   await expect(page.getByText("Retained but excluded from publication: reserved output")).toBeVisible();
   await expect(page.locator(".oms-source-files pre")).toHaveText(Array(3).fill("<script>window.bad = true</script>"));
   expect(await page.evaluate(() => "bad" in window)).toBe(false);
@@ -290,8 +291,8 @@ test("the source workspace remains readable with keyboard focus on desktop and m
   for (const width of [1320, 390]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/import/?github=sources&update=update-1");
-    const decision = page.getByLabel("Decision for section:intro");
-    await expect(decision).toBeVisible();
+    await expect(page.getByLabel("Decision for section:intro")).toBeVisible();
+    const decision = page.getByLabel("Keep yours for section:intro");
     await decision.focus(); await expect(decision).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.locator(".oms-source-card").scrollIntoViewIfNeeded();

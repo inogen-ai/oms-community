@@ -81,3 +81,23 @@ export function createSourcesClient({ request, requestBytes, context = (path, in
     },
   };
 }
+
+/**
+ * The review card's one primary action (spec D3). Saves the reviewer's choices when they differ
+ * from the saved draft, reads the card back, and applies only when it is current and its saved
+ * selection passed the required checks; otherwise it stops and the card shows why. Each request
+ * runs through the host's `run`, so each keeps its own idempotency key and recovery.
+ */
+export async function applyReviewedChoices(client, run, updateId, body) {
+  let fingerprint = body.fingerprint;
+  if (body.save) {
+    const draft = { skill_id: body.skill_id, fingerprint: body.fingerprint, choices: body.choices };
+    const saved = await run(key => client.saveDraft(updateId, draft, key), JSON.stringify(["draft", updateId, draft]));
+    if (!saved || saved.state === "failed") return null;
+    const current = await client.update(updateId).catch(() => null);
+    if (!current || current.stale || current.resolved_check?.state !== "passed") return null;
+    fingerprint = current.plan.fingerprint;
+  }
+  const apply = { skill_id: body.skill_id, fingerprint, removal_consents: body.removal_consents };
+  return run(key => client.apply(updateId, apply, key), JSON.stringify(["apply", updateId, apply]));
+}

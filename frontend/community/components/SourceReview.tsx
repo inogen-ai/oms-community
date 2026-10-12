@@ -1,19 +1,22 @@
 "use client";
 import { useEffect, useState } from "react";
-import type { SourceChange, SourceFilePreview } from "@inogen/oms-client";
-import { Button, Notice, SourceFileComparison, SourceUpdateCard, type SourceCardDraft, type SourceFileSide, type SourceFileSidePreview } from "@inogen/oms-ui-core";
-import { useWorkspace, ResourceStatus, message } from "@/lib/workspace";
+import { applyReviewedChoices, type SourceChange, type SourceFilePreview } from "@inogen/oms-client";
+import { Button, Notice, SkillDeleteConfirmation, SourceFileComparison, SourceUpdateCard, type SourceCardDraft, type SourceFileSide, type SourceFileSidePreview } from "@inogen/oms-ui-core";
+import { useWorkspace, useAction, Feedback, ResourceStatus, message } from "@/lib/workspace";
 import { useSourceAction, useSourceResource } from "@/lib/source-state";
 import { saveSourceDownload } from "@/lib/sources";
 import { SourceActionFeedback } from "./SourceOperations";
 
 export default function SourceReview({ id, title, draft, onDraftChange }: { id: string; title?: string; draft?: SourceCardDraft; onDraftChange?: (draft?: SourceCardDraft) => void }) {
-  const { sources, sourceRevision } = useWorkspace();
+  const { api, sources, sourceRevision, refreshSources } = useWorkspace();
   const resource = useSourceResource(() => sources!.client.update(id), [sources, id]);
   const [localDraft, setLocalDraft] = useState<SourceCardDraft | undefined>(undefined);
   const currentDraft = onDraftChange ? draft : localDraft;
   const changeDraft = (value?: SourceCardDraft) => onDraftChange ? onDraftChange(value) : setLocalDraft(value);
   const action = useSourceAction();
+  const deletion = useAction();
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const skillName = title ?? resource.data?.plan.skill.skill_id ?? "";
   useEffect(() => {
     const update = resource.data;
     if (!currentDraft || !update || update.stale || JSON.stringify(currentDraft.fingerprint) === JSON.stringify(update.plan.fingerprint)) return;
@@ -25,15 +28,22 @@ export default function SourceReview({ id, title, draft, onDraftChange }: { id: 
   }, [resource.data, currentDraft]);
   return <><ResourceStatus resource={resource} /><SourceActionFeedback action={action} />
     {resource.data && <><SourceUpdateCard update={resource.data} title={title} draft={currentDraft} partFingerprints={resource.data.part_fingerprints} ownership={resource.data.ownership}
-      busy={action.busy || resource.loading} onDraftChange={changeDraft}
-      onSaveDraft={body => void action.run(key => sources!.client.saveDraft(id, body, key), JSON.stringify(["draft", id, body]))}
-      onApply={body => void action.run(key => sources!.client.apply(id, body, key), JSON.stringify(["apply", id, body]))}
+      busy={action.busy || resource.loading || deletion.busy} onDraftChange={changeDraft}
+      onApply={body => void applyReviewedChoices(sources!.client, action.run, id, body)}
       onSkip={body => void action.run(key => sources!.client.skip(id, body, key), JSON.stringify(["skip", id, body]))}
       onAdopt={body => void action.run(key => sources!.client.adopt(id, body, key), JSON.stringify(["adopt", id, body]))}
       onRecheck={body => void action.run(key => sources!.client.recheck(id, body, key), JSON.stringify(["recheck", id, body]))}
+      onDeleteSkill={resource.data.held_install ? () => setDeleting("") : undefined}
       renderFile={change => <SourceFiles key={change.part_id} id={id} change={resource.data!.plan.changes.find(row => row.part_id === change.part_id)!} revision={sourceRevision} />} />
+      {deleting !== null && <SkillDeleteConfirmation name={skillName} confirmation={deleting} onConfirmationChange={setDeleting} busy={deletion.busy}
+        onCancel={() => setDeleting(null)} onConfirm={() => {
+          if (deleting !== skillName || deletion.busy || !resource.data) return;
+          void deletion.run(() => api.deleteSkill(resource.data!.plan.skill.skill_id), "Skill deleted.", () => { setDeleting(null); refreshSources(); });
+        }} />}
       {currentDraft && <Button variant="secondary" disabled={action.busy} onClick={() => changeDraft(undefined)}>Discard local choices</Button>}
     </>}
+    {/* Outside the card's block: the deletion result stays readable after the deleted skill's card goes. */}
+    <Feedback action={deletion} />
   </>;
 }
 

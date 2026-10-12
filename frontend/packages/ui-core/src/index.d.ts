@@ -47,6 +47,7 @@ export function ManualReviewCard(props: { item: ManualItem; skills: { id: string
 export { collectionPage, CollectionPagination, CollectionViewToggle, CollectionList, CollectionMultiSelect } from "./collection.js";
 export * from "./source-discovery.js";
 export * from "./source-card.js";
+export * from "./source-repository.js";
 export * from "./source-files.js";
 export { SourceStatus, SourceUndo, sourceBulkExclusions } from "./source-status.js";
 export type { SourceRefDisplay, SourceOperationDisplay, SourceOutcomeDisplay, SourceUndoGuard } from "./source-status.js";

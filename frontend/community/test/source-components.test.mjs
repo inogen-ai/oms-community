@@ -33,6 +33,290 @@ function text(node) {
 const button = (tree, label) => nodes(tree).find(node => node.type === "button" && text(node) === label);
 const input = (tree, label) => nodes(tree).find(node => node.props?.["aria-label"] === label);
 const names = tree => nodes(tree).find(node => node.type === "details" && node.props.className === "oms-source-names");
+function visibleText(node) {
+  if (Array.isArray(node)) return node.map(visibleText).join("");
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node !== "object") return String(node);
+  if (typeof node.type === "function") return visibleText(node.type(node.props));
+  if (node.type === "details") return [node.props.children].flat(Infinity).filter(child => child?.type === "summary").map(text).join("");
+  return visibleText(node.props?.children);
+}
+const part = (part_id, kind, overrides = {}) => ({ part_id, kind, label: part_id, attention: "safe", risks: [], default: "use_upstream", overridable: [], findings: [], ...overrides });
+const unknownSide = evidence(null, "unknown"), absentSide = evidence(null, "absent");
+function held(overrides = {}) {
+  const fresh = (part_id, kind, incoming) => change(part_id, { kind, base: unknownSide, local: absentSide, incoming });
+  const changes = [
+    fresh("file:visual-companion.md", "file", evidence({ path: "visual-companion.md", digest: "d1", size: 10, mode: 33188 })),
+    fresh("rule:a", "rule", evidence({ body: "Always write tests" })),
+    fresh("section:s", "section", evidence({ heading: "Overview", body: "Text" })),
+    fresh("file:b.md", "file", evidence({ path: "b.md", digest: "d2", size: 10, mode: 33188 })),
+  ];
+  const conflicts = changes.map(row => ({ part_id: row.part_id, reason: "unknown_base", allowed_choices: row.kind === "file" ? ["keep_oms", "use_upstream"] : ["keep_oms", "use_upstream", "merged_text"] }));
+  const findings = [263, 264, 265].map(line => ({ path: "visual-companion.md", part_id: null, line, category: "phone", summary: `visual-companion.md, line ${line}: looks like a phone number` }));
+  const base = update({ base: null, changes, conflicts, flags: ["conflict", "safety_hold", "first_reconciliation"] });
+  return { ...base, held_install: true,
+    parts: { "file:visual-companion.md": part("file:visual-companion.md", "file", { label: "visual-companion.md", attention: "decide", risks: ["personal_data"], default: null, overridable: ["phone"], findings }),
+      "rule:a": part("rule:a", "rule", { label: "Rule: Always write tests" }), "section:s": part("section:s", "section", { label: "Section: Overview" }),
+      "file:b.md": part("file:b.md", "file", { label: "b.md" }) },
+    summary: { decide: 1, safe: 3, automatic: 0, risks: { personal_data: 1 }, whole_skill: [] },
+    resolved_check: { state: "held", code: "review_decisions_required", reasons: [] }, ...overrides };
+}
+const fingerprints = { "file:visual-companion.md": "fp-file:visual-companion.md", "rule:a": "fp-rule:a", "section:s": "fp-section:s", "file:b.md": "fp-file:b.md" };
+
+test("a held install asks only about the flagged file and installs the rest in one action", () => {
+  let draft, sent;
+  const props = { update: held(), title: "brainstorming", partFingerprints: fingerprints, onDraftChange: value => { draft = value; }, onApply: body => { sent = body; }, onSkip() {}, onAdopt() {} };
+  let tree = component("SourceUpdateCard", props);
+  const shown = text(tree);
+  assert.match(shown, /New skill from GitHub: brainstorming/);
+  assert.match(shown, /1 item needs you\./);
+  assert.match(shown, /Looks like personal data/);
+  assert.match(shown, /3 lines look like a phone number: lines 263, 264, 265/);
+  assert.match(shown, /This keeps the personal data in the skill\./);
+  assert.match(shown, /1 rule, 1 section and 1 file passed the checks\. They will be installed\./);
+  assert.equal(button(tree, "Skip this version"), undefined);
+  assert.equal(button(tree, "Keep my version and mark this update as seen"), undefined);
+  assert.equal(button(tree, "Install skill").props.disabled, true);
+  input(tree, "Take it anyway for visual-companion.md").props.onChange({ target: { checked: true } });
+  assert.deepEqual(draft.choices, [{ part_id: "file:visual-companion.md", part_fingerprint: "fp-file:visual-companion.md", choice: "use_upstream", merged_text: null, acknowledged: ["phone"] }]);
+  tree = component("SourceUpdateCard", { ...props, draft });
+  assert.match(text(tree), /Ready to install\./);
+  button(tree, "Install skill").props.onClick();
+  assert.equal(sent.save, true);
+  assert.deepEqual(sent.removal_consents, []);
+  assert.deepEqual(sent.choices.map(row => [row.part_id, row.choice]).sort(), [["file:b.md", "use_upstream"], ["file:visual-companion.md", "use_upstream"], ["rule:a", "use_upstream"], ["section:s", "use_upstream"]]);
+});
+
+test("choice labels say what happens in the reader's terms", () => {
+  const yours = update(); yours.parts = { "section:intro": part("section:intro", "section", { label: "Section: Intro", attention: "decide", risks: ["your_edits"], default: null }) };
+  let tree = component("SourceUpdateCard", { update: yours, partFingerprints: { "section:intro": "p" }, onDraftChange() {} });
+  for (const label of ["Keep yours for Section: Intro", "Take GitHub's version for Section: Intro", "Edit the text for Section: Intro"]) assert.ok(input(tree, label), label);
+  assert.match(text(tree), /You changed this in OMS/);
+  tree = component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints, onDraftChange() {} });
+  assert.ok(input(tree, "Leave out for visual-companion.md"));
+  assert.ok(input(tree, "Take it anyway for visual-companion.md"));
+  assert.equal(input(tree, "Take GitHub's version for visual-companion.md"), undefined);
+  for (const old of ["Keep OMS", "Use upstream", "Merged text", "Save choices", "Apply whole skill"]) assert.ok(!text(tree).includes(old), old);
+});
+
+test("two scripts are confirmed as a group, with each one a click away", () => {
+  const paths = ["scripts/a.sh", "scripts/b.sh"];
+  const changes = paths.map(path => change(`file:${path}`, { kind: "file", base: unknownSide, local: absentSide, incoming: evidence({ path, digest: path, size: 1, mode: 33261 }) }));
+  const card = { ...update({ base: null, changes, conflicts: changes.map(row => ({ part_id: row.part_id, reason: "unknown_base", allowed_choices: ["keep_oms", "use_upstream"] })) }), held_install: true,
+    parts: Object.fromEntries(paths.map(path => [`file:${path}`, part(`file:${path}`, "file", { label: path, attention: "decide", risks: ["script"], default: null })])) };
+  let draft; const props = { update: card, partFingerprints: { "file:scripts/a.sh": "a", "file:scripts/b.sh": "b" }, onDraftChange: value => { draft = value; }, onApply() {} };
+  let tree = component("SourceUpdateCard", props);
+  assert.match(text(tree), /2 items need you\./);
+  assert.ok(input(tree, "Install these 2 scripts"));
+  const each = nodes(tree).find(node => node.type === "details" && node.props.className === "oms-source-each");
+  assert.equal(text(nodes(each).find(node => node.type === "summary")), "Choose each");
+  input(tree, "Leave them out").props.onChange({ target: { checked: true } });
+  assert.deepEqual(draft.choices.map(row => [row.part_id, row.choice]), [["file:scripts/a.sh", "keep_oms"], ["file:scripts/b.sh", "keep_oms"]]);
+  tree = component("SourceUpdateCard", { ...props, draft });
+  input(tree, "Take GitHub's version for scripts/a.sh").props.onChange({ target: { checked: true } });
+  assert.deepEqual(draft.choices.map(row => [row.part_id, row.choice]).sort(), [["file:scripts/a.sh", "use_upstream"], ["file:scripts/b.sh", "keep_oms"]]);
+});
+
+test("technical details are closed by default and hold the internals", () => {
+  const tree = component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints });
+  const technical = nodes(tree).find(node => node.type === "details" && node.props.className === "oms-source-technical");
+  assert.ok(technical); assert.equal(technical.props.open, undefined);
+  for (const internal of [/upstream-1/, /unknown_base/, /file:visual-companion\.md/, /Review revision/]) {
+    assert.match(text(technical), internal);
+    assert.doesNotMatch(visibleText(tree), internal);
+  }
+});
+
+test("a flagged rule's label and reasons never quote its text; Show and Edit the text start from it", () => {
+  // Review Focus 4 and ruling P4: always-visible text never quotes the flagged text; a disclosure
+  // the reader opens, and the editor an administrator uses to redact it, do.
+  const changes = [change("rule:phone", { kind: "rule", base: unknownSide, local: absentSide, incoming: evidence({ body: "Call +44 20 7946 0958 about receipts." }) })];
+  const card = { ...update({ base: null, changes, conflicts: [{ part_id: "rule:phone", reason: "unknown_base,source_text_hold", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] }] }), held_install: true,
+    parts: { "rule:phone": part("rule:phone", "rule", { label: "Rule with flagged text", attention: "decide", risks: ["personal_data"], default: null, overridable: ["phone"],
+      findings: [{ path: null, part_id: "rule:phone", line: 1, category: "phone", summary: "SKILL.md text, line 1: looks like a phone number" }] }) } };
+  let draft; const props = { update: card, partFingerprints: { "rule:phone": "p" }, onDraftChange: value => { draft = value; } };
+  let tree = component("SourceUpdateCard", props);
+  assert.match(visibleText(tree), /Rule with flagged text/);
+  assert.match(visibleText(tree), /1 line looks like a phone number: line 1/);
+  assert.doesNotMatch(visibleText(tree), /7946/);
+  const show = nodes(tree).find(node => node.type === "details" && node.props.className === "oms-source-show");
+  assert.equal(show.props.open, undefined); assert.match(text(show), /7946/);
+  input(tree, "Edit the text for Rule with flagged text").props.onChange({ target: { checked: true } });
+  assert.deepEqual(draft.choices, [{ part_id: "rule:phone", part_fingerprint: "p", choice: "merged_text", merged_text: "Call +44 20 7946 0958 about receipts." }]);
+  tree = component("SourceUpdateCard", { ...props, draft });
+  assert.equal(input(tree, "Text for Rule with flagged text").props.value, "Call +44 20 7946 0958 about receipts.");
+});
+
+test("several personal-data items share one 'Take all N anyway' choice, and it shows the note", () => {
+  // Ruling P5: group forms of the spec labels; every "anyway" form carries the note.
+  const paths = ["a.md", "b.md"];
+  const changes = paths.map(path => change(`file:${path}`, { kind: "file", base: unknownSide, local: absentSide, incoming: evidence({ path, digest: path, size: 1, mode: 33188 }) }));
+  const card = { ...update({ base: null, changes, conflicts: changes.map(row => ({ part_id: row.part_id, reason: "unknown_base,source_text_hold", allowed_choices: ["keep_oms", "use_upstream"] })) }), held_install: true,
+    parts: Object.fromEntries(paths.map(path => [`file:${path}`, part(`file:${path}`, "file", { label: path, attention: "decide", risks: ["personal_data"], default: null, overridable: ["email", "phone"] })])) };
+  let draft; const tree = component("SourceUpdateCard", { update: card, partFingerprints: { "file:a.md": "a", "file:b.md": "b" }, onDraftChange: value => { draft = value; } });
+  const choices = nodes(tree).find(node => node.type === "fieldset" && node.props["aria-label"] === "Decision for every item in Looks like personal data");
+  assert.match(text(choices), /Take all 2 anyway/);
+  assert.match(text(choices), /This keeps the personal data in the skill\./);
+  assert.match(text(choices), /Leave all out/);
+  input(tree, "Take all 2 anyway").props.onChange({ target: { checked: true } });
+  assert.deepEqual(draft.choices.map(row => [row.part_id, row.choice, row.acknowledged]), [["file:a.md", "use_upstream", ["email", "phone"]], ["file:b.md", "use_upstream", ["email", "phone"]]]);
+});
+
+test("a hold that names no part is shown and does not read as ready", () => {
+  // Review Focus 2.
+  const card = held({ summary: { decide: 0, safe: 4, automatic: 0, risks: {}, whole_skill: [{ path: null, part_id: null, line: null, category: "policy:source_constraint_conflict", summary: "Conflicts with a workspace safety rule (source constraint conflict)" }] } });
+  card.parts = { ...card.parts, "file:visual-companion.md": part("file:visual-companion.md", "file", { label: "visual-companion.md" }) };
+  const shown = visibleText(component("SourceUpdateCard", { update: card, partFingerprints: fingerprints, onApply() {} }));
+  assert.match(shown, /Held for the whole skill/);
+  assert.match(shown, /Conflicts with a workspace safety rule \(source constraint conflict\)/);
+  assert.match(shown, /Held: see the reasons below before you install\./);
+  assert.doesNotMatch(shown, /Ready to install/);
+});
+
+test("removals are one choice that carries their consent", () => {
+  const gone = id => change(id, { kind: "rule", incoming: evidence(null, "absent"), base: evidence("Local"), local: evidence("Local") });
+  const card = update({ changes: [gone("rule:a"), gone("rule:b")], conflicts: ["rule:a", "rule:b"].map(id => ({ part_id: id, reason: "deletion_consent", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] })), flags: ["conflict", "deletion_consent"] });
+  card.parts = Object.fromEntries(["rule:a", "rule:b"].map(id => [id, part(id, "rule", { label: id, attention: "decide", risks: ["removed_upstream"], default: null })]));
+  let draft, sent; const props = { update: card, partFingerprints: { "rule:a": "a", "rule:b": "b" }, onDraftChange: value => { draft = value; }, onApply: body => { sent = body; } };
+  let tree = component("SourceUpdateCard", props);
+  assert.match(text(tree), /Removed on GitHub/);
+  input(tree, "Remove them in OMS too").props.onChange({ target: { checked: true } });
+  tree = component("SourceUpdateCard", { ...props, draft });
+  button(tree, "Apply update").props.onClick();
+  assert.deepEqual([...sent.removal_consents].sort(), ["rule:a", "rule:b"]);
+  input(tree, "Keep them").props.onChange({ target: { checked: true } });
+  tree = component("SourceUpdateCard", { ...props, draft });
+  button(tree, "Apply update").props.onClick();
+  assert.deepEqual(sent.removal_consents, []);
+});
+
+test("editing the text of a removed part keeps it, so it needs no removal consent", () => {
+  const removed = id => change(id, { kind: "rule", incoming: evidence(null, "absent"), base: evidence("Old"), local: evidence("Old") });
+  const card = update({ changes: [change("rule:new", { kind: "rule", base: evidence(null, "absent"), local: evidence(null, "absent"), linked_removals: ["rule:old", "rule:other"] }), removed("rule:old"), removed("rule:other")],
+    conflicts: ["rule:new", "rule:old", "rule:other"].map(id => ({ part_id: id, reason: id === "rule:new" ? "ambiguous_replacement" : "deletion_consent", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] })) });
+  const choices = [{ part_id: "rule:new", part_fingerprint: "n", choice: "use_upstream", merged_text: null },
+    { part_id: "rule:old", part_fingerprint: "o", choice: "merged_text", merged_text: "Merged wording" },
+    { part_id: "rule:other", part_fingerprint: "t", choice: "use_upstream", merged_text: null }];
+  let sent;
+  const tree = component("SourceUpdateCard", { update: card, partFingerprints: { "rule:new": "n", "rule:old": "o", "rule:other": "t" }, draft: { fingerprint, choices, removal_consents: [] }, onApply: body => { sent = body; } });
+  button(tree, "Apply update").props.onClick();
+  assert.deepEqual(sent.removal_consents, ["rule:other"]);
+});
+
+test("a normal update offers Skip and Keep my version, and a held install offers Delete", () => {
+  const calls = [];
+  const normal = update(); normal.parts = { "section:intro": part("section:intro", "section", { label: "Section: Intro", attention: "decide", risks: ["your_edits"], default: null }) };
+  let tree = component("SourceUpdateCard", { update: normal, title: "Writing", partFingerprints: { "section:intro": "p" }, onSkip() {}, onAdopt() {}, onRecheck() {}, onApply() {}, onDeleteSkill: () => calls.push("delete") });
+  assert.match(text(tree), /Update from GitHub: Writing/);
+  for (const label of ["Apply update", "Skip this version", "Keep my version and mark this update as seen", "Check safety again"]) assert.ok(button(tree, label), label);
+  assert.equal(button(tree, "Delete skill"), undefined);
+  tree = component("SourceUpdateCard", { update: held(), title: "brainstorming", partFingerprints: fingerprints, onApply() {}, onDeleteSkill: () => calls.push("delete") });
+  button(tree, "Delete skill").props.onClick();
+  assert.deepEqual(calls, ["delete"]);
+  assert.equal(button(component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints, onApply() {} }), "Delete skill"), undefined);
+  const local = update({ origin: { kind: "local", origin_id: "o", generation: 1 } });
+  assert.match(text(component("SourceUpdateCard", { update: local, title: "Writing", partFingerprints: { "section:intro": "p" } })), /Update from a local package: Writing/);
+});
+
+test("Apply waits while the saved selection is still held", () => {
+  const drafts = [{ part_id: "file:visual-companion.md", part_fingerprint: "fp-file:visual-companion.md", choice: "use_upstream", merged_text: null, acknowledged: ["phone"] },
+    ...["rule:a", "section:s", "file:b.md"].map(id => ({ part_id: id, part_fingerprint: `fp-${id}`, choice: "use_upstream", merged_text: null, acknowledged: [] }))];
+  const card = held({ drafts, resolved_check: { state: "held", code: "source_text_hold", reasons: [] } });
+  const tree = component("SourceUpdateCard", { update: card, partFingerprints: fingerprints, onApply() {} });
+  assert.equal(button(tree, "Install skill").props.disabled, true);
+  assert.match(text(tree), /Required checks still hold this selection\./);
+  const passed = component("SourceUpdateCard", { update: { ...card, resolved_check: { state: "passed", code: "resolved_writes_checked", reasons: [] } }, partFingerprints: fingerprints, onApply() {} });
+  assert.equal(button(passed, "Install skill").props.disabled, false);
+});
+
+test("a card that still needs a decision does not call its empty selection held", () => {
+  // The server holds a card until its decisions are made; that is not a held selection.
+  const card = { ...update(), resolved_check: { state: "held", code: "review_decisions_required", reasons: [] } };
+  const tree = component("SourceUpdateCard", { update: card, partFingerprints: { "section:intro": "p" }, onApply() {} });
+  assert.match(text(tree), /1 item needs you\./);
+  assert.doesNotMatch(text(tree), /Required checks still hold this selection/);
+  // With nothing left to decide, a held selection still blocks Apply and says so.
+  const clean = { ...update({ conflicts: [], changes: [change("section:intro", { action: "replace" })] }), resolved_check: { state: "held", code: "global_check_hold", reasons: [] } };
+  const cleanTree = component("SourceUpdateCard", { update: clean, partFingerprints: { "section:intro": "p" }, onApply() {} });
+  assert.match(text(cleanTree), /Required checks still hold this selection\./);
+  assert.equal(button(cleanTree, "Apply update").props.disabled, true);
+});
+
+test("safe parts are listed under Show and can be left out one by one", () => {
+  let draft; const props = { update: held(), partFingerprints: fingerprints, onDraftChange: value => { draft = value; } };
+  let tree = component("SourceUpdateCard", props);
+  input(tree, "Leave out Rule: Always write tests").props.onChange({ target: { checked: true } });
+  assert.deepEqual(draft.choices, [{ part_id: "rule:a", part_fingerprint: "fp-rule:a", choice: "keep_oms", merged_text: null }]);
+  tree = component("SourceUpdateCard", { ...props, draft });
+  assert.match(text(tree), /1 rule, 1 section and 1 file passed the checks\. They will be installed\. 1 left out\./);
+  input(tree, "Leave out Rule: Always write tests").props.onChange({ target: { checked: false } });
+  assert.deepEqual(draft.choices, []);
+});
+
+test("Edit the text writes the reader's own wording and is never offered for a file", () => {
+  let draft; const card = update(); card.parts = { "section:intro": part("section:intro", "section", { label: "Section: Intro", attention: "decide", risks: ["your_edits"], default: null }) };
+  const props = { update: card, partFingerprints: { "section:intro": "part-1" }, onDraftChange: value => { draft = value; } };
+  let tree = component("SourceUpdateCard", props);
+  input(tree, "Edit the text for Section: Intro").props.onChange({ target: { checked: true } });
+  assert.equal(draft.choices[0].merged_text, "Upstream text");
+  tree = component("SourceUpdateCard", { ...props, draft });
+  input(tree, "Text for Section: Intro").props.onChange({ target: { value: "Human wording" } });
+  assert.equal(draft.choices[0].merged_text, "Human wording");
+  const file = update({ changes: [change("file:script.sh", { kind: "file" })], conflicts: [{ part_id: "file:script.sh", reason: "local_divergence", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] }] });
+  assert.equal(input(component("SourceUpdateCard", { update: file, partFingerprints: { "file:script.sh": "f" } }), "Edit the text for file:script.sh"), undefined);
+});
+
+test("a stale card keeps Check safety again and a closed card has no controls", () => {
+  let called;
+  let tree = component("SourceUpdateCard", { update: { ...held(), stale: true }, partFingerprints: fingerprints, onApply() {}, onRecheck: body => { called = body; } });
+  assert.equal(button(tree, "Install skill").props.disabled, true);
+  assert.equal(input(tree, "Leave out for visual-companion.md").props.disabled, true);
+  button(tree, "Check safety again").props.onClick();
+  assert.deepEqual(called, { skill_id: "skill-1", fingerprint });
+  tree = component("SourceUpdateCard", { update: held(), partFingerprints: fingerprints, draft: { fingerprint: { ...fingerprint, content_generation: 9 }, choices: [], removal_consents: [] }, onApply() {} });
+  assert.equal(button(tree, "Install skill").props.disabled, true); assert.match(text(tree), /out of date/i);
+  for (const status of ["applied", "skipped", "adopted", "superseded", "closed"]) {
+    tree = component("SourceUpdateCard", { update: { ...held(), status }, onApply() {}, onSkip() {}, onAdopt() {}, onRecheck() {} });
+    assert.match(text(tree), /recorded historical comparison/i);
+    assert.equal(nodes(tree).filter(node => ["button", "select", "textarea", "input"].includes(node.type)).length, 0);
+  }
+});
+
+test("a card from a server without triage still asks about every conflict", () => {
+  let draft;
+  const tree = component("SourceUpdateCard", { update: update(), partFingerprints: { "section:intro": "part-1" }, onDraftChange: value => { draft = value; } });
+  assert.match(text(tree), /1 item needs you\./);
+  input(tree, "Keep yours for section:intro").props.onChange({ target: { checked: true } });
+  assert.equal(draft.choices[0].choice, "keep_oms");
+});
+
+test("finding reasons count lines and never need the matched text", () => {
+  const f = (category, line) => ({ path: "a.md", part_id: null, line, category, summary: "" });
+  assert.deepEqual(ui.sourceFindingReasons([f("phone", 263), f("phone", 264), f("phone", 265), f("phone", 265)]), ["3 lines look like a phone number: lines 263, 264, 265"]);
+  assert.deepEqual(ui.sourceFindingReasons([f("email", 4)]), ["1 line looks like an email address: line 4"]);
+  assert.deepEqual(ui.sourceFindingReasons([f("injection:instruction-override", null)]), ["Looks like instructions to an AI (instruction override)"]);
+  assert.deepEqual(ui.sourceFindingReasons([f("file_size", null)]), ["The file is larger than 10 MB"]);
+  assert.deepEqual(ui.sourceFindingReasons([f("check_unavailable:text_check_limit", null)]), ["A required check could not run (text check limit)"]);
+  assert.deepEqual(ui.sourceFindingReasons([f("policy:source_constraint_conflict", null)]), ["Conflicts with a workspace safety rule (source constraint conflict)"]);
+  assert.deepEqual(ui.sourceFindingReasons(Array.from({ length: 12 }, (_, index) => f("phone", index + 1))), ["12 lines look like a phone number: lines 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 2 more"]);
+});
+
+test("the repository line shows facts and concerns, or says they are unavailable", () => {
+  const now = new Date("2026-10-12T12:00:00Z");
+  const repository = { name: "obra/superpowers", url: "https://github.com/obra/superpowers", concerns: [{ code: "few_stars", label: "Fewer than 10 stars" }],
+    facts: { full_name: "obra/superpowers", description: null, stars: 3, forks: 0, archived: false, disabled: false, is_fork: false, licence: "MIT", created_at: "2025-01-01T00:00:00Z", pushed_at: "2026-10-10T12:00:00Z", default_branch: "main", fetched_at: "2026-10-12T11:00:00Z" } };
+  let html = renderToStaticMarkup(h(ui.SourceRepositoryLine, { repository, now }));
+  assert.match(html, /href="https:\/\/github\.com\/obra\/superpowers"/);
+  for (const fact of ["obra/superpowers", "3 stars", "MIT", "updated 2 days ago", "Fewer than 10 stars"]) assert.ok(html.includes(fact), fact);
+  html = renderToStaticMarkup(h(ui.SourceRepositoryLine, { repository: { ...repository, facts: null, concerns: [] }, now }));
+  assert.match(html, /Repository facts unavailable/);
+  assert.equal(ui.sourceUpdatedAgo("2026-10-12T11:59:30Z", now), "updated just now");
+  assert.equal(ui.sourceUpdatedAgo("2026-10-12T11:00:00Z", now), "updated 1 hour ago");
+  assert.equal(ui.sourceUpdatedAgo("2026-08-01T12:00:00Z", now), "updated 2 months ago");
+  assert.equal(ui.sourceRepositoryFacts({ ...repository.facts, stars: 1, licence: "NOASSERTION", pushed_at: null }, now).join(" · "), "1 star · Licence not recognised");
+  assert.match(renderToStaticMarkup(h(ui.SourceUpdateCard, { update: held({ repository }), partFingerprints: fingerprints, now })), /3 stars/);
+  assert.match(renderToStaticMarkup(h(ui.SourceDiscovery, { discovery: { ...discovery, repository }, now, domains: ["docs"], onSelectionsChange() {} })), /Fewer than 10 stars/);
+});
 
 test("source status is inert and only the declared field flag uses the licence label", () => {
   assert.equal(typeof ui.SourceStatus, "function");
@@ -80,61 +364,6 @@ test("installation sends only current selected paths, names and domains", () => 
   assert.equal(button(tree, "Install selected skills").props.disabled, false);
   button(tree, "Install selected skills").props.onClick(); assert.deepEqual(sent, { discovery_id: "d", selections });
 });
-test("Apply requires saved allowed decisions tied to the displayed fingerprint", () => {
-  const card = update();
-  const props = { update: card, partFingerprints: { "section:intro": "part-1" }, ownership: { "section:intro": "shared" }, onDraftChange() {}, onApply() {}, onSaveDraft() {} };
-  let tree = component("SourceUpdateCard", props);
-  assert.equal(button(tree, "Apply whole skill").props.disabled, true);
-  for (const label of ["Shared ownership", "Base (B)", "Current OMS (L)", "Incoming (U)"]) assert.ok(text(tree).includes(label));
-  const choices = [{ part_id: "section:intro", part_fingerprint: "part-1", choice: "keep_oms", merged_text: null }];
-  const draft = { fingerprint, choices, removal_consents: [] };
-  tree = component("SourceUpdateCard", { ...props, draft });
-  assert.equal(button(tree, "Apply whole skill").props.disabled, true); assert.match(text(tree), /Unsaved choices/);
-  tree = component("SourceUpdateCard", { ...props, update: { ...card, drafts: choices }, draft });
-  assert.equal(button(tree, "Apply whole skill").props.disabled, false);
-  tree = component("SourceUpdateCard", { ...props, update: { ...card, drafts: choices }, draft: { ...draft, fingerprint: { ...fingerprint, content_generation: 9 } } });
-  assert.equal(button(tree, "Apply whole skill").props.disabled, true); assert.match(text(tree), /out of date/i);
-});
-test("merged prose is controlled and restricted to permitted prose decisions", () => {
-  let draft; const props = { update: update(), partFingerprints: { "section:intro": "part-1" }, onDraftChange: value => { draft = value; }, onSaveDraft() {} };
-  let tree = component("SourceUpdateCard", props);
-  input(tree, "Decision for section:intro").props.onChange({ target: { value: "merged_text" } });
-  tree = component("SourceUpdateCard", { ...props, draft });
-  input(tree, "Merged text for section:intro").props.onChange({ target: { value: "Human wording" } });
-  assert.equal(draft.choices[0].merged_text, "Human wording");
-  tree = component("SourceUpdateCard", { ...props, update: update({ conflicts: [{ part_id: "section:intro", reason: "Safety hold", allowed_choices: ["merged_text"] }], flags: ["safety_hold"] }), onApply() {} });
-  assert.ok(!text(input(tree, "Decision for section:intro")).includes("Use upstream"));
-  assert.equal(button(tree, "Apply whole skill").props.disabled, true);
-  tree = component("SourceUpdateCard", { ...props, update: update({ changes: [change("file:script.sh", { kind: "file" })], conflicts: [{ part_id: "file:script.sh", reason: "Changed", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] }] }), partFingerprints: { "file:script.sh": "f" } });
-  assert.ok(!text(input(tree, "Decision for file:script.sh")).includes("Merged text"));
-});
-test("deletion groups need consent and individual Keep excludes only that part", () => {
-  const card = update({ changes: [change("section:a", { action: "remove", incoming: evidence(null, "absent"), linked_removals: ["section:b"] }), change("section:b", { action: "remove", incoming: evidence(null, "absent") })], conflicts: [], flags: ["deletion_consent"] });
-  let draft = { fingerprint, choices: [], removal_consents: [] };
-  const props = { update: card, partFingerprints: { "section:a": "a", "section:b": "b" }, onDraftChange: next => { draft = next; }, onApply() {}, onSaveDraft() {} };
-  let tree = component("SourceUpdateCard", { ...props, draft });
-  assert.equal(button(tree, "Apply whole skill").props.disabled, true);
-  input(tree, "Consent to remove group 1").props.onChange({ target: { checked: true } });
-  assert.deepEqual(draft.removal_consents.sort(), ["section:a", "section:b"]);
-  tree = component("SourceUpdateCard", { ...props, draft }); assert.equal(button(tree, "Apply whole skill").props.disabled, false);
-  input(tree, "Keep section:a").props.onChange({ target: { checked: true } });
-  assert.equal(draft.choices.find(row => row.part_id === "section:a").choice, "keep_oms"); assert.deepEqual(draft.removal_consents, ["section:b"]);
-});
-test("a merged-text choice on a linked removal keeps it and drops its consent", () => {
-  const card = update({ changes: [change("rule:new", { kind: "rule", action: "add", local: evidence(null, "absent"), linked_removals: ["rule:old", "rule:other"] }),
-    change("rule:old", { kind: "rule", action: "remove", incoming: evidence(null, "absent") }),
-    change("rule:other", { kind: "rule", action: "remove", incoming: evidence(null, "absent") })],
-    conflicts: [{ part_id: "rule:old", reason: "deletion_consent", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] }], flags: ["deletion_consent"] });
-  const merged = { part_id: "rule:old", choice: "merged_text", merged_text: "Merged wording", part_fingerprint: "old" };
-  card.drafts = [merged];
-  let draft = { fingerprint, choices: [merged], removal_consents: [] };
-  const props = { update: card, partFingerprints: { "rule:new": "n", "rule:old": "old", "rule:other": "other" }, onDraftChange: next => { draft = next; }, onApply() {}, onSaveDraft() {} };
-  let tree = component("SourceUpdateCard", { ...props, draft });
-  assert.equal(button(tree, "Apply whole skill").props.disabled, true);
-  input(tree, "Consent to remove group 1").props.onChange({ target: { checked: true } });
-  assert.deepEqual(draft.removal_consents, ["rule:other"]);
-  tree = component("SourceUpdateCard", { ...props, draft }); assert.equal(button(tree, "Apply whole skill").props.disabled, false);
-});
 test("oversized previews are capped before diff; binary metadata and publication warnings stay visible", () => {
   let tree = component("SourceFileComparison", { path: "guide.md", base: { text: "base" }, local: { text: "local" }, upstream: { text: "line\n".repeat(5000), size: 90000 }, onDownload() {} });
   assert.match(text(tree), /excerpt/i); assert.ok(!renderToStaticMarkup(tree).includes("oms-line-diff__line")); assert.ok(text(tree).length < 12000);
@@ -170,17 +399,6 @@ test("unavailable, loading, error and empty discovery have no enabled mutations"
   }
 });
 
-test("server-stale cards disable decisions while recheck remains available", () => {
-  let called;
-  const tree = component("SourceUpdateCard", { update: { ...update(), stale: true }, partFingerprints: { "section:intro": "p" }, onDraftChange() {}, onApply() {}, onSkip() {}, onAdopt() {}, onRecheck: body => { called = body; } });
-  assert.equal(button(tree, "Apply whole skill").props.disabled, true);
-  assert.equal(button(tree, "Skip this version").props.disabled, true);
-  assert.equal(input(tree, "Decision for section:intro").props.disabled, true);
-  assert.equal(button(tree, "Recheck safety").props.disabled, false);
-  button(tree, "Recheck safety").props.onClick();
-  assert.deepEqual(called, { skill_id: "skill-1", fingerprint });
-});
-
 test("preview bounds also enforce byte limits for multibyte source text", () => {
   assert.equal(typeof ui.boundedSourceText, "function");
   const result = ui.boundedSourceText("😀".repeat(40000));
@@ -194,35 +412,6 @@ test("history distinguishes source evidence from ordinary document restoration",
   assert.equal(historySentence({ cause: "restore" }), "Restored an earlier version");
   const html = renderToStaticMarkup(h(HistoryTimeline, { entries: [{ id: "v", cause: "source_update", source_operation_id: "op-1", source_origin_id: "origin-1", source_revision: "commit-1" }] }));
   assert.match(html, /op-1/); assert.match(html, /origin-1/); assert.match(html, /commit-1/);
-});
-
-test("server-passed saved safety decisions enable Apply without hiding original warnings", () => {
-  for (const choice of [{ choice: "keep_oms", merged_text: null }, { choice: "merged_text", merged_text: "Safe human replacement" }]) {
-    const drafts = [{ part_id: "section:intro", part_fingerprint: "part-1", ...choice }];
-    const card = { ...update({ flags: ["conflict", "safety_hold", "required_check_unavailable"] }), drafts,
-      resolved_check: { format_version: 1, state: "passed", code: "resolved_writes_checked", reasons: [] } };
-    const props = { update: card, partFingerprints: { "section:intro": "part-1" }, onApply() {} };
-    let tree = component("SourceUpdateCard", props);
-    assert.equal(button(tree, "Apply whole skill").props.disabled, false);
-    assert.match(text(tree), /Safety review required/);
-    assert.match(text(tree), /Required check unavailable/);
-    tree = component("SourceUpdateCard", { ...props, draft: { fingerprint, choices: [], removal_consents: [] } });
-    assert.equal(button(tree, "Apply whole skill").props.disabled, true);
-    tree = component("SourceUpdateCard", { ...props, update: { ...card, stale: true } });
-    assert.equal(button(tree, "Apply whole skill").props.disabled, true);
-  }
-});
-
-test("server-held or unavailable resolved checks block Apply even without original safety flags", () => {
-  const drafts = [{ part_id: "section:intro", part_fingerprint: "part-1", choice: "keep_oms", merged_text: null }];
-  for (const state of ["held", "unavailable"]) {
-    const card = { ...update(), drafts, resolved_check: { format_version: 1, state, code: "global_check_hold", reasons: ["policy_hold"] } };
-    const tree = component("SourceUpdateCard", { update: card, partFingerprints: { "section:intro": "part-1" }, onApply() {} });
-    assert.equal(button(tree, "Apply whole skill").props.disabled, true);
-  }
-  const oldCard = { ...update({ flags: ["safety_hold"] }), drafts };
-  const oldTree = component("SourceUpdateCard", { update: oldCard, partFingerprints: { "section:intro": "part-1" }, onApply() {} });
-  assert.equal(button(oldTree, "Apply whole skill").props.disabled, true);
 });
 
 test("discovery rejects backend identity collisions, empty IDs and reserved repository IDs", () => {
@@ -247,16 +436,6 @@ test("automatic discovery names avoid slug collisions without rewriting display 
   const tree = component("SourceDiscovery", { discovery: { ...discovery, packages: { ...discovery.packages, items: [{ ...pkg("a"), upstream_name: "Review guide" }, { ...pkg("b"), upstream_name: "Review-guide" }] } }, domains: ["docs"], defaultDomain: "docs", onSelectionsChange: value => { selections = value; } });
   button(tree, "Select all shown").props.onClick();
   assert.deepEqual(selections.map(row => row.local_name), ["Review guide", "Review-guide 2"]);
-});
-
-test("closed stale cards describe a historical comparison and keep decisions disabled", () => {
-  for (const status of ["applied", "skipped", "adopted", "superseded", "closed"]) {
-    const tree = component("SourceUpdateCard", { update: { ...update(), status, stale: true }, onApply() {}, onSkip() {}, onAdopt() {}, onRecheck() {} });
-    assert.match(text(tree), /recorded historical comparison/i);
-    assert.ok(!text(tree).includes("This draft is out of date"));
-    assert.ok(!text(tree).includes("before deciding"));
-    assert.equal(nodes(tree).filter(node => ["button", "select", "textarea", "input"].includes(node.type)).length, 0);
-  }
 });
 
 test("discovery caps Select all at 100 and lets oversized restored selections be corrected", () => {
@@ -334,67 +513,5 @@ test("source status shows no install summary unless the screen asks for it", () 
     const shown = text(component("SourceStatus", { status: operation.state, operation }));
     assert.doesNotMatch(shown, /installed|held for review/, name);
     assert.match(shown, /s: /, name);
-  }
-});
-test("a held install card explains why it is held and offers no skip or adopt", () => {
-  const findings = [{ path: "SKILL.md", part_id: "section:intro", line: 3, category: "pii", summary: "Looks like a phone number" }, { path: "a.md", part_id: "file:a.md", line: 9, category: "secret", summary: "Looks like a key" }];
-  const base = update({ conflicts: [], flags: [], changes: [change("section:intro", { action: "add" })] });
-  const props = { update: { ...base, held_install: true, check_findings: findings }, title: "Visual", partFingerprints: { "section:intro": "p" }, onSkip() {}, onAdopt() {}, onApply() {}, onSaveDraft() {} };
-  let tree = component("SourceUpdateCard", props);
-  const shown = text(tree);
-  assert.match(shown, /New skill held for review: Visual/); assert.match(shown, /Why this is held/);
-  assert.match(shown, /Looks like a phone number/); assert.match(shown, /Looks like a key/);
-  assert.equal(button(tree, "Skip this version"), undefined);
-  assert.equal(button(tree, "Keep all current OMS content and adopt this revision"), undefined);
-  assert.match(shown, /Choose at least one part to install, or delete this skill\./);
-  assert.equal(button(tree, "Apply whole skill").props.disabled, true);
-  const kept = { part_id: "section:intro", part_fingerprint: "p", choice: "keep_oms", merged_text: null };
-  const taken = { ...kept, choice: "use_upstream" };
-  const fresh = drafts => component("SourceUpdateCard", { ...props, update: { ...props.update, drafts }, draft: { fingerprint, choices: drafts, removal_consents: [] } });
-  assert.match(text(fresh([kept])), /Choose at least one part/);
-  assert.doesNotMatch(text(fresh([taken])), /Choose at least one part/);
-  tree = component("SourceUpdateCard", { ...props, update: update(), onSkip() {}, onAdopt() {} });
-  assert.ok(button(tree, "Skip this version")); assert.ok(button(tree, "Keep all current OMS content and adopt this revision"));
-  assert.doesNotMatch(text(tree), /Why this is held/);
-});
-test("a finding with a path takes the reviewer to that file's change on the card", () => {
-  // Spec 7.4: a row with a path opens that file's preview, which sits in the
-  // file's change row. A button, not a fragment link: the paid console routes on the hash.
-  const findings = [
-    { path: "guide.md", part_id: null, line: 4, category: "phone", summary: "guide.md, line 4: looks like a phone number" },
-    { path: null, part_id: "section:intro", line: null, category: "email", summary: "SKILL.md text: looks like an email address" },
-    { path: "SKILL.md", part_id: null, line: 9, category: "phone", summary: "SKILL.md, line 9: looks like a phone number" },
-  ];
-  const base = update({ conflicts: [], flags: ["safety_hold"], changes: [change("section:intro", { action: "add" }),
-    change("file:guide.md", { kind: "file", action: "add" })] });
-  const tree = component("SourceUpdateCard", { update: { ...base, held_install: true, check_findings: findings }, title: "Visual",
-    partFingerprints: { "section:intro": "p", "file:guide.md": "f" } });
-  const shows = nodes(tree).filter(node => node.type === "button" && /^Show /.test(node.props["aria-label"] ?? ""));
-  // SKILL.md and a projected part have no file change row, so only guide.md gets one.
-  assert.deepEqual(shows.map(node => node.props["aria-label"]), ["Show guide.md on this card"]);
-  const row = nodes(tree).find(node => node.type === "section" && node.props["aria-label"] === "Change file:guide.md");
-  assert.ok(row.props.id); assert.equal(row.props.tabIndex, -1);
-  const other = nodes(tree).find(node => node.type === "section" && node.props["aria-label"] === "Change section:intro");
-  assert.notEqual(other.props.id, row.props.id);
-  const calls = [];
-  globalThis.document = { getElementById: id => id === row.props.id ? { scrollIntoView: () => calls.push("scroll"), focus: () => calls.push("focus") } : null };
-  try { shows[0].props.onClick(); } finally { delete globalThis.document; }
-  assert.deepEqual(calls, ["scroll", "focus"]);
-});
-test("a held install with no hold left is titled as a new skill and drops the hold section", () => {
-  // After a recheck passes, the plan has no hold flag and no findings; the
-  // skill is still not live until Apply, and Skip and Adopt stay hidden.
-  const base = update({ conflicts: [], flags: ["first_reconciliation"], changes: [change("section:intro", { action: "add" })] });
-  const props = { update: { ...base, held_install: true, check_findings: [] }, title: "Visual", partFingerprints: { "section:intro": "p" },
-    onSkip() {}, onAdopt() {}, onApply() {} };
-  const tree = component("SourceUpdateCard", props);
-  const shown = text(tree);
-  assert.match(shown, /New skill from GitHub: Visual/);
-  assert.doesNotMatch(shown, /held for review|Why this is held|Required checks hold this new skill/);
-  assert.match(shown, /It is not live until you apply\./);
-  assert.equal(button(tree, "Skip this version"), undefined);
-  for (const flags of [["safety_hold"], ["required_check_unavailable"]]) {
-    const held = text(component("SourceUpdateCard", { ...props, update: { ...props.update, plan: { ...props.update.plan, flags } } }));
-    assert.match(held, /New skill held for review: Visual/); assert.match(held, /Required checks hold this new skill\./);
   }
 });

@@ -153,3 +153,36 @@ test("safe encoded legacy identifiers remain usable through both transports", as
   await client.requestBytes("/api/files/a%2Eb%25file");
   assert.deepEqual(calls, ["/api/skills/100%25%20verified", "/api/files/a%2Eb%25file"]);
 });
+
+test("reviewed choices are saved, read back and applied, and stop when the card is stale or held", async () => {
+  // Ruling P6a and Review Focus 3: one helper for both hosts; each request goes through the host's run.
+  const { applyReviewedChoices } = clientModule;
+  const given = { content_generation: 1, binding_generation: 1, update_generation: 1, policy_version: "p", local_digest: "l", candidate_digest: "c" };
+  const fresh = { ...given, update_generation: 2 };
+  let view = { stale: false, resolved_check: { state: "passed" }, plan: { fingerprint: fresh } };
+  const calls = [];
+  const client = {
+    saveDraft: async (id, body, key) => { calls.push(["draft", id, body, key]); return { state: "awaiting_review" }; },
+    update: async id => { calls.push(["read", id]); return view; },
+    apply: async (id, body, key) => { calls.push(["apply", id, body, key]); return { state: "complete" }; },
+  };
+  const identities = []; let keys = 0;
+  const run = async (job, identity) => { identities.push(JSON.parse(identity)[0]); return job(`key-${++keys}`); };
+  const choices = [{ part_id: "p", part_fingerprint: "f", choice: "use_upstream", merged_text: null, acknowledged: ["phone"] }];
+  const body = { skill_id: "s", fingerprint: given, choices, removal_consents: ["r"], save: true };
+  assert.deepEqual(await applyReviewedChoices(client, run, "u", body), { state: "complete" });
+  assert.deepEqual(identities, ["draft", "apply"]);
+  assert.deepEqual(calls, [["draft", "u", { skill_id: "s", fingerprint: given, choices }, "key-1"], ["read", "u"],
+    ["apply", "u", { skill_id: "s", fingerprint: fresh, removal_consents: ["r"] }, "key-2"]]);
+  for (const stop of [{ ...view, stale: true }, { ...view, resolved_check: { state: "held" } }]) {
+    view = stop; calls.length = 0;
+    assert.equal(await applyReviewedChoices(client, run, "u", body), null);
+    assert.deepEqual(calls.map(row => row[0]), ["draft", "read"]);
+  }
+  calls.length = 0;
+  assert.equal(await applyReviewedChoices(client, async () => ({ state: "failed" }), "u", body), null);
+  assert.equal(await applyReviewedChoices(client, async () => null, "u", body), null);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await applyReviewedChoices(client, run, "u", { ...body, save: false }), { state: "complete" });
+  assert.deepEqual(calls.map(row => [row[0], row[2].fingerprint]), [["apply", given]]);
+});

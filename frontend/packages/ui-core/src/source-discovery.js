@@ -1,5 +1,6 @@
 import { createElement as h } from "react";
 import { Button, EmptyState, Notice, Panel } from "./primitives.js";
+import { SourceRepositoryLine } from "./source-repository.js";
 import { SourceStatus } from "./source-status.js";
 
 // Match oms.domain.ids.slug so display-name differences cannot hide an ID collision.
@@ -21,7 +22,7 @@ export function initialSourceSelections(discovery, { defaultDomain = "", existin
 }
 
 export function SourceDiscovery({ discovery, selections, onSelectionsChange, onInstall, domains = [], existingNames = [],
-  defaultDomain = "", loading = false, busy = false, error, unavailable, onLoadMore }) {
+  defaultDomain = "", loading = false, busy = false, error, unavailable, onLoadMore, now }) {
   if (loading) return h(Notice, null, "Discovering skill packages…");
   if (unavailable) return h(Notice, null, unavailable);
   if (error && !discovery) return h(Notice, { kind: "error" }, error);
@@ -62,6 +63,7 @@ export function SourceDiscovery({ discovery, selections, onSelectionsChange, onI
   const limit = packages.length > 100 || partial ? " Install at most 100 packages per request." : "";
   return h(Panel, { title: "Discovered skill packages", className: "oms-source-discovery", "aria-busy": busy },
     h(SourceStatus, { status: "complete", ref: discovery.resolved_ref }),
+    h(SourceRepositoryLine, { repository: discovery.repository ?? null, now }),
     h("p", null, "Select packages to install. Local names must produce unique skill IDs; each selected package needs a domain."),
     h("p", { role: "status" }, `${selected.length} of ${packages.length}${partial ? " loaded" : ""} packages selected.${limit}`),
     overLimit ? h(Notice, { kind: "error" }, "Select at most 100 packages before installing. Remove packages or clear the selection.") : null,

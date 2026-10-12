@@ -163,6 +163,12 @@ export interface SourceUpdateView extends SourceUpdate {
 export interface SourceUpdateBody { skill_id: string; fingerprint: PlanFingerprint }
 export interface SourceDraftBody extends SourceUpdateBody { choices: readonly SourceDraftChoice[] }
 export interface SourceApplyBody extends SourceUpdateBody { removal_consents?: readonly string[] }
+/** What the review card's primary action sends: `save` is true when the choices differ from the saved draft. */
+export interface SourceReviewedChoices extends SourceUpdateBody {
+  readonly choices: readonly SourceDraftChoice[]; readonly removal_consents: readonly string[]; readonly save: boolean;
+}
+/** The host's action runner: it gives each request its own idempotency key and recovery, and returns null on failure. */
+export type SourceActionRun = (job: (key: string) => Promise<SourceOperation>, identity: string) => Promise<SourceOperation | null>;
 export interface SourceBulkApplyBody { updates: readonly (SourceApplyBody & { update_id: string })[] }
 export interface SourceSkillGeneration { skill_id: string; content: number; binding: number }
 export interface SourceUndoBody { undo_id: string; skill_id: string; expected_generations: readonly SourceSkillGeneration[]; policy_version: string }
@@ -215,3 +221,9 @@ export interface SourcesClient {
   updateFile(id: string, file: { side: "base" | "local" | "upstream"; path: string; preview: boolean }): Promise<SourceFilePreview | ByteResponse>;
 }
 export function createSourcesClient(options: { request: SourceRequest; requestBytes: SourceByteRequest; context?: SourceRequestContext }): SourcesClient;
+/**
+ * Save (only when body.save), read the card back, stop (null) when the save failed or the card is stale or
+ * not passed, then apply with the fresh fingerprint. `run` is the host's action.run, so each request keeps its own key.
+ */
+export function applyReviewedChoices(client: Pick<SourcesClient, "saveDraft" | "update" | "apply">, run: SourceActionRun,
+                                     updateId: string, body: SourceReviewedChoices): Promise<SourceOperation | null>;
