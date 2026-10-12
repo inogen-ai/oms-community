@@ -122,7 +122,7 @@
     },
     "frontend/community/README.md": {
       "mode": 420,
-      "sha256": "f2c26560aa99702abdb49ab0fa5b7c399d7aa43e467b095e171ee15434241f8e"
+      "sha256": "7b25fcd5b879e9dcd52d0b01bcb3a38c6af2e13d0ea22269d4584eb0b50f6788"
     },
     "frontend/community/app/globals.css": {
       "mode": 420,
@@ -366,15 +366,15 @@
     },
     "frontend/community/next.config.ts": {
       "mode": 420,
-      "sha256": "0e843482a83ca2d460e7896e6167e377880bd46005b0a197acea47ac8e9100b6"
+      "sha256": "11b86729dd4b56d1a38bdb17122147921d03315147b89994f883f799100435ae"
     },
     "frontend/community/package-lock.json": {
       "mode": 420,
-      "sha256": "fcc3f10c609184b62839c7aaba77655e79c7459ceb4eccfcb7cc3b7639a60a62"
+      "sha256": "df22c4438dd6d9259a20ebc524717fbec7392d5a0b46b74d4f01178ee5b6c4c4"
     },
     "frontend/community/package.json": {
       "mode": 420,
-      "sha256": "afcd24cebf5a03abec779348986e6ced0d2523c39956d282bce86726022080b2"
+      "sha256": "0a218eb15668a76c1df63ee100fe6e596facccc186800fb74857ce6b7feb8eb0"
     },
     "frontend/community/playwright.config.ts": {
       "mode": 420,
@@ -430,7 +430,7 @@
     },
     "frontend/packages/client/package.json": {
       "mode": 420,
-      "sha256": "d916bb624813b1d160f9b075544552cc0fa331b97b1921b18d4782736ece5883"
+      "sha256": "51a5c1bce761a19b5de854376423aa1c5a8182aa59c565a2d8d165ca0dbcbeda"
     },
     "frontend/packages/client/src/index.d.ts": {
       "mode": 420,
@@ -486,7 +486,7 @@
     },
     "frontend/packages/ui-core/package.json": {
       "mode": 420,
-      "sha256": "c8f75e941f8f0af93ace5e69f9fbfa6a9bde7c2c2f4b18305e63565b3b2c00e9"
+      "sha256": "ad66b6a120d294bd045893ae35b042fae10e79b75456bd1c49d81b73a3482084"
     },
     "frontend/packages/ui-core/src/assets/GitHub_Invertocat_Black.svg": {
       "mode": 420,
@@ -742,7 +742,7 @@
     },
     "pyproject.toml": {
       "mode": 420,
-      "sha256": "08594c9842358567fcbeff8968bc270f2262cb771a74a1daa5ea0a821fcb2b4d"
+      "sha256": "5d258f2bcfd476fd78e2d08364066db862e346d07405229ba2386415e5e4d50a"
     },
     "release/__init__.py": {
       "mode": 420,
@@ -1194,7 +1194,7 @@
     },
     "src/oms/schema/metadata.py": {
       "mode": 420,
-      "sha256": "c30312f10daa99ffd3a179e9ecf9562429e9e6a0c9f7a4485aa368473bf423f0"
+      "sha256": "40f39af03988d170b37e6da809bb222ae87eb7544aa200de3771ec36f45e3c62"
     },
     "src/oms/schema/migrations/source_identity.py": {
       "mode": 420,
@@ -1206,7 +1206,7 @@
     },
     "src/oms/security/constraint_patterns.py": {
       "mode": 420,
-      "sha256": "e6eaab52f95b770d4eca5b0ebcd2f4f4a12d76fd6d4303569a2d65b6baec47ca"
+      "sha256": "a0da2612782ce205d67c366d4299dd1509de9321bee78f2477969c62430e51ae"
     },
     "src/oms/security/injection.py": {
       "mode": 420,
@@ -1870,7 +1870,7 @@
     },
     "uv.lock": {
       "mode": 420,
-      "sha256": "8e9bbcac1fd98b75e18d2ecba4e9c0dae96e819bc4d232b651e0b04622fc4f9d"
+      "sha256": "b6b71afd56b5a3fb87a5df29abfaabf3b54e7af053993b28c42b6fb863ed7d13"
     }
   },
   "schema_version": 1
