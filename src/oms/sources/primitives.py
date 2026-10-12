@@ -218,6 +218,21 @@ class DiscoveredPackage(Record):
     unsupported_metadata: tuple[str, ...] = ()
 
 
+class RepositoryFacts(Record):
+    full_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", max_length=200)]
+    description: Annotated[str, Field(max_length=500)] | None = None
+    stars: Annotated[int, Field(ge=0, strict=True)]
+    forks: Annotated[int, Field(ge=0, strict=True)]
+    archived: Annotated[bool, Field(strict=True)]
+    disabled: Annotated[bool, Field(strict=True)]
+    is_fork: Annotated[bool, Field(strict=True)]
+    licence: Annotated[str, Field(min_length=1, max_length=100)] | None = None
+    created_at: AwareDatetime
+    pushed_at: AwareDatetime | None = None
+    default_branch: Annotated[str, Field(min_length=1, max_length=255)]
+    fetched_at: AwareDatetime
+
+
 class DiscoveryResult(Record):
     discovery_id: NonEmpty
     tenant_id: NonEmpty

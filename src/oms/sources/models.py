@@ -10,7 +10,7 @@ from oms.domain.types import SkillStatus
 from oms.sources.primitives import (
     AcquiredPackage, DiscoveryRequest, DiscoveryResult, DiscoveredPackage, Evidence, Generation, Generations,
     JSONValue, LocalPackage, ManifestEntry, NonEmpty, OriginRef, PackageRequest, PartKind, PlanFingerprint, Record,
-    RefRequest, ResolvedRef, SnapshotRef,
+    RefRequest, RepositoryFacts, ResolvedRef, SnapshotRef,
 )
 from oms.sources.requests import (
     ApplyRequest, AutomationRequest, BulkApplyRequest, CheckRequest, CreateSourceRequest, DraftChoice, InstallRequest,

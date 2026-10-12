@@ -10,7 +10,6 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
-import ipaddress
 import logging
 from pathlib import Path
 import re
@@ -27,6 +26,7 @@ from oms.adapters.blobs.file_blob_store import FileBlobStore
 from oms.sources.discovery import metadata_from_frontmatter
 from oms.ports.blob_store import BlobStore
 from oms.sources.credentials import credential_environment, isolated_environment
+from oms.sources.network import UnsafeDestination, pinned_address
 from oms.sources.limits import AcquisitionLease, AcquisitionLimits, Budget, BudgetExceeded, run_bounded
 from oms.sources.links import parse_link, select_ref, validate_path
 from oms.sources.primitives import exact_digest
@@ -76,12 +76,10 @@ class GitTransport:
     def network_options(addresses: list[str] | None = None) -> list[str]:
         if addresses is None:
             addresses = [item[4][0] for item in socket.getaddrinfo('github.com', 443, type=socket.SOCK_STREAM)]
-        if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
-            raise AcquisitionError('unsafe network destination')
-        # One pinned address prevents DNS rebinding. Connection errors remain errors.
-        address = sorted(set(addresses))[0]
-        if ':' in address:
-            address = '[' + address + ']'
+        try:
+            address = pinned_address(addresses)
+        except UnsafeDestination:
+            raise AcquisitionError('unsafe network destination') from None
         return ['-c', 'http.followRedirects=false', '-c', 'http.sslVerify=true',
                 '-c', 'http.proxy=', '-c', f'http.curloptResolve=github.com:443:{address}']
 
