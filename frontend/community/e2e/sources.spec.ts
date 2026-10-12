@@ -124,6 +124,30 @@ test("Apply stops when someone else saved other choices, says so and shows their
   await expect(page.getByLabel("Take GitHub's version for section:intro")).toBeChecked();
 });
 
+for (const [control, action] of [["Check safety again", "recheck"], ["Skip this version", "skip"], ["Keep my version and mark this update as seen", "adopt"]]) {
+  test(`${control} clears the notice of a stopped Apply`, async ({ page }) => {
+    // Ruling F4: the notice belongs to the Apply that stopped, not to the next action. The action
+    // is refused here so the card stays on screen whatever the action does to it.
+    const state = await sourceFixture(page);
+    const api = `http://127.0.0.1:${process.env.OMS_COMMUNITY_API_PORT || "4317"}`;
+    const headers = { "Access-Control-Allow-Origin": `http://127.0.0.1:${process.env.OMS_COMMUNITY_UI_PORT || "4318"}` };
+    await page.route(`${api}/api/skill-updates/update-1/${action}`, route => route.request().method() === "POST"
+      ? route.fulfill({ status: 409, headers, json: { code: "update_changed", message: "The update changed." } }) : route.fallback());
+    await page.route(`${api}/api/skill-updates/update-1`, async route => {
+      if (route.request().method() !== "GET" || !state.requests.some(row => row.path.endsWith("/draft"))) return route.fallback();
+      const theirs = state.update.drafts.map(choice => ({ ...choice, choice: "use_upstream" as const, merged_text: null }));
+      await route.fulfill({ headers, json: { ...structuredClone(state.update), drafts: theirs, resolved_check: { format_version: 1, state: "passed", code: "resolved_writes_checked", reasons: [] } } });
+    });
+    await page.goto("/import/?github=sources&update=update-1");
+    await page.getByLabel("Keep yours for section:intro").check();
+    await page.getByRole("button", { name: "Apply update" }).click();
+    const notice = page.getByText("Someone else changed the choices. Check them and try again.");
+    await expect(notice).toBeVisible();
+    await page.getByRole("button", { name: control }).click();
+    await expect(notice).toHaveCount(0);
+  });
+}
+
 test("a removal is one choice, and keeping it sends no consent", async ({ page }) => {
   const state = await sourceFixture(page, { removal: true });
   await page.goto("/import/?github=sources&update=update-1");

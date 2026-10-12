@@ -173,7 +173,7 @@ export function sourceSafeSummary(update, choices) {
 export function sourceStatusSentence(update, state) {
   const verb = update.held_install === true ? "install" : "apply";
   if (state.stale) return "This card is out of date. Check safety again before deciding.";
-  if (state.waiting) return `${plural(state.waiting, "item needs", "items need")} you.`;
+  if (state.waitingItems) return `${plural(state.waitingItems, "item needs", "items need")} you.`;
   if (state.held || update.summary?.whole_skill?.length) return `Held: see the reasons below before you ${verb}.`;
   if (update.held_install === true && !state.taken) return "Choose at least one part to install, or delete this skill.";
   if (state.canApply) return `Ready to ${verb}.`;
@@ -196,6 +196,8 @@ export function sourceCardState(update, draft = initialSourceDraft(update), part
   const resolved = update.plan.conflicts.every(conflict => chosen.has(conflict.part_id))
     && update.plan.changes.every(change => change.action !== "conflict" || conflicts.has(change.part_id));
   const waiting = Object.values(parts).filter(part => part.attention === "decide" && !chosen.has(part.part_id)).length;
+  // The decisions still open, as the card asks them: a group answered with one choice is one item (ruling F4).
+  const waitingItems = sourceNeedsYou(update).filter(row => row.parts.some(part => !chosen.has(part.part_id))).length;
   const groups = deletionGroups(update.plan.changes, choices);
   const saved = sameChoices(choices, update.drafts ?? []);
   // Only a complete saved selection can be held: until every decision is made, the server's hold
@@ -203,8 +205,25 @@ export function sourceCardState(update, draft = initialSourceDraft(update), part
   const held = saved && waiting === 0 && !!update.resolved_check && update.resolved_check.state !== "passed";
   // A held new skill needs at least one rule, section, example or file taken; the server refuses an empty apply anyway.
   const taken = update.held_install === true ? choices.some(choice => choice.choice !== "keep_oms" && TAKEN_KINDS.includes(changes.get(choice.part_id)?.kind)) : true;
-  return { stale, validChoices, resolved, groups, saved, held, taken, choices, waiting,
+  return { stale, validChoices, resolved, groups, saved, held, taken, choices, waiting, waitingItems,
     canApply: update.status === "open" && !stale && validChoices && resolved && waiting === 0 && taken && !held };
+}
+
+// Ruling F4: a local draft made on an older revision of the card keeps each choice the card still
+// offers for the same part revision, drops the rest and takes the card's fingerprint, so one changed
+// part never leaves the whole card out of date. A matching draft, or a card the server calls stale,
+// keeps the draft as it is.
+export function carrySourceDraft(draft, update, partFingerprints = {}) {
+  if (!draft || !update || update.stale === true || sameFingerprint(draft.fingerprint, update.plan.fingerprint)) return draft;
+  const parts = sourceReviewParts(update);
+  const changes = new Map(update.plan.changes.map(change => [change.part_id, change]));
+  const conflicts = new Map(update.plan.conflicts.map(conflict => [conflict.part_id, conflict]));
+  const choices = draft.choices.filter(choice => {
+    const change = changes.get(choice.part_id), part = parts[choice.part_id];
+    return !!change && !!part && !!partFingerprints[choice.part_id] && partFingerprints[choice.part_id] === choice.part_fingerprint
+      && sourceChoiceOptions(update, change, part, conflicts.get(choice.part_id)).some(option => isOption(choice, option));
+  });
+  return { ...draft, fingerprint: update.plan.fingerprint, choices, removal_consents: [] };
 }
 
 // Plain render helpers, called inline: the card stays hook-free and never mounts inner components.

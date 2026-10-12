@@ -106,7 +106,8 @@ test("two scripts are confirmed as a group, with each one a click away", () => {
     parts: Object.fromEntries(paths.map(path => [`file:${path}`, part(`file:${path}`, "file", { label: path, attention: "decide", risks: ["script"], default: null })])) };
   let draft; const props = { update: card, partFingerprints: { "file:scripts/a.sh": "a", "file:scripts/b.sh": "b" }, onDraftChange: value => { draft = value; }, onApply() {} };
   let tree = component("SourceUpdateCard", props);
-  assert.match(text(tree), /2 items need you\./);
+  // One group is one decision, however many scripts it holds (ruling F4).
+  assert.match(text(tree), /1 item needs you\./);
   assert.ok(input(tree, "Install these 2 scripts"));
   const each = nodes(tree).find(node => node.type === "details" && node.props.className === "oms-source-each");
   assert.equal(text(nodes(each).find(node => node.type === "summary")), "Choose each");
@@ -115,6 +116,29 @@ test("two scripts are confirmed as a group, with each one a click away", () => {
   tree = component("SourceUpdateCard", { ...props, draft });
   input(tree, "Take GitHub's version for scripts/a.sh").props.onChange({ target: { checked: true } });
   assert.deepEqual(draft.choices.map(row => [row.part_id, row.choice]).sort(), [["file:scripts/a.sh", "use_upstream"], ["file:scripts/b.sh", "keep_oms"]]);
+});
+
+test("the status sentence counts decisions, so a file and a group of five scripts are two items", () => {
+  const paths = ["a", "b", "c", "d", "e"].map(name => `scripts/${name}.sh`);
+  const scripts = paths.map(path => change(`file:${path}`, { kind: "file", base: unknownSide, local: absentSide, incoming: evidence({ path, digest: path, size: 1, mode: 33261 }) }));
+  const card = held();
+  card.plan.changes = [...card.plan.changes, ...scripts];
+  card.plan.conflicts = [...card.plan.conflicts, ...scripts.map(row => ({ part_id: row.part_id, reason: "unknown_base", allowed_choices: ["keep_oms", "use_upstream"] }))];
+  card.parts = { ...card.parts, ...Object.fromEntries(paths.map(path => [`file:${path}`, part(`file:${path}`, "file", { label: path, attention: "decide", risks: ["script"], default: null })])) };
+  const partFingerprints = { ...fingerprints, ...Object.fromEntries(paths.map(path => [`file:${path}`, `fp-${path}`])) };
+  let draft; const props = { update: card, partFingerprints, onDraftChange: value => { draft = value; } };
+  let tree = component("SourceUpdateCard", props);
+  assert.match(text(tree), /2 items need you\./);
+  input(tree, "Take it anyway for visual-companion.md").props.onChange({ target: { checked: true } });
+  tree = component("SourceUpdateCard", { ...props, draft });
+  assert.match(text(tree), /1 item needs you\./);
+  // A group with one member still open is still one item.
+  input(tree, "Take GitHub's version for scripts/a.sh").props.onChange({ target: { checked: true } });
+  tree = component("SourceUpdateCard", { ...props, draft });
+  assert.match(text(tree), /1 item needs you\./);
+  input(tree, "Install these 5 scripts").props.onChange({ target: { checked: true } });
+  tree = component("SourceUpdateCard", { ...props, draft });
+  assert.match(text(tree), /Ready to install\./);
 });
 
 test("technical details are closed by default and hold the internals", () => {
@@ -369,6 +393,27 @@ test("a stale card keeps Check safety again and a closed card has no controls", 
     assert.match(text(tree), /recorded historical comparison/i);
     assert.equal(nodes(tree).filter(node => ["button", "select", "textarea", "input"].includes(node.type)).length, 0);
   }
+});
+
+test("a local draft carried onto a rechecked card keeps its valid choices, drops the rest and takes the new fingerprint", () => {
+  // Ruling F4: one choice the recheck made invalid no longer leaves the whole card out of date.
+  const carry = ui.carrySourceDraft;
+  const choose = (part_id, choice, extra = {}) => ({ part_id, part_fingerprint: fingerprints[part_id], choice, merged_text: null, ...extra });
+  const draft = { fingerprint, removal_consents: ["x"], choices: [choose("file:visual-companion.md", "use_upstream", { acknowledged: ["phone"] }),
+    choose("rule:a", "keep_oms"), choose("section:s", "use_upstream"), choose("file:b.md", "use_upstream")] };
+  assert.equal(carry(undefined, held(), fingerprints), undefined);
+  assert.equal(carry(draft, held(), fingerprints), draft);
+  const newer = { ...fingerprint, update_generation: 4 };
+  const card = held(); card.plan.fingerprint = newer;
+  // The section's part changed; the file is no longer personal data alone, so "Take it anyway" is gone; b.md may only be left out.
+  card.parts["file:visual-companion.md"] = { ...card.parts["file:visual-companion.md"], overridable: [], risks: ["injection"] };
+  card.plan.conflicts = card.plan.conflicts.map(row => row.part_id === "file:b.md" ? { ...row, allowed_choices: ["keep_oms"] } : row);
+  const moved = { ...fingerprints, "section:s": "fp-section:s-2" };
+  assert.equal(carry(draft, { ...card, stale: true }, moved), draft);
+  const carried = carry(draft, card, moved);
+  assert.deepEqual(carried, { fingerprint: newer, removal_consents: [], choices: [choose("rule:a", "keep_oms")] });
+  assert.equal(ui.sourceCardState(card, carried, moved).stale, false);
+  assert.equal(carry(carried, card, moved), carried);
 });
 
 test("a card from a server without triage still asks about every conflict", () => {

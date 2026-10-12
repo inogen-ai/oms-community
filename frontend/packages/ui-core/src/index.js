@@ -11,7 +11,7 @@ export { collectionPage, CollectionPagination, CollectionViewToggle, CollectionL
 export { SourceDiscovery, initialSourceSelections, sourceSkillId } from "./source-discovery.js";
 export { SourceStatus, SourceUndo, sourceBulkExclusions } from "./source-status.js";
 export { SourceFileComparison, boundedSourceText } from "./source-files.js";
-export { SOURCE_RISK_LABELS, SOURCE_RISK_ORDER, SourceUpdateCard, initialSourceDraft, sourceCardState, sourceChoiceOptions, sourceEffectiveChoices,
+export { SOURCE_RISK_LABELS, SOURCE_RISK_ORDER, SourceUpdateCard, carrySourceDraft, initialSourceDraft, sourceCardState, sourceChoiceOptions, sourceEffectiveChoices,
   sourceFindingReasons, sourceGroupOptions, sourceNeedsYou, sourceReviewParts, sourceSafeSummary, sourceStatusSentence } from "./source-card.js";
 export { SourceRepositoryLine, sourceRepositoryFacts, sourceUpdatedAgo } from "./source-repository.js";
 export { SourceLookupForm, SourcePendingNotice, sourceLookupBody, sourceLookupValue, sourcePendingSubject } from "./source-lookup.js";

@@ -63,6 +63,13 @@ export interface SourceCardGroupOption {
 export const SOURCE_RISK_ORDER: readonly SourceCardRisk[];
 export const SOURCE_RISK_LABELS: Readonly<Record<SourceCardRisk | "other", string>>;
 export function initialSourceDraft(update: SourceCardUpdate): SourceCardDraft;
+/**
+ * A local draft made on an older revision of the card: keeps each choice the card still offers for the
+ * same part revision, drops the rest and takes the card's fingerprint. A matching draft, or a card the
+ * server calls stale, is returned as it is.
+ */
+export function carrySourceDraft<T extends SourceCardDraft | undefined>(draft: T, update: SourceCardUpdate | null | undefined,
+  partFingerprints?: Readonly<Record<string, string>>): T;
 /** The server's triage, or a fallback for a server without it. */
 export function sourceReviewParts(update: SourceCardUpdate): Readonly<Record<string, SourceCardPart>>;
 /** Plain reason lines for a part's findings: places and counts, never the matched text. */
@@ -78,13 +85,17 @@ export function sourceGroupOptions(update: SourceCardUpdate, group: SourceCardGr
 export function sourceSafeSummary(update: SourceCardUpdate, choices: readonly SourceCardChoice[]): string;
 export interface SourceCardState {
   stale: boolean; validChoices: boolean; resolved: boolean; groups: string[][]; saved: boolean; held: boolean; taken: boolean;
-  choices: SourceCardChoice[]; waiting: number; canApply: boolean;
+  /** Parts still waiting for a decision. */
+  waiting: number;
+  /** Decisions still open as the card asks them: a group answered with one choice counts once. */
+  waitingItems: number;
+  choices: SourceCardChoice[]; canApply: boolean;
 }
 /**
  * The card's status sentence: "Ready to install." or "Ready to apply." only when `state.canApply`;
- * otherwise the out-of-date wording, "N items need you.", the hold, or the held-install "Choose at least one part" rule.
+ * otherwise the out-of-date wording, "N items need you." (counting decisions), the hold, or the held-install "Choose at least one part" rule.
  */
-export function sourceStatusSentence(update: SourceCardUpdate, state: Pick<SourceCardState, "stale" | "waiting" | "held" | "taken" | "canApply">): string;
+export function sourceStatusSentence(update: SourceCardUpdate, state: Pick<SourceCardState, "stale" | "waitingItems" | "held" | "taken" | "canApply">): string;
 export function sourceCardState(update: SourceCardUpdate, draft?: SourceCardDraft, partFingerprints?: Readonly<Record<string, string>>): SourceCardState;
 export function SourceUpdateCard(props: {
   update?: SourceCardUpdate | null; title?: string; draft?: SourceCardDraft;

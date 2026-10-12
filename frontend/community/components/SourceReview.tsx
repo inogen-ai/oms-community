@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { applyReviewedChoices, type SourceChange, type SourceFilePreview, type SourceReviewStop } from "@inogen/oms-client";
-import { Button, Notice, SkillDeleteConfirmation, SourceFileComparison, SourceUpdateCard, type SourceCardDraft, type SourceFileSide, type SourceFileSidePreview } from "@inogen/oms-ui-core";
+import { Button, Notice, SkillDeleteConfirmation, SourceFileComparison, SourceUpdateCard, carrySourceDraft, type SourceCardDraft, type SourceFileSide, type SourceFileSidePreview } from "@inogen/oms-ui-core";
 import { useWorkspace, useAction, Feedback, ResourceStatus, message } from "@/lib/workspace";
 import { useSourceAction, useSourceResource } from "@/lib/source-state";
 import { saveSourceDownload } from "@/lib/sources";
@@ -32,22 +32,18 @@ export default function SourceReview({ id, title, draft, onDraftChange }: { id: 
     if (reason === "changed") changeDraft(undefined);
   };
   useEffect(() => {
-    const update = resource.data;
-    if (!currentDraft || !update || update.stale || JSON.stringify(currentDraft.fingerprint) === JSON.stringify(update.plan.fingerprint)) return;
-    const valid = currentDraft.choices.every(choice => update.part_fingerprints[choice.part_id] === choice.part_fingerprint
-      && (!update.plan.conflicts.some(conflict => conflict.part_id === choice.part_id)
-        || update.plan.conflicts.some(conflict => conflict.part_id === choice.part_id && conflict.allowed_choices.includes(choice.choice))));
-    if (valid) changeDraft({ ...currentDraft, fingerprint: update.plan.fingerprint, removal_consents: [] });
-  // Retain local prose only when the server proves the same part and permitted choice.
+    // A newer card keeps the local choices it still offers for the same part revision and drops the rest.
+    const carried = carrySourceDraft(currentDraft, resource.data, resource.data?.part_fingerprints);
+    if (carried !== currentDraft) changeDraft(carried);
   }, [resource.data, currentDraft]);
   return <><ResourceStatus resource={resource} /><SourceActionFeedback action={action} />
     {stopped && <Notice kind="error">{STOPPED[stopped]}</Notice>}
     {resource.data && <><SourceUpdateCard update={resource.data} title={title} draft={currentDraft} partFingerprints={resource.data.part_fingerprints} ownership={resource.data.ownership}
       busy={action.busy || resource.loading || deletion.busy} onDraftChange={value => { setStopped(null); changeDraft(value); }}
       onApply={body => { setStopped(null); void applyReviewedChoices(sources!.client, action.run, id, body, { onStopped: stop }); }}
-      onSkip={body => void action.run(key => sources!.client.skip(id, body, key), JSON.stringify(["skip", id, body]))}
-      onAdopt={body => void action.run(key => sources!.client.adopt(id, body, key), JSON.stringify(["adopt", id, body]))}
-      onRecheck={body => void action.run(key => sources!.client.recheck(id, body, key), JSON.stringify(["recheck", id, body]))}
+      onSkip={body => { setStopped(null); void action.run(key => sources!.client.skip(id, body, key), JSON.stringify(["skip", id, body])); }}
+      onAdopt={body => { setStopped(null); void action.run(key => sources!.client.adopt(id, body, key), JSON.stringify(["adopt", id, body])); }}
+      onRecheck={body => { setStopped(null); void action.run(key => sources!.client.recheck(id, body, key), JSON.stringify(["recheck", id, body])); }}
       onDeleteSkill={resource.data.held_install ? () => setDeleting("") : undefined}
       renderFile={change => <SourceFiles key={change.part_id} id={id} change={resource.data!.plan.changes.find(row => row.part_id === change.part_id)!} revision={sourceRevision} />} />
       {deleting !== null && <SkillDeleteConfirmation name={skillName} confirmation={deleting} onConfirmationChange={setDeleting} busy={deletion.busy}
