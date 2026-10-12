@@ -3,13 +3,15 @@
 The whole-package screen finds the personal data again on each check of the same commit. When every
 finding is personal data and every part it names stays as it is, the plan changes nothing that was
 flagged, so the screen's hold is released. Any other finding, or a finding on a part that changes,
-still holds.
+still holds. Kept personal data never hides another hold on the skill (follow-up A).
 """
 from dataclasses import replace
 from hashlib import sha256
 
+from oms.domain.models import Constraint
+from oms.domain.types import RuleStatus
 from oms.sources.models import (ApplyRequest, BulkApplyRequest, CheckFinding, CheckRequest, CheckResult, DraftChoice,
-                                ManifestEntry, PlanFlag)
+                                Evidence, GraphMapping, LocalState, ManifestEntry, PartKind, PlanFlag, ProjectionPart)
 from oms.sources.review import part_fingerprint
 from oms.sources.safety import eligibility
 from tests.sources.merge_cases import file, merge_case, part
@@ -79,10 +81,11 @@ def test_a_skill_md_finding_counts_through_the_part_that_holds_it():
     assert PlanFlag.SAFETY_HOLD in _plan(_held(in_skill, in_rule), incoming_rule="Call +44 20 7946 0958.").flags
 
 
-def _serve_again(world, *, description: str = "Invoices description", revision: str = "a"):
+def _serve_again(world, *, description: str = "Invoices description", revision: str = "a",
+                 rule: str = "Keep receipts."):
     """Serve the installed package again, at the same commit or a later one, with the flagged file unchanged."""
     binding = world.sources.get_binding(INVOICES)
-    package = world.package(revision, description).model_copy(update={"package_path": "invoices"})
+    package = world.package(revision, description, rule=rule).model_copy(update={"package_path": "invoices"})
     entry = ManifestEntry(path="visual-companion.md", blob_ref=world.blobs.put(PHONE), digest=sha256(PHONE).hexdigest(),
                           size=len(PHONE), mode=0o100644)
     world.incoming = package.model_copy(update={
@@ -97,8 +100,8 @@ def _check(world, key: str):
         expected_source_generation=source.generation, skills=(INVOICES,)), idempotency_key=key)
 
 
-def _taken_anyway(world):
-    update = _take_everything(world, _with_file(world), "acknowledged")
+def _taken_anyway(world, *, rule: str = "Keep receipts."):
+    update = _take_everything(world, _with_file(world, rule=rule), "acknowledged")
     assert world.service.apply(world.context, ApplyRequest(**_request(update).model_dump()),
                                idempotency_key="apply-acknowledged").state == "complete"
 
@@ -166,3 +169,82 @@ def test_a_later_change_to_the_flagged_file_still_holds(community_world):
     update = world.sources.get_update(result.outcomes[0].update_id, tenant_id="acme")
     assert PlanFlag.SAFETY_HOLD in update.plan.flags
     assert FLAGGED in {row.part_id for row in update.plan.conflicts}
+
+
+# Follow-up A. The whole-package screen stops at its first failing stage. Personal data alone may be
+# released for kept parts, so it must not stop the stages after it: a constraint conflict or a live
+# hold anywhere in the skill is still found, and that hold is what the plan records.
+
+def _flag_a_rule(world) -> str:
+    rule = world.store.rules_for_skill("invoices", tenant_id="acme")[0]
+    world.repository.atomic("flag-rule", "acme",
+                            lambda graph, queue: graph.upsert_rule(replace(rule, status=RuleStatus.FLAGGED)))
+    return rule.id
+
+
+def _no_unattended_apply(world, update, key: str) -> None:
+    """Neither unattended path may take the update, and a bulk attempt writes nothing."""
+    assert eligibility(update.plan, mode="bulk", automatic_enabled=False, edition="community").state != "passed"
+    assert eligibility(update.plan, mode="automatic", automatic_enabled=True, edition="paid").state != "passed"
+    world.service.bulk_apply(world.context, BulkApplyRequest(updates=(ApplyRequest(
+        **_request(update).model_dump()),)), idempotency_key=key)
+    assert world.store.get_skill("invoices", tenant_id="acme").description == "Invoices description"
+
+
+def test_kept_personal_data_does_not_hide_a_flagged_rule_elsewhere_in_the_skill(community_world):
+    world = community_world
+    _taken_anyway(world)
+    kept = _flagged_file(world)
+    rule = _flag_a_rule(world)
+    _serve_again(world, description="Invoices description, revised", revision="b")
+    result = _check(world, "flagged-rule")
+    assert [row.state for row in result.outcomes] == ["awaiting_review"]
+    update = world.sources.get_update(result.outcomes[0].update_id, tenant_id="acme")
+    assert PlanFlag.SAFETY_HOLD in update.plan.flags
+    assert CheckFinding(category="policy:existing_rule_hold") in update.plan.check_findings
+    _no_unattended_apply(world, update, "bulk-flagged-rule")
+    assert world.store.get_rule(rule).status is RuleStatus.FLAGGED
+    assert _flagged_file(world) == kept
+
+
+def test_kept_personal_data_does_not_hide_a_constraint_conflict(community_world):
+    world = community_world
+    unsafe = "Log passwords for troubleshooting."
+    _taken_anyway(world, rule=unsafe)
+    world.store.upsert_constraint(Constraint(id="no-passwords", tenant_id="acme", body="Never log passwords.",
+                                             immutable=True))
+    _serve_again(world, description="Invoices description, revised", revision="b", rule=unsafe)
+    result = _check(world, "constraint")
+    assert [row.state for row in result.outcomes] == ["awaiting_review"]
+    update = world.sources.get_update(result.outcomes[0].update_id, tenant_id="acme")
+    assert PlanFlag.SAFETY_HOLD in update.plan.flags
+    assert CheckFinding(category="policy:source_constraint_conflict") in update.plan.check_findings
+    _no_unattended_apply(world, update, "bulk-constraint")
+
+
+def test_an_acknowledged_part_does_not_hide_a_later_hold_at_apply_time(community_world):
+    """Apply-time screening passes an acknowledged part on its own check, then still judges every write."""
+    world = community_world
+    _taken_anyway(world)
+    rule = _flag_a_rule(world)
+    world.store.upsert_constraint(Constraint(id="no-passwords", tenant_id="acme", body="Never log passwords.",
+                                             immutable=True))
+    snapshot = world.sources.get_snapshot(world.sources.get_binding(INVOICES).baseline)
+
+    def section(body: str) -> ProjectionPart:
+        return ProjectionPart(part_id="section:call", kind=PartKind.SECTION, evidence=Evidence(
+            kind="known", value={"heading": "Help", "body": body}, policy_version="1"))
+    phone = section("Call +44 20 7946 0958 about receipts.")
+    unsafe = section("Call +44 20 7946 0958 and log passwords for troubleshooting.")
+    held = ProjectionPart(part_id="rule:held", kind=PartKind.RULE, evidence=Evidence(
+        kind="known", value={"body": "Keep receipts.", "section_id": None}, policy_version="1"))
+    local = LocalState(skill=INVOICES, content_generation=0, digest="local", graph_mappings=(
+        GraphMapping(part_id=held.part_id, entity_ids=(rule,), owner_skills=(INVOICES,)),))
+
+    def screen(*writes: ProjectionPart) -> tuple[str, str]:
+        result = world.policy.screen_resolved(snapshot, local, writes,
+                                              acknowledged={"section:call": frozenset({"phone"})})
+        return result.state, result.code
+    assert screen(phone) == ("passed", "resolved_writes_checked")
+    assert screen(phone, held) == ("held", "existing_rule_hold")
+    assert screen(unsafe) == ("held", "source_constraint_conflict")

@@ -195,10 +195,14 @@ def texts(value):
             yield from texts(item)
 
 
+def personal_data_hold(result: CheckResult) -> bool:
+    """A held result whose only findings are personal data (spec D2, ruling R6)."""
+    return result.state == "held" and personal_data_only((result.code, *result.reasons), result.findings)
+
+
 def acknowledges(result: CheckResult, categories: frozenset[str] | None) -> bool:
     """Whether a reviewer accepted this held result: held only for personal data they confirmed (spec D2)."""
-    return (bool(categories) and result.state == "held"
-            and personal_data_only((result.code, *result.reasons), result.findings)
+    return (bool(categories) and personal_data_hold(result)
             and all(finding.category in categories for finding in result.findings))
 
 
@@ -356,7 +360,10 @@ def screen_policy(graph: "GraphStore | None", reviews: "ReviewQueue | None", blo
         return CheckResult(state='unavailable', code='source_policy_state_unavailable')
     checked = (screen_snapshot(snapshot, blobs) if writes is None else
              screen_selected(snapshot, writes, blobs, manifest=manifest, acknowledged=acknowledged))
-    if checked.state != 'passed' or writes == ():
+    # The plan may release a whole-package hold for personal data alone on parts it keeps
+    # (ruling F1), so that hold must not stand in for the stages after it. They still run, and
+    # any hold they find is the result; only when they all pass does the personal data stand.
+    if (checked.state != 'passed' and not (writes is None and personal_data_hold(checked))) or writes == ():
         return checked
     parts = snapshot.effective_projection if writes is None else writes
     entries = snapshot.manifest if manifest is None else manifest

@@ -93,8 +93,8 @@ def test_a_draft_choice_names_only_known_categories_once():
     assert body.choices[0].acknowledged == ("phone",)
 
 
-def _with_file(world, body=PHONE, path="visual-companion.md", key="held-file"):
-    package = world.package("a", "Invoices description").model_copy(update={"package_path": "invoices"})
+def _with_file(world, body=PHONE, path="visual-companion.md", key="held-file", rule="Keep receipts."):
+    package = world.package("a", "Invoices description", rule=rule).model_copy(update={"package_path": "invoices"})
     entry = ManifestEntry(path=path, blob_ref=world.blobs.put(body), digest=sha256(body).hexdigest(),
                           size=len(body), mode=0o100644)
     world.install_packages("expenses", "invoices", key=key,
