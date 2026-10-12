@@ -45,11 +45,13 @@ logger = logging.getLogger(__name__)
 def _file_result(check, path):
     # A truncated finding list cannot say which files passed, so none may be shown as passed.
     if check.state == "unavailable" or (check.state == "held" and (
-            not check.findings or "findings_truncated" in check.reasons)):
+            not check.findings or "file_findings_truncated" in check.reasons)):
         return check
     findings = tuple(finding for finding in check.findings if finding.path == path)
     if findings:
-        return CheckResult(state="held", code=check.code, findings=findings)
+        # Dropped findings may have belonged to this file, so the truncation travels with it.
+        return CheckResult(state="held", code=check.code, findings=findings,
+                           reasons=("findings_truncated",) if "findings_truncated" in check.reasons else ())
     return CheckResult(state="passed", code="file_checked")
 
 

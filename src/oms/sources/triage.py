@@ -13,7 +13,7 @@ from typing import Literal
 
 from oms.sources.compare import same_value
 from oms.sources.files import script_change
-from oms.sources.findings import PERSONAL_DATA, CheckFindingView, distinct_findings, finding_view
+from oms.sources.findings import PERSONAL_DATA, CheckFindingView, distinct_findings, finding_view, personal_data_only
 from oms.sources.models import Change, CheckFinding, Conflict, MergePlan, PartKind
 from oms.sources.primitives import NonEmpty, Record
 
@@ -102,7 +102,7 @@ def part_check(plan: MergePlan, change: Change, conflict: Conflict | None) -> Pa
         risks.add("personal_data")
     # Ruling R6: only personal data alone, and only where the plan still allows taking it.
     overridable = (tuple(sorted({finding.category for finding in findings}))
-                   if risks == {"personal_data"} and conflict is not None
+                   if risks == {"personal_data"} and conflict is not None and personal_data_only(codes, findings)
                    and "use_upstream" in conflict.allowed_choices else ())
     return PartCheck(findings=findings, codes=codes, risks=frozenset(risks), overridable=overridable)
 

@@ -106,7 +106,9 @@ def test_the_finding_cap_never_hides_a_held_file(tmp_path):
     result = screen_snapshot(snapshot, FileBlobStore(tmp_path))
     assert len(result.findings) == 100
     assert {"a.md", "b.md"} <= {f.path for f in result.findings}
-    assert "findings_truncated" not in result.reasons
+    # Dropped findings are never silent (they make the result "not personal data alone"), but every
+    # held file still has its own finding, so the files stay distinguishable.
+    assert "findings_truncated" in result.reasons and "file_findings_truncated" not in result.reasons
 
 
 def test_more_held_files_than_the_cap_make_every_file_take_the_whole_result(tmp_path):
@@ -116,7 +118,7 @@ def test_more_held_files_than_the_cap_make_every_file_take_the_whole_result(tmp_
     files = {f"f{i}.md": b"Call +44 20 7946 0958." for i in range(120)}
     files["clean.md"] = b"Fine."
     result = screen_snapshot(_snapshot(tmp_path, files), FileBlobStore(tmp_path))
-    assert len(result.findings) == 100 and "findings_truncated" in result.reasons
+    assert len(result.findings) == 100 and "file_findings_truncated" in result.reasons
     assert _file_result(result, "clean.md").state == "held"
     assert _file_result(result, "f119.md").state == "held"
     assert isinstance(result, CheckResult)

@@ -13,7 +13,7 @@ from typing import Literal
 from oms.sources.compare import UnitDecision, compare_field, compare_prose, compare_rule, compare_unit, same_value
 from oms.sources.identity import align_projection as _align, moved_parts, sequence_key
 from oms.sources.files import compare_file, file_evidence, script_change
-from oms.sources.findings import PERSONAL_DATA
+from oms.sources.findings import personal_data_only
 from oms.sources.models import (
     Change, CheckFinding, CheckResult, Conflict, Evidence, GraphMapping, LocalState, MergePlan,
     PartKind, PlanFingerprint, PlanFlag, ProjectionPart, SourceSnapshot,
@@ -118,8 +118,7 @@ def _personal_data_only(check: CheckResult, key: str, kind: PartKind) -> bool:
     path = key.removeprefix('file:') if kind == PartKind.FILE else None
     own = all((finding.path is None or finding.path == path) and (finding.part_id is None or finding.part_id == key)
               for finding in check.findings)
-    return (check.state == 'held' and bool(check.findings) and own
-            and all(finding.category in PERSONAL_DATA for finding in check.findings))
+    return (check.state == 'held' and own and personal_data_only((check.code, *check.reasons), check.findings))
 
 
 def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
@@ -214,6 +213,7 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
     if len(file_checks) != len(policy.file_checks):
         raise ValueError('duplicate file checks')
     check_findings, part_findings = [], []
+    part_located: dict[str, list[CheckFinding]] = {}
     for check in policy.required_checks:
         if check.state != 'passed':
             flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
@@ -323,7 +323,12 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
             if check.state != 'passed':
                 flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
                 reasons.append(check.code)
-                part_findings.extend(_located(finding, key, kind) for finding in check.findings)
+                # The reasons that make a hold more than personal data travel with the conflict.
+                reasons.extend(reason for reason in check.reasons
+                               if reason in ('findings_truncated', 'injection_screen_hold'))
+                located = [_located(finding, key, kind) for finding in check.findings]
+                part_findings.extend(located)
+                part_located.setdefault(key, []).extend(located)
                 if not _personal_data_only(check, key, kind):
                     choices = tuple(choice for choice in choices if choice != 'use_upstream')
         restriction = restrictions.get(key)
@@ -345,6 +350,14 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                               incoming=recorded[1], linked_removals=linked)
         if reasons:
             conflicts[key] = Conflict(part_id=key, reason=','.join(dict.fromkeys(reasons)), allowed_choices=choices)
+    # The plan keeps at most MAX_FINDINGS findings of parts. A part whose findings were cut cannot
+    # be called personal data alone, so it is marked truncated and loses the override (ruling R6).
+    kept = set(tuple(dict.fromkeys(part_findings))[:MAX_FINDINGS])
+    for key, located in part_located.items():
+        if key in conflicts and not all(finding in kept for finding in located):
+            held = conflicts[key]
+            conflicts[key] = Conflict(part_id=key, reason=','.join(dict.fromkeys((*held.reason.split(','), 'findings_truncated'))),
+                                      allowed_choices=tuple(c for c in held.allowed_choices if c != 'use_upstream'))
     # New source identities alongside withdrawals are a replacement region, never
     # an inferred rename or permission to delete a former source contribution.
     removed = [change for change in changes.values() if change.base.kind == 'known'

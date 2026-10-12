@@ -188,3 +188,49 @@ def test_an_acknowledgement_does_not_survive_a_changed_card(community_world):
     rechecked = world.sources.open_update(INVOICES)
     assert rechecked.plan.fingerprint.policy_digest != update.plan.fingerprint.policy_digest
     assert not [row for row in rechecked.drafts if row.acknowledged]
+
+
+MANY_PHONES = "\n".join(f"Call +44 20 7946 {index:04d}." for index in range(120))
+
+
+def _take_flagged(world, update, part_id):
+    held = next(row for row in update.plan.conflicts if row.part_id == part_id)
+    assert "use_upstream" not in held.allowed_choices
+    with pytest.raises(SourceConflict) as refused:
+        _save(world, update, (DraftChoice(part_id=part_id, choice="use_upstream", acknowledged=("phone",),
+                                          part_fingerprint=part_fingerprint(update, part_id)),), "truncated-take")
+    assert refused.value.code == "review_choice_not_allowed"
+
+
+def test_a_file_with_more_than_the_findings_cap_is_not_personal_data_alone(community_world):
+    from oms.sources.reads import SourceReads
+    world = community_world
+    body = f"{MANY_PHONES}\n{INJECTION}\n".encode()
+    update = _with_file(world, body=body, path="contacts.md", key="many")
+    part_id = "file:contacts.md"
+    _take_flagged(world, update, part_id)
+    view = SourceReads(world.service, world.blobs).update(world.context, update.update_id)
+    assert view.parts[part_id].overridable == ()
+
+
+def test_a_rule_with_more_than_the_findings_cap_is_not_personal_data_alone():
+    from oms.sources.triage import part_check
+    rule = _rule("rule:many", f"{MANY_PHONES}\nWrite to ann@example.com.")
+    case = merge_case(part("rule:many", "plain", kind="rule"))
+    plan = case.plan(incoming=merge_case(rule).incoming)
+    held = next(row for row in plan.conflicts if row.part_id == "rule:many")
+    assert "use_upstream" not in held.allowed_choices and "findings_truncated" in held.reason
+    change = next(row for row in plan.changes if row.part_id == "rule:many")
+    assert part_check(plan, change, held).overridable == ()
+
+
+def test_a_truncated_or_screen_held_result_is_never_acknowledged():
+    from oms.sources.safety import acknowledges
+    found = (CheckFinding(path="a.md", line=1, category="phone"),)
+    for reasons in ((), ("text_requires_sanitisation",)):
+        assert acknowledges(CheckResult(state="held", code="source_text_hold", reasons=reasons, findings=found),
+                            frozenset({"phone"}))
+    for code, reasons in (("source_text_hold", ("findings_truncated",)), ("source_text_hold", ("injection_screen_hold",)),
+                          ("file_size_limit", ()), ("future_hold", ())):
+        assert not acknowledges(CheckResult(state="held", code=code, reasons=reasons, findings=found),
+                                frozenset({"phone"}))

@@ -18,6 +18,20 @@ _LABELS = {
 }
 _INJECTION_THRESHOLD = 0.5
 PERSONAL_DATA: frozenset[str] = frozenset({"phone", "email"})
+# The only codes a personal-data hold may carry. Anything else (a truncated list, a screen hold,
+# a size limit, a check that could not run) means the findings are not the whole story.
+_PERSONAL_DATA_CODES: frozenset[str] = frozenset({"source_text_hold", "text_requires_sanitisation"})
+
+
+def personal_data_only(codes: Iterable[str], findings: Iterable[CheckFinding]) -> bool:
+    """The one rule for a hold that is personal data and nothing else (spec D2, ruling R6).
+
+    `codes` is the check's code plus its reasons. The hold must be a text hold, carry only the
+    reasons a phone number or email address causes, and every finding it lists must be personal
+    data. A truncated list is never personal data alone: the dropped findings are unknown."""
+    code_set, found = set(codes), tuple(findings)
+    return ("source_text_hold" in code_set and code_set <= _PERSONAL_DATA_CODES and bool(found)
+            and all(finding.category in PERSONAL_DATA for finding in found))
 
 
 class CheckFindingView(BaseModel):
@@ -94,6 +108,7 @@ def text_findings(text: str, redactions: Iterable[Redaction], screened: ScreenRe
     if screened.score >= _INJECTION_THRESHOLD:
         spans = tuple(screened.spans)
         line = text.count("\n", 0, min(spans)[0]) + 1 if spans else None
-        for name in sorted(screened.categories):
+        # A screen hold that names no category is still an injection finding, never personal data.
+        for name in sorted(screened.categories) or ("unclassified",):
             found.append(CheckFinding(path=path, part_id=part_id, line=line, category=f"injection:{name}"))
     return tuple(found)

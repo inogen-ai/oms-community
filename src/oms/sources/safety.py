@@ -19,7 +19,7 @@ from oms.security.constraint_patterns import shared_danger, targets_the_system
 from oms.security.injection import DeterministicScreen
 from oms.sources.errors import SourceConflict
 from oms.sources.files import verified_bytes
-from oms.sources.findings import PERSONAL_DATA, text_findings
+from oms.sources.findings import personal_data_only, text_findings
 from oms.sources.models import (
     CheckFinding, CheckResult, LocalState, ManifestEntry, MergePlan, PartKind, PlanFlag, ProjectionPart, SourceSnapshot,
 )
@@ -174,9 +174,12 @@ def screen_snapshot(snapshot: SourceSnapshot, blobs: BlobStore,
                 note(checks.check_text(text, part_id=part.part_id), part_id=part.part_id)
     if first is None:
         return CheckResult(state="passed", code="package_bytes_checked")
-    truncated = len(guaranteed) > MAX_FINDINGS
+    # Any dropped finding marks the result truncated: what was cut is unknown, so it is never
+    # personal data alone. Only an overflow of the per-file findings stops files being told apart.
+    dropped = len(guaranteed) + len(extra) > MAX_FINDINGS
     findings = (guaranteed + extra)[:MAX_FINDINGS]
-    reasons = first.reasons + (("findings_truncated",) if truncated else ())
+    reasons = (first.reasons + (("findings_truncated",) if dropped else ())
+               + (("file_findings_truncated",) if len(guaranteed) > MAX_FINDINGS else ()))
     return CheckResult(state="unavailable" if unavailable else "held", code=first.code,
                        reasons=reasons, findings=tuple(findings))
 
@@ -194,9 +197,9 @@ def texts(value):
 
 def acknowledges(result: CheckResult, categories: frozenset[str] | None) -> bool:
     """Whether a reviewer accepted this held result: held only for personal data they confirmed (spec D2)."""
-    return (bool(categories) and result.state == "held" and bool(result.findings)
-            and all(finding.category in PERSONAL_DATA and finding.category in categories
-                    for finding in result.findings))
+    return (bool(categories) and result.state == "held"
+            and personal_data_only((result.code, *result.reasons), result.findings)
+            and all(finding.category in categories for finding in result.findings))
 
 
 def screen_selected(snapshot: SourceSnapshot, writes: tuple[ProjectionPart, ...],
