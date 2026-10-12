@@ -350,7 +350,10 @@ class SourceService:
         try:
             update, binding, incoming, local, guards = self._read(context, "apply", (skill,), capture)
             aligned, selected, manual_parts = review.selected_writes(update, incoming, local, request.removal_consents)
-            if self.policy.screen_resolved(incoming, local, selected).state != "passed":
+            acknowledged = review.acknowledgements(update)
+            screened = (self.policy.screen_resolved(incoming, local, selected, acknowledged=acknowledged)
+                        if acknowledged else self.policy.screen_resolved(incoming, local, selected))
+            if screened.state != "passed":
                 raise SourceConflict("required_check_held")
 
             def commit(bound):

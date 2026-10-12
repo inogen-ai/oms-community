@@ -490,5 +490,6 @@ def test_one_phone_number_in_skill_md_is_one_finding_at_its_file_line(community_
     assert [row.summary for row in view.check_findings] == ["SKILL.md, line 7: looks like a phone number"]
     assert "7946" not in str(view.model_dump(mode="json")["check_findings"]) and "7946" not in held.detail
     rule = next(row for row in update.plan.conflicts if row.part_id.startswith("rule:"))
-    assert "use_upstream" not in rule.allowed_choices
+    # Personal data alone keeps the choice; apply needs an acknowledgement (spec 5).
+    assert "use_upstream" in rule.allowed_choices
     assert "source_text_hold" in rule.reason

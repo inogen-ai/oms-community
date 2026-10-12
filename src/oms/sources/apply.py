@@ -445,11 +445,12 @@ def commit_apply(bound: MutationContext, context: ActionContext, operation: Oper
     # aborts the whole transaction: a content change without its version is
     # not a state the repository may be left in (spec §8.3).
     histories = []
+    detail = review.acknowledgement_detail(update)
     for affected in changed:
         history = bound.history.capture_required(affected.skill_id, affected.tenant_id,
             cause=SkillVersionCause.SOURCE_UPDATE, actor=context.actor_id,
             source_operation_id=operation.operation_id, source_origin_id=binding.origin.origin_id,
-            source_revision=incoming.revision)
+            source_revision=incoming.revision, detail=detail if affected == skill else None)
         if history:
             histories.append(history.id)
     # Notifications leave with the commit as a durable event and are delivered

@@ -13,11 +13,21 @@ class DraftChoice(Record):
     choice: Literal["keep_oms", "use_upstream", "merged_text"]
     merged_text: str | None = None
     part_fingerprint: NonEmpty
+    # Personal-data categories the reviewer confirmed may be kept (spec 5). Which
+    # choice and part may carry them is judged by `review.validate_choices`.
+    acknowledged: tuple[Literal["phone", "email"], ...] = ()
 
     @model_validator(mode="after")
     def merged_choice(self) -> Self:
         if (self.choice == "merged_text") != (self.merged_text is not None):
             raise ValueError("Only a merged-text choice carries replacement text")
+        return self
+
+    @model_validator(mode="after")
+    def distinct_acknowledgements(self) -> Self:
+        if len(set(self.acknowledged)) != len(self.acknowledged):
+            raise ValueError("Each acknowledged category is named once")
+        object.__setattr__(self, "acknowledged", tuple(sorted(self.acknowledged)))
         return self
 
 

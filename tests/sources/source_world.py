@@ -42,12 +42,12 @@ class Policy:
         held = self.held or snapshot.ref.origin.skill.skill_id in self.held_skills
         return CheckResult(state="held" if held else "passed", code="fixture")
 
-    def screen_resolved(self, snapshot, local, writes, *, manifest=None):
+    def screen_resolved(self, snapshot, local, writes, *, manifest=None, acknowledged=None):
         result = self.screen(snapshot, local)
         if result.state != "passed":
             return result
         from oms.sources.safety import screen_selected
-        return screen_selected(snapshot, writes, self.blobs, manifest=manifest)
+        return screen_selected(snapshot, writes, self.blobs, manifest=manifest, acknowledged=acknowledged)
 
     def admit_local(self, context, request):
         pass

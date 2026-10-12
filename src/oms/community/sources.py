@@ -3,7 +3,7 @@
 The local operator is the only actor, every action is allowed, and the collaborators
 are bound to the existing workflow transaction; nothing here calls a model.
 """
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from oms.domain.identity import SkillRef
 from oms.ports.blob_store import BlobStore
@@ -75,8 +75,10 @@ class LocalSourcePolicy:
 
     def screen_resolved(self, snapshot: SourceSnapshot, local: LocalState,
                         writes: tuple[ProjectionPart, ...], *,
-                        manifest: tuple[ManifestEntry, ...] | None = None) -> CheckResult:
-        return screen_policy(self.graph, self.reviews, self.blobs, snapshot, local, writes=writes, manifest=manifest)
+                        manifest: tuple[ManifestEntry, ...] | None = None,
+                        acknowledged: Mapping[str, frozenset[str]] | None = None) -> CheckResult:
+        return screen_policy(self.graph, self.reviews, self.blobs, snapshot, local, writes=writes, manifest=manifest,
+                             acknowledged=acknowledged)
 
     def revision(self, context, graph, reviews, skill_refs) -> str:
         return exact_digest({"policy": "community-source-2",

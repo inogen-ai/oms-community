@@ -13,6 +13,7 @@ from typing import Literal
 from oms.sources.compare import UnitDecision, compare_field, compare_prose, compare_rule, compare_unit, same_value
 from oms.sources.identity import align_projection as _align, moved_parts, sequence_key
 from oms.sources.files import compare_file, file_evidence, script_change
+from oms.sources.findings import PERSONAL_DATA
 from oms.sources.models import (
     Change, CheckFinding, CheckResult, Conflict, Evidence, GraphMapping, LocalState, MergePlan,
     PartKind, PlanFingerprint, PlanFlag, ProjectionPart, SourceSnapshot,
@@ -108,6 +109,17 @@ def _located(finding: CheckFinding, key: str, kind: PartKind) -> CheckFinding:
     if kind != PartKind.FILE and finding.part_id is None and finding.path is None:
         return finding.model_copy(update={'part_id': key})
     return finding
+
+
+def _personal_data_only(check: CheckResult, key: str, kind: PartKind) -> bool:
+    """A hold an administrator may override (spec D2): held, with findings that all
+    belong to this part and are all personal data. A check that could not run, or a
+    whole-package result that names other files, is never one."""
+    path = key.removeprefix('file:') if kind == PartKind.FILE else None
+    own = all((finding.path is None or finding.path == path) and (finding.part_id is None or finding.part_id == key)
+              for finding in check.findings)
+    return (check.state == 'held' and bool(check.findings) and own
+            and all(finding.category in PERSONAL_DATA for finding in check.findings))
 
 
 def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
@@ -301,16 +313,19 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                 else:
                     checks.extend(policy.safety.check_text(text, part_id=key) for text in _texts(after.value))
         # A check that could not run is not a pass (spec §7.7); it holds the
-        # part like a failure does, and taking the unscreened upstream text is
-        # withdrawn from the reviewer's choices in both cases. Its findings join
-        # the plan's own list, so a part held here is named even when the policy's
-        # screen passed, and each part keeps its own findings.
+        # part like a failure does. Taking the unscreened upstream text is
+        # withdrawn for a check that could not run and for any finding other than
+        # personal data; personal data alone keeps it, and apply then needs the
+        # reviewer's acknowledgement. Its findings join the plan's own list, so a
+        # part held here is named even when the policy's screen passed, and each
+        # part keeps its own findings.
         for check in checks:
             if check.state != 'passed':
                 flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
                 reasons.append(check.code)
                 part_findings.extend(_located(finding, key, kind) for finding in check.findings)
-                choices = tuple(choice for choice in choices if choice != 'use_upstream')
+                if not _personal_data_only(check, key, kind):
+                    choices = tuple(choice for choice in choices if choice != 'use_upstream')
         restriction = restrictions.get(key)
         if restriction is not None:
             flags.add(PlanFlag.SAFETY_HOLD)

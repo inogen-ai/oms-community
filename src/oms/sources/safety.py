@@ -6,9 +6,10 @@ cannot run says so rather than passing, which the plan turns into a hold (spec ย
 The live holds stop an update from touching rules that are already held, flagged or
 tainted, whatever the upstream text looks like.
 """
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 import logging
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
 from oms.domain.types import Plane, RuleStatus, SignalType
 from oms.ingestion.sanitiser import RegexSanitiser
@@ -18,8 +19,14 @@ from oms.security.constraint_patterns import shared_danger, targets_the_system
 from oms.security.injection import DeterministicScreen
 from oms.sources.errors import SourceConflict
 from oms.sources.files import verified_bytes
-from oms.sources.findings import text_findings
-from oms.sources.models import CheckFinding, CheckResult, ManifestEntry, MergePlan, PartKind, PlanFlag, ProjectionPart, SourceSnapshot
+from oms.sources.findings import PERSONAL_DATA, text_findings
+from oms.sources.models import (
+    CheckFinding, CheckResult, LocalState, ManifestEntry, MergePlan, PartKind, PlanFlag, ProjectionPart, SourceSnapshot,
+)
+
+if TYPE_CHECKING:
+    from oms.ports.graph_store import GraphStore
+    from oms.ports.review_queue import ReviewQueue
 
 logger = logging.getLogger(__name__)
 
@@ -185,10 +192,19 @@ def texts(value):
             yield from texts(item)
 
 
+def acknowledges(result: CheckResult, categories: frozenset[str] | None) -> bool:
+    """Whether a reviewer accepted this held result: held only for personal data they confirmed (spec D2)."""
+    return (bool(categories) and result.state == "held" and bool(result.findings)
+            and all(finding.category in PERSONAL_DATA and finding.category in categories
+                    for finding in result.findings))
+
+
 def screen_selected(snapshot: SourceSnapshot, writes: tuple[ProjectionPart, ...],
                     blobs: BlobStore, safety: SourceSafety | None = None, *,
-                    manifest: tuple[ManifestEntry, ...] | None = None) -> CheckResult:
+                    manifest: tuple[ManifestEntry, ...] | None = None,
+                    acknowledged: Mapping[str, frozenset[str]] | None = None) -> CheckResult:
     checks = safety or SourceSafety()
+    accepted = acknowledged or {}
     for part in writes:
         if part.evidence.kind == "unknown":
             return CheckResult(state="unavailable", code="write_evidence_unavailable")
@@ -204,12 +220,12 @@ def screen_selected(snapshot: SourceSnapshot, writes: tuple[ProjectionPart, ...]
                 result = checks.check_file(verified_bytes(blobs, entry), path=entry.path)
             except (SourceConflict, OSError):
                 return CheckResult(state="unavailable", code="package_custody_unavailable")
-            if result.state != "passed":
+            if result.state != "passed" and not acknowledges(result, accepted.get(part.part_id)):
                 return result
         else:
             for text in texts(part.evidence.value):
                 result = checks.check_text(text, part_id=part.part_id)
-                if result.state != "passed":
+                if result.state != "passed" and not acknowledges(result, accepted.get(part.part_id)):
                     return result
     return CheckResult(state="passed", code="resolved_writes_checked")
 
@@ -322,7 +338,11 @@ def live_holds(graph, reviews, snapshot, local, writes=None):
     return None
 
 
-def screen_policy(graph, reviews, blobs, snapshot, local, *, writes=None, manifest=None):
+def screen_policy(graph: "GraphStore | None", reviews: "ReviewQueue | None", blobs: BlobStore,
+                  snapshot: SourceSnapshot, local: LocalState, *,
+                  writes: tuple[ProjectionPart, ...] | None = None,
+                  manifest: tuple[ManifestEntry, ...] | None = None,
+                  acknowledged: Mapping[str, frozenset[str]] | None = None) -> CheckResult:
     # A graph or queue without the methods the holds need cannot say the
     # update is safe; it says so, and the plan holds (spec ยง7.7).
     required = ('active_constraints', 'rules_for_skill', 'sections_for_skill', 'blocks_for_section', 'get_rule',
@@ -332,7 +352,7 @@ def screen_policy(graph, reviews, blobs, snapshot, local, *, writes=None, manife
             or any(not callable(getattr(reviews, name, None)) for name in ('pending', 'history'))):
         return CheckResult(state='unavailable', code='source_policy_state_unavailable')
     checked = (screen_snapshot(snapshot, blobs) if writes is None else
-             screen_selected(snapshot, writes, blobs, manifest=manifest))
+             screen_selected(snapshot, writes, blobs, manifest=manifest, acknowledged=acknowledged))
     if checked.state != 'passed' or writes == ():
         return checked
     parts = snapshot.effective_projection if writes is None else writes

@@ -14,6 +14,7 @@ from oms.sources.models import (
 )
 from oms.sources.primitives import exact_digest
 from oms.sources.safety import SourceSafety
+from oms.sources.triage import part_check, part_label
 
 
 def origin_state(bound: MutationContext, origin: OriginRef) -> Binding | LocalStream:
@@ -169,8 +170,33 @@ def validate_choices(update: Update, choices: tuple[DraftChoice, ...]) -> None:
             else ("keep_oms", "use_upstream"))
         if choice.choice not in allowed or choice.choice == "use_upstream" and change.incoming.kind == "unknown":
             raise SourceConflict("review_choice_not_allowed")
+        check = part_check(update.plan, change, conflicts.get(choice.part_id))
+        if choice.acknowledged and (choice.choice != "use_upstream" or not check.held):
+            raise SourceConflict("review_choice_not_allowed", "only a flagged part taken from GitHub is acknowledged")
+        if choice.choice == "use_upstream" and check.held:
+            categories = set(check.overridable)
+            if not categories or not categories <= set(choice.acknowledged):
+                raise SourceConflict("personal_data_acknowledgement_required",
+                                     "Confirm that this personal data may be kept.")
+            if set(choice.acknowledged) - categories:
+                raise SourceConflict("review_choice_not_allowed", "acknowledged categories do not match this part")
         if choice.choice == "merged_text" and SourceSafety().check_text(choice.merged_text).state != "passed":
             raise SourceConflict("required_check_held", "merged text not safe")
+
+
+def acknowledgements(update: Update) -> dict[str, frozenset[str]]:
+    """Personal-data categories the reviewer confirmed, by part (spec 5)."""
+    return {choice.part_id: frozenset(choice.acknowledged) for choice in update.drafts
+            if choice.choice == "use_upstream" and choice.acknowledged}
+
+
+def acknowledgement_detail(update: Update) -> str | None:
+    """The history line for an apply that kept personal data (ruling R11), or None."""
+    changes = {change.part_id: change for change in update.plan.changes}
+    kept = [f"{part_label(changes[choice.part_id], flagged=True)} ({', '.join(sorted(choice.acknowledged))})"
+            for choice in update.drafts
+            if choice.choice == "use_upstream" and choice.acknowledged and choice.part_id in changes]
+    return "Kept personal data on review: " + "; ".join(kept) if kept else None
 
 
 def aligned_snapshot(incoming: SourceSnapshot, update: Update, local: LocalState) -> SourceSnapshot:

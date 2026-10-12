@@ -179,13 +179,16 @@ class SourceReads:
         if view.stale or incoming is None:
             checked = CheckResult(state="unavailable", code="review_state_changed")
         else:
+            from oms.sources import review
             from oms.sources.review import selected_writes
             try:
                 _, selected, _ = selected_writes(view, incoming, local, (), preview=True)
             except SourceConflict:
                 checked = CheckResult(state="held", code="review_decisions_required")
             else:
-                checked = self.service.policy.screen_resolved(incoming, local, selected)
+                acknowledged = review.acknowledgements(view)
+                checked = (self.service.policy.screen_resolved(incoming, local, selected, acknowledged=acknowledged)
+                           if acknowledged else self.service.policy.screen_resolved(incoming, local, selected))
         self.service.policy.admit("read", context, (view.plan.skill,))
         return view.model_copy(update={"resolved_check": checked})
 

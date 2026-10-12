@@ -28,7 +28,9 @@ export interface SourceChange extends SourceRecord {
 }
 export type SourceDraftChoice = {
   readonly format_version?: 1; readonly part_id: string; readonly part_fingerprint: string;
-} & ({ readonly choice: "keep_oms" | "use_upstream"; readonly merged_text?: null } | { readonly choice: "merged_text"; readonly merged_text: string });
+} & ({ readonly choice: "keep_oms"; readonly merged_text?: null }
+  | { readonly choice: "use_upstream"; readonly merged_text?: null; readonly acknowledged?: readonly ("phone" | "email")[] }
+  | { readonly choice: "merged_text"; readonly merged_text: string });
 export interface SourceConflict extends SourceRecord {
   readonly part_id: string; readonly reason: string; readonly allowed_choices: readonly SourceDraftChoice["choice"][];
 }

@@ -4,6 +4,7 @@
 (who may act, what is safe, what may apply by itself) and `SourceService` is the
 lifecycle the routes and the scheduler call.
 """
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Protocol, TYPE_CHECKING
 
@@ -131,8 +132,11 @@ class SourcePolicy(Protocol):
 
     def screen_resolved(self, snapshot: SourceSnapshot, local: LocalState,
                         writes: tuple[ProjectionPart, ...], *,
-                        manifest: tuple[ManifestEntry, ...] | None = None) -> CheckResult:
-        """Screen actual selected writes while retaining the original upstream evidence."""
+                        manifest: tuple[ManifestEntry, ...] | None = None,
+                        acknowledged: Mapping[str, frozenset[str]] | None = None) -> CheckResult:
+        """Screen actual selected writes while retaining the original upstream evidence.
+
+        `acknowledged` names, by part, the personal-data categories a reviewer confirmed may be kept."""
         ...
 
     def automatic_eligibility(self, plan: MergePlan, binding: Binding) -> CheckResult: ...
