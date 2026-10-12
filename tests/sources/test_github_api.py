@@ -127,7 +127,7 @@ def test_the_client_has_no_proxy_no_redirects_and_a_ten_second_timeout(monkeypat
     result, _ = fetch(lambda request: httpx.Response(200, json=REPOSITORY_JSON))
     assert result.facts is not None
     assert built["trust_env"] is False and built["follow_redirects"] is False
-    assert built["timeout"] == httpx.Timeout(10.0)
+    assert 9.0 < built["timeout"].connect <= 10.0   # the time left of the one 10 s deadline
 
 
 def codes(value, tracked="obra/superpowers"):
@@ -163,3 +163,58 @@ def test_facts_go_stale_after_an_hour():
     assert facts_stale(None, NOW)
     assert not facts_stale(facts(fetched_at=NOW - timedelta(minutes=59)), NOW)
     assert facts_stale(facts(fetched_at=NOW - timedelta(hours=1)), NOW)
+
+
+def test_a_slow_stream_is_cut_off_at_the_overall_deadline():
+    import threading
+    import time
+    release = threading.Event()
+
+    class Slow(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"{"
+            release.wait(5)
+            yield b"}"
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Slow()))
+    started = time.monotonic()
+    try:
+        result = fetch_repository_facts("obra", "superpowers", now=NOW, transport=transport,
+                                        resolve=lambda host: ["140.82.112.6"], timeout=0.3)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    assert (result.facts, result.code) == (None, "timeout")
+    assert elapsed < 2
+
+
+def test_a_slow_resolver_times_out_within_the_deadline():
+    import threading
+    import time
+    release = threading.Event()
+    started = time.monotonic()
+    try:
+        result = fetch_repository_facts("obra", "superpowers", now=NOW, timeout=0.3,
+                                        transport=httpx.MockTransport(lambda request: httpx.Response(200)),
+                                        resolve=lambda host: release.wait(5) or ["140.82.112.6"])
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+    assert (result.facts, result.code) == (None, "timeout") and elapsed < 2
+
+
+@pytest.mark.parametrize("token", ["tökén", "bad token", "line\nbreak"])
+def test_a_token_that_is_not_printable_ascii_is_refused_before_any_request(token):
+    result, seen = fetch(lambda request: httpx.Response(200, json=REPOSITORY_JSON), token=token)
+    assert (result.facts, result.code, seen) == (None, "credential_invalid", [])
+
+
+def test_deeply_nested_json_returns_a_code_not_an_exception():
+    nested = b"[" * 100_000 + b"]" * 100_000
+    result, _ = fetch(lambda request: httpx.Response(200, content=nested))
+    assert (result.facts, result.code) == (None, "invalid_response")
+
+
+def test_the_request_asks_for_no_content_encoding():
+    _, seen = fetch(lambda request: httpx.Response(200, json=REPOSITORY_JSON))
+    assert seen[0].headers["accept-encoding"] == "identity"

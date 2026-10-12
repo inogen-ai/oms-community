@@ -9,9 +9,11 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import concurrent.futures
 import json
 import re
 import socket
+import threading
 import time
 from typing import Literal
 
@@ -27,6 +29,7 @@ MAX_BYTES = 1024 * 1024
 NEW_REPOSITORY = timedelta(days=30)
 FEW_STARS = 10
 REFRESH_AFTER = timedelta(hours=1)
+_TOKEN = re.compile(r"[\x21-\x7e]+")
 _NAME = re.compile(r"[A-Za-z0-9_.-]{1,100}")
 # DNS has no timeout of its own; it runs here and is abandoned at the deadline.
 _RESOLVER = ThreadPoolExecutor(max_workers=2, thread_name_prefix="github-api-dns")
@@ -56,31 +59,14 @@ def _facts(data: object, now: datetime) -> RepositoryFacts:
         fetched_at=now)
 
 
-def fetch_repository_facts(owner: str, repo: str, *, now: datetime, token: str | None = None,
-                           transport: httpx.BaseTransport | None = None,
-                           resolve: Callable[[str], list[str]] = resolve_addresses,
-                           timeout: float = TIMEOUT_SECONDS, max_bytes: int = MAX_BYTES) -> FactsFetch:
-    if any(not _NAME.fullmatch(name) or name in {".", ".."} for name in (owner, repo)):
-        return FactsFetch(None, "invalid_repository")
-    deadline = time.monotonic() + timeout
-    try:
-        addresses = _RESOLVER.submit(resolve, API_HOST).result(timeout=timeout)
-    except Exception:
-        return FactsFetch(None, "dns_failed")
-    try:
-        host = pinned_address(addresses)
-    except ValueError:   # UnsafeDestination, or a resolver answer that is not an address
-        return FactsFetch(None, "unsafe_destination")
-    headers = {"Host": API_HOST, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
-               "User-Agent": "oms-skill-sources"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+def _exchange(url: str, headers: dict[str, str], transport: httpx.BaseTransport | None, timeout: float,
+              max_bytes: int, now: datetime, abandoned: threading.Event) -> FactsFetch:
+    """The HTTP exchange and the parse; any failure is a code. Stops reading once the caller has given up."""
     body = bytearray()
     try:
         with httpx.Client(transport=transport, trust_env=False, follow_redirects=False,
                           timeout=httpx.Timeout(timeout)) as client:
-            with client.stream("GET", f"https://{host}/repos/{owner}/{repo}", headers=headers,
-                               extensions={"sni_hostname": API_HOST}) as response:
+            with client.stream("GET", url, headers=headers, extensions={"sni_hostname": API_HOST}) as response:
                 if 300 <= response.status_code < 400:
                     return FactsFetch(None, "redirect_refused")
                 if response.status_code == 404:
@@ -93,19 +79,68 @@ def fetch_repository_facts(owner: str, repo: str, *, now: datetime, token: str |
                 if declared is not None and declared.isdigit() and int(declared) > max_bytes:
                     return FactsFetch(None, "response_too_large")
                 for chunk in response.iter_bytes():
+                    if abandoned.is_set():
+                        return FactsFetch(None, "timeout")
                     body.extend(chunk)
                     if len(body) > max_bytes:
                         return FactsFetch(None, "response_too_large")
-                    if time.monotonic() > deadline:
-                        return FactsFetch(None, "timeout")
     except httpx.TimeoutException:
         return FactsFetch(None, "timeout")
     except httpx.HTTPError:
+        return FactsFetch(None, "network_failed")
+    except Exception:
         return FactsFetch(None, "network_failed")
     try:
         return FactsFetch(_facts(json.loads(body), now))
     except (ValueError, TypeError, KeyError, ValidationError):
         return FactsFetch(None, "invalid_response")
+    except Exception:   # for example RecursionError from deeply nested JSON
+        return FactsFetch(None, "invalid_response")
+
+
+def fetch_repository_facts(owner: str, repo: str, *, now: datetime, token: str | None = None,
+                           transport: httpx.BaseTransport | None = None,
+                           resolve: Callable[[str], list[str]] = resolve_addresses,
+                           timeout: float = TIMEOUT_SECONDS, max_bytes: int = MAX_BYTES) -> FactsFetch:
+    """One wall-clock deadline of `timeout` seconds bounds DNS, connect, TLS, headers and body together."""
+    if any(not _NAME.fullmatch(name) or name in {".", ".."} for name in (owner, repo)):
+        return FactsFetch(None, "invalid_repository")
+    if token and not _TOKEN.fullmatch(token):
+        return FactsFetch(None, "credential_invalid")
+    deadline = time.monotonic() + timeout
+    lookup = _RESOLVER.submit(resolve, API_HOST)
+    try:
+        addresses = lookup.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        lookup.cancel()
+        return FactsFetch(None, "timeout")
+    except Exception:
+        return FactsFetch(None, "dns_failed")
+    try:
+        host = pinned_address(addresses)
+    except ValueError:   # UnsafeDestination, or a resolver answer that is not an address
+        return FactsFetch(None, "unsafe_destination")
+    headers = {"Host": API_HOST, "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+               "User-Agent": "oms-skill-sources", "Accept-Encoding": "identity"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return FactsFetch(None, "timeout")
+    # A private holder per call: a worker that outlives the deadline writes only to its own list.
+    outcome: list[FactsFetch] = []
+    abandoned = threading.Event()
+    url = f"https://{host}/repos/{owner}/{repo}"
+
+    def work() -> None:
+        outcome.append(_exchange(url, headers, transport, remaining, max_bytes, now, abandoned))
+    worker = threading.Thread(target=work, name="github-api-fetch", daemon=True)
+    worker.start()
+    worker.join(max(deadline - time.monotonic(), 0))
+    if worker.is_alive():
+        abandoned.set()
+        return FactsFetch(None, "timeout")
+    return outcome[0] if outcome else FactsFetch(None, "network_failed")
 
 
 class RepositoryConcern(Record):
