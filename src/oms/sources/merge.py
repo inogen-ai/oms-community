@@ -121,6 +121,29 @@ def _personal_data_only(check: CheckResult, key: str, kind: PartKind) -> bool:
     return (check.state == 'held' and own and personal_data_only((check.code, *check.reasons), check.findings))
 
 
+def _kept_personal_data(check: CheckResult, kept: frozenset[str]) -> bool:
+    """A whole-package hold that is personal data alone, found only on parts the plan keeps (ruling F1).
+
+    A reviewer who took such a part anyway, or left it out, is not asked again on every later check
+    of the same commit. A finding counts when it names a kept part (by part id, or a file by its
+    path); a SKILL.md finding counts through a finding of the same category on a projected part,
+    which must be kept too. Anything else, including a finding no kept part accounts for, holds."""
+    if check.state != 'held' or not personal_data_only((check.code, *check.reasons), check.findings):
+        return False
+    in_parts = {finding.category for finding in check.findings
+                if finding.part_id is not None and finding.path in (None, 'SKILL.md')}
+    for finding in check.findings:
+        if finding.part_id is None and finding.path is None:
+            return False
+        if finding.part_id is not None and finding.part_id not in kept:
+            return False
+        if finding.path is not None and finding.path != 'SKILL.md' and 'file:' + finding.path not in kept:
+            return False
+        if finding.path == 'SKILL.md' and finding.part_id is None and finding.category not in in_parts:
+            return False
+    return True
+
+
 def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                local: LocalState, policy: MergePolicy) -> MergePlan:
     if incoming.ref.origin.skill != local.skill or base is not None and not base.ref.is_base_for(incoming.ref.origin):
@@ -214,10 +237,6 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
         raise ValueError('duplicate file checks')
     check_findings, part_findings = [], []
     part_located: dict[str, list[CheckFinding]] = {}
-    for check in policy.required_checks:
-        if check.state != 'passed':
-            flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
-            check_findings.extend(check.findings or (CheckFinding(category=f'policy:{check.code}'),))
     keys = sorted(prior.keys() | upstream.keys() | live.keys())
     # Order is compared as rank among shared siblings, not as absolute index, so
     # an upstream insertion that shifts everything below it is not a hundred
@@ -387,6 +406,13 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                                                                         if old_conflict else ''),
                                       allowed_choices=old_conflict.allowed_choices if old_conflict
                                       else _choices(change.kind))
+    # The required checks screen the whole package, so they are judged once the plan knows
+    # which parts change: personal data on parts that stay as they are holds nothing.
+    kept = frozenset(key for key, change in changes.items() if change.action == 'keep')
+    for check in policy.required_checks:
+        if check.state != 'passed' and not _kept_personal_data(check, kept):
+            flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
+            check_findings.extend(check.findings or (CheckFinding(category=f'policy:{check.code}'),))
     if conflicts:
         flags.add(PlanFlag.CONFLICT)
     ordered = sorted(changes, key=lambda key: (*sequence_key(live.get(key) or upstream.get(key) or prior[key]), key))
