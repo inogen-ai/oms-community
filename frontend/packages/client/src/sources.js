@@ -96,6 +96,8 @@ const sameChoices = (a, b) => a.length === b.length && a.every(choice => b.some(
  * `options.onStopped(reason)` with "unavailable" (the read-back failed), "stale", "changed"
  * (someone else saved other choices) or "held". A failed save is not a stop: the host's `run`
  * reports it with its recovery. Each request runs through `run`, so each keeps its own key.
+ * Hosts call it inside one flow whose `run` does not refresh, and refresh once when it settles
+ * (follow-up C): nothing is read again between the save and the apply.
  */
 export async function applyReviewedChoices(client, run, updateId, body, { onStopped } = {}) {
   let fingerprint = body.fingerprint;

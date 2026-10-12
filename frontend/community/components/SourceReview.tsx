@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { applyReviewedChoices, type SourceChange, type SourceFilePreview, type SourceReviewStop } from "@inogen/oms-client";
-import { Button, Notice, SkillDeleteConfirmation, SourceFileComparison, SourceUpdateCard, carrySourceDraft, type SourceCardDraft, type SourceCardFileView, type SourceFileSide, type SourceFileSidePreview } from "@inogen/oms-ui-core";
+import { Button, Notice, SkillDeleteConfirmation, SourceFileComparison, SourceUpdateCard, carrySourceDraft, sourceInstalledMessage, type SourceCardApply, type SourceCardDraft, type SourceCardFileView, type SourceFileSide, type SourceFileSidePreview } from "@inogen/oms-ui-core";
 import { useWorkspace, useAction, Feedback, ResourceStatus, message } from "@/lib/workspace";
 import { useSourceAction, useSourceResource } from "@/lib/source-state";
 import { saveSourceDownload } from "@/lib/sources";
@@ -15,7 +15,12 @@ const STOPPED: Record<SourceReviewStop, string> = {
   unavailable: "The card could not be read back. Try again.",
 };
 
-export default function SourceReview({ id, title, draft, onDraftChange }: { id: string; title?: string; draft?: SourceCardDraft; onDraftChange?: (draft?: SourceCardDraft) => void }) {
+/**
+ * One update's review card. `onInstalled` takes the confirmation ("brainstorming installed.") once the one-step
+ * install or apply succeeded: the card then leaves, and a host whose list drops it shows the line where the reader
+ * is. Without it the confirmation shows here, in the card's place.
+ */
+export default function SourceReview({ id, title, draft, onDraftChange, onInstalled }: { id: string; title?: string; draft?: SourceCardDraft; onDraftChange?: (draft?: SourceCardDraft) => void; onInstalled?: (message: string) => void }) {
   const { api, sources, sourceRevision, refreshSources } = useWorkspace();
   const resource = useSourceResource(() => sources!.client.update(id), [sources, id]);
   const [localDraft, setLocalDraft] = useState<SourceCardDraft | undefined>(undefined);
@@ -25,6 +30,7 @@ export default function SourceReview({ id, title, draft, onDraftChange }: { id: 
   const deletion = useAction();
   const [deleting, setDeleting] = useState<string | null>(null);
   const [stopped, setStopped] = useState<SourceReviewStop | null>(null);
+  const [installed, setInstalled] = useState("");
   const skillName = title ?? resource.data?.plan.skill.skill_id ?? "";
   const stop = (reason: SourceReviewStop) => {
     setStopped(reason);
@@ -36,11 +42,26 @@ export default function SourceReview({ id, title, draft, onDraftChange }: { id: 
     const carried = carrySourceDraft(currentDraft, resource.data, resource.data?.part_fingerprints);
     if (carried !== currentDraft) changeDraft(carried);
   }, [resource.data, currentDraft]);
+  // Follow-up C: the save, the read-back and the apply are one flow. It refreshes once, when it settles, so the
+  // card is not read again in between; on success the card is done and is not shown again on its way out.
+  function install(body: SourceCardApply) {
+    const card = resource.data!;
+    setStopped(null);
+    void action.flow(async send => {
+      const result = await applyReviewedChoices(sources!.client, send, id, body, { onStopped: stop });
+      if (result?.state === "complete") {
+        const confirmation = sourceInstalledMessage(card, title);
+        changeDraft(undefined); setInstalled(confirmation); onInstalled?.(confirmation);
+      }
+      return result;
+    });
+  }
+  if (installed) return onInstalled ? null : <Notice kind="success">{installed}</Notice>;
   return <><ResourceStatus resource={resource} /><SourceActionFeedback action={action} />
     {stopped && <Notice kind="error">{STOPPED[stopped]}</Notice>}
     {resource.data && <><SourceUpdateCard update={resource.data} title={title} draft={currentDraft} partFingerprints={resource.data.part_fingerprints} ownership={resource.data.ownership}
-      busy={action.busy || resource.loading || deletion.busy} onDraftChange={value => { setStopped(null); changeDraft(value); }}
-      onApply={body => { setStopped(null); void applyReviewedChoices(sources!.client, action.run, id, body, { onStopped: stop }); }}
+      busy={action.busy || resource.loading || deletion.busy} installing={action.flowing} onDraftChange={value => { setStopped(null); changeDraft(value); }}
+      onApply={install}
       onSkip={body => { setStopped(null); void action.run(key => sources!.client.skip(id, body, key), JSON.stringify(["skip", id, body])); }}
       onAdopt={body => { setStopped(null); void action.run(key => sources!.client.adopt(id, body, key), JSON.stringify(["adopt", id, body])); }}
       onRecheck={body => { setStopped(null); void action.run(key => sources!.client.recheck(id, body, key), JSON.stringify(["recheck", id, body])); }}

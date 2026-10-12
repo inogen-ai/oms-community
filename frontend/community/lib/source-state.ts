@@ -40,10 +40,10 @@ function operationPath(identity: string): string | null {
 
 export function useSourceAction() {
   const { sources, refreshSources } = useWorkspace();
-  const mounted = useRef(true), running = useRef(false), currentSources = useRef(sources);
+  const mounted = useRef(true), running = useRef(false), flowRunning = useRef(false), currentSources = useRef(sources);
   currentSources.current = sources;
   const current = () => mounted.current && currentSources.current === sources;
-  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [flowing, setFlowing] = useState(false);
   const [operation, setOperation] = useState<SourceOperation | null>(null);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [canRetryOriginalInput, setCanRetryOriginalInput] = useState(false);
@@ -68,7 +68,9 @@ export function useSourceAction() {
     if (["complete", "awaiting_review", "blocked", "failed"].includes(result.state)) { setRecoveryKey(null); setCanRetryOriginalInput(false); }
     return result;
   }
-  async function run(job: (key: string) => Promise<SourceOperation>, identity: string) {
+  // A request of its own is refused while a flow runs; the flow's own requests go through `send`.
+  const run = (job: (key: string) => Promise<SourceOperation>, identity: string) => flowRunning.current ? Promise.resolve(null) : send(job, identity);
+  async function send(job: (key: string) => Promise<SourceOperation>, identity: string) {
     if (running.current || !sources) return null;
     running.current = true; setBusy(true); setError(""); setOperation(null);
     const explicitKey = originalInputKey;
@@ -88,10 +90,24 @@ export function useSourceAction() {
       setRecoveryKey(key);
       return accept(await job(key));
     } catch (failure) { await retainFailure(failure, key); return null; }
-    finally { running.current = false; if (current()) { setBusy(false); refreshSources(); } }
+    finally {
+      // Inside a flow the flow settles once, at its end.
+      running.current = false; if (current() && !flowRunning.current) { setBusy(false); refreshSources(); }
+    }
+  }
+  /**
+   * Several requests as one action, such as the one-step install (follow-up C). Each request inside keeps its own key
+   * and recovery, but the action stays busy from the first request to the last and nothing is read again until the
+   * flow settles: then the workspace is refreshed once. A second flow, or another request, cannot start while one runs.
+   */
+  async function flow<T>(steps: (step: typeof send) => Promise<T>): Promise<T | null> {
+    if (running.current || flowRunning.current || !sources) return null;
+    flowRunning.current = true; setFlowing(true); setBusy(true);
+    try { return await steps(send); }
+    finally { flowRunning.current = false; if (current()) { setFlowing(false); setBusy(false); refreshSources(); } }
   }
   async function recover() {
-    if (running.current || !sources || !recoveryKey) return;
+    if (running.current || flowRunning.current || !sources || !recoveryKey) return;
     running.current = true; setBusy(true); setError(""); setOriginalInputKey(null);
     try {
       const result = await sources.requests.recover(recoveryKey);
@@ -102,6 +118,6 @@ export function useSourceAction() {
   function selectOriginalInputRetry(selected: boolean) {
     setOriginalInputKey(selected && canRetryOriginalInput ? recoveryKey : null);
   }
-  return { busy, error, operation, run, recover, recoveryKey, canRetryOriginalInput,
+  return { busy, flowing, error, operation, run, flow, recover, recoveryKey, canRetryOriginalInput,
     retryOriginalInput: !!recoveryKey && originalInputKey === recoveryKey, selectOriginalInputRetry };
 }

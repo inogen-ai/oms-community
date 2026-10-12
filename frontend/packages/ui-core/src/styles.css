@@ -415,6 +415,7 @@
 .oms-source-fact, .oms-source-note { color: var(--oms-muted); }
 .oms-source-concerns { display: flex; flex-wrap: wrap; gap: 6px; flex-basis: 100%; }
 .oms-source-sentence { font-weight: 600; margin: 8px 0 14px; }
+.oms-source-installing { padding: 10px 14px; border: 1px solid var(--oms-notice-line); background: var(--oms-notice-paper); border-radius: 8px; }
 .oms-source-whole, .oms-source-group, .oms-source-item, .oms-source-safe { border: 1px solid var(--oms-line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; min-width: 0; }
 .oms-source-whole { border-color: var(--oms-error-line); background: var(--oms-error-paper); color: var(--oms-error-ink); }
 .oms-source-group .oms-source-item { border: 0; border-top: 1px solid var(--oms-line); border-radius: 0; padding-inline: 0; }

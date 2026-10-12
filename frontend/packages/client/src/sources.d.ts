@@ -231,7 +231,8 @@ export function createSourcesClient(options: { request: SourceRequest; requestBy
 /**
  * Save (only when body.save), read the card back, stop (null) when the save failed, or when the card is
  * unreadable, stale, holds other choices than `body.choices` or did not pass (each calls `options.onStopped`),
- * then apply with the fresh fingerprint. `run` is the host's action.run, so each request keeps its own key.
+ * then apply with the fresh fingerprint. `run` is the host's action.run, so each request keeps its own key;
+ * hosts pass the `run` of one flow that refreshes once, when it settles, never between the save and the apply.
  */
 export function applyReviewedChoices(client: Pick<SourcesClient, "saveDraft" | "update" | "apply">, run: SourceActionRun,
                                      updateId: string, body: SourceReviewedChoices, options?: SourceReviewOptions): Promise<SourceOperation | null>;

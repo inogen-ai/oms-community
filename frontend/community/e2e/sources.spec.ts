@@ -148,6 +148,71 @@ for (const [control, action] of [["Check safety again", "recheck"], ["Skip this 
   });
 }
 
+test("Install says it is running, reads nothing again between the draft and the apply, then says the skill was installed", async ({ page }) => {
+  // Follow-up C: one visible install. The draft and the apply are held open so the card can be read while each is in flight.
+  const state = await sourceFixture(page);
+  state.update.held_install = true;
+  const api = `http://127.0.0.1:${process.env.OMS_COMMUNITY_API_PORT || "4317"}`;
+  const gate = () => { let release!: () => void; const opened = new Promise<void>(done => { release = done; }); return { opened, release, seen: false }; };
+  const draft = gate(), apply = gate();
+  for (const [action, held] of [["draft", draft], ["apply", apply]] as const) {
+    await page.route(`${api}/api/skill-updates/update-1/${action}`, async route => {
+      if (route.request().method() === "POST") { held.seen = true; await held.opened; }
+      return route.fallback();
+    });
+  }
+  const lists = () => state.requests.filter(row => row.method === "GET" && row.path === "/api/skill-updates").length;
+  await page.goto("/import/?github=sources&update=update-1");
+  await page.getByLabel("Take GitHub's version for section:intro").check();
+  await expect(page.getByText("Ready to install.")).toBeVisible();
+  const listsOnLoad = lists();
+  await page.getByRole("button", { name: "Install skill" }).click();
+  await expect.poll(() => draft.seen).toBe(true);
+  const installing = page.getByRole("status").filter({ hasText: "Installing Expense review…" });
+  await expect(installing).toBeVisible();
+  await expect(page.getByRole("button", { name: "Install skill" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Installing…" })).toBeDisabled();
+  await expect(page.getByLabel("Take GitHub's version for section:intro")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Check safety again" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Discard local choices" })).toBeDisabled();
+  const before = state.requests.length;
+  draft.release();
+  await expect.poll(() => apply.seen).toBe(true);
+  // Anything a refresh would read again has had time to go out; only the one read-back of the card may have.
+  await page.waitForTimeout(500);
+  expect(state.requests.slice(before).map(row => `${row.method} ${row.path}`)).toEqual(["POST /api/skill-updates/update-1/draft", "GET /api/skill-updates/update-1"]);
+  await expect(installing).toBeVisible();
+  apply.release();
+  await expect(page.getByRole("status").filter({ hasText: "Expense review installed." })).toBeVisible();
+  await expect(installing).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Install/ })).toHaveCount(0);
+  expect(state.decisions).toEqual(["apply"]);
+  // One refresh when the flow settled: each update list on the page is read once more, as many as on load.
+  await page.waitForTimeout(500);
+  expect(lists()).toBe(listsOnLoad * 2);
+  expect(state.violations).toEqual([]);
+});
+
+test("a stopped Install unlocks the card and confirms nothing", async ({ page }) => {
+  const state = await sourceFixture(page);
+  state.update.held_install = true;
+  const api = `http://127.0.0.1:${process.env.OMS_COMMUNITY_API_PORT || "4317"}`;
+  const headers = { "Access-Control-Allow-Origin": `http://127.0.0.1:${process.env.OMS_COMMUNITY_UI_PORT || "4318"}` };
+  await page.route(`${api}/api/skill-updates/update-1`, async route => {
+    if (route.request().method() !== "GET" || !state.requests.some(row => row.path.endsWith("/draft"))) return route.fallback();
+    await route.fulfill({ headers, json: { ...structuredClone(state.update), resolved_check: { format_version: 1, state: "held", code: "source_text_hold", reasons: [] } } });
+  });
+  await page.goto("/import/?github=sources&update=update-1");
+  await page.getByLabel("Take GitHub's version for section:intro").check();
+  await page.getByRole("button", { name: "Install skill" }).click();
+  await expect(page.getByText("A safety check still holds these choices.")).toBeVisible();
+  await expect(page.getByText("Installing Expense review…")).toHaveCount(0);
+  await expect(page.getByLabel("Take GitHub's version for section:intro")).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Check safety again" })).toBeEnabled();
+  await expect(page.getByText("Expense review installed.")).toHaveCount(0);
+  expect(state.decisions).toEqual([]);
+});
+
 test("a removal is one choice, and keeping it sends no consent", async ({ page }) => {
   const state = await sourceFixture(page, { removal: true });
   await page.goto("/import/?github=sources&update=update-1");

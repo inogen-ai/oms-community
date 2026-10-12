@@ -105,10 +105,17 @@ export interface SourceCardState {
  */
 export function sourceStatusSentence(update: SourceCardUpdate, state: Pick<SourceCardState, "stale" | "waitingItems" | "held" | "taken" | "canApply">): string;
 export function sourceCardState(update: SourceCardUpdate, draft?: SourceCardDraft, partFingerprints?: Readonly<Record<string, string>>): SourceCardState;
+/** What the host says once a one-step install or apply succeeded and its card has left: "brainstorming installed." or "Update applied to Writing." */
+export function sourceInstalledMessage(update: SourceCardUpdate, title?: string): string;
 export function SourceUpdateCard(props: {
   update?: SourceCardUpdate | null; title?: string; draft?: SourceCardDraft;
   partFingerprints?: Readonly<Record<string, string>>; ownership?: Readonly<Record<string, "source" | "shared" | "local" | "unknown">>;
   ref?: SourceRefDisplay; now?: Date; busy?: boolean; loading?: boolean; error?: string; unavailable?: string; freshness?: "fresh" | "stale" | "unavailable";
+  /**
+   * The host's one-step install or apply is running: the status line reads "Installing <name>…" ("Applying the update to <name>…"),
+   * the primary button "Installing…" ("Applying…"), and every control is disabled, as with `busy`.
+   */
+  installing?: boolean;
   onDraftChange?: (draft: SourceCardDraft) => void;
   onApply?: (body: SourceCardApply) => void;
   onSkip?: (body: SourceCardAction) => void; onAdopt?: (body: SourceCardAction) => void; onRecheck?: (body: SourceCardAction) => void;

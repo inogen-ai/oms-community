@@ -12,7 +12,7 @@ export { SourceDiscovery, initialSourceSelections, sourceSkillId } from "./sourc
 export { SourceStatus, SourceUndo, sourceBulkExclusions } from "./source-status.js";
 export { SourceFileComparison, boundedSourceText, sourceAbsentSides, sourceLineScrollTop } from "./source-files.js";
 export { SOURCE_RISK_LABELS, SOURCE_RISK_ORDER, SourceUpdateCard, carrySourceDraft, initialSourceDraft, sourceCardState, sourceChoiceOptions, sourceEffectiveChoices,
-  sourceFindingReasons, sourceFlaggedLines, sourceGroupOptions, sourceNeedsYou, sourceReviewParts, sourceSafeSummary, sourceStatusSentence } from "./source-card.js";
+  sourceFindingReasons, sourceFlaggedLines, sourceGroupOptions, sourceInstalledMessage, sourceNeedsYou, sourceReviewParts, sourceSafeSummary, sourceStatusSentence } from "./source-card.js";
 export { SourceRepositoryLine, sourceRepositoryFacts, sourceUpdatedAgo } from "./source-repository.js";
 export { SourceLookupForm, SourcePendingNotice, sourceLookupBody, sourceLookupValue, sourcePendingSubject } from "./source-lookup.js";
 export { SourceChangeConfirmation } from "./source-confirm.js";

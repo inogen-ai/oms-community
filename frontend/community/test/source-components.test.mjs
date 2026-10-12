@@ -87,6 +87,46 @@ test("a held install asks only about the flagged file and installs the rest in o
   assert.deepEqual(sent.choices.map(row => [row.part_id, row.choice]).sort(), [["file:b.md", "use_upstream"], ["file:visual-companion.md", "use_upstream"], ["rule:a", "use_upstream"], ["section:s", "use_upstream"]]);
 });
 
+test("while the one-step install runs, the card says so at the top and every control waits", () => {
+  // Follow-up C: from the click until the host's flow settles, nothing on the card can start a second request.
+  const calls = [];
+  const taken = { fingerprint, choices: [{ part_id: "file:visual-companion.md", part_fingerprint: "fp-file:visual-companion.md", choice: "use_upstream", merged_text: null, acknowledged: ["phone"] }], removal_consents: [] };
+  const props = { update: held(), title: "brainstorming", partFingerprints: fingerprints, draft: taken, onDraftChange: () => calls.push("draft"),
+    onApply: () => calls.push("apply"), onRecheck: () => calls.push("recheck"), onDeleteSkill: () => calls.push("delete") };
+  const sentence = tree => nodes(tree).find(node => node.props?.className?.split(" ").includes("oms-source-sentence"));
+  const ready = component("SourceUpdateCard", props);
+  assert.equal(text(sentence(ready)), "Ready to install.");
+  assert.equal(button(ready, "Install skill").props.disabled, false);
+  const tree = component("SourceUpdateCard", { ...props, installing: true });
+  assert.equal(sentence(tree).props.role, "status");
+  assert.equal(text(sentence(tree)), "Installing brainstorming…");
+  assert.equal(tree.props["aria-busy"], true);
+  assert.equal(button(tree, "Install skill"), undefined);
+  assert.equal(button(tree, "Installing…").props.disabled, true);
+  for (const label of ["Delete skill", "Check safety again"]) assert.equal(button(tree, label).props.disabled, true, label);
+  const controls = nodes(tree).filter(node => ["input", "textarea", "select"].includes(node.type));
+  assert.ok(controls.length >= 5);
+  for (const control of controls) assert.equal(control.props.disabled, true, control.props["aria-label"]);
+  // A click that still arrives starts nothing.
+  for (const label of ["Installing…", "Delete skill", "Check safety again"]) button(tree, label).props.onClick();
+  input(tree, "Leave out for visual-companion.md").props.onChange({ target: { checked: true } });
+  input(tree, "Leave out Rule: Always write tests").props.onChange({ target: { checked: true } });
+  assert.deepEqual(calls, []);
+
+  const normal = update(); normal.parts = { "section:intro": part("section:intro", "section", { label: "Section: Intro", attention: "decide", risks: ["your_edits"], default: null }) };
+  const kept = { fingerprint, choices: [{ part_id: "section:intro", part_fingerprint: "p", choice: "keep_oms", merged_text: null }], removal_consents: [] };
+  const applying = component("SourceUpdateCard", { update: normal, title: "Writing", partFingerprints: { "section:intro": "p" }, draft: kept, installing: true,
+    onApply() {}, onSkip() {}, onAdopt() {}, onRecheck() {}, onDraftChange() {} });
+  assert.equal(text(sentence(applying)), "Applying the update to Writing…");
+  assert.equal(button(applying, "Apply update"), undefined);
+  for (const label of ["Applying…", "Skip this version", "Keep my version and mark this update as seen", "Check safety again"]) assert.equal(button(applying, label).props.disabled, true, label);
+  for (const control of nodes(applying).filter(node => ["input", "textarea"].includes(node.type))) assert.equal(control.props.disabled, true);
+  // What the host says once the card has left: the card's own name for the skill.
+  assert.equal(ui.sourceInstalledMessage(held(), "brainstorming"), "brainstorming installed.");
+  assert.equal(ui.sourceInstalledMessage(held()), "skill-1 installed.");
+  assert.equal(ui.sourceInstalledMessage(normal, "Writing"), "Update applied to Writing.");
+});
+
 test("choice labels say what happens in the reader's terms", () => {
   const yours = update(); yours.parts = { "section:intro": part("section:intro", "section", { label: "Section: Intro", attention: "decide", risks: ["your_edits"], default: null }) };
   let tree = component("SourceUpdateCard", { update: yours, partFingerprints: { "section:intro": "p" }, onDraftChange() {} });

@@ -219,6 +219,12 @@ export function sourceStatusSentence(update, state) {
   return `Not ready to ${verb}. See the notes below.`;
 }
 
+// Follow-up C: what the host says once a one-step install or apply succeeded and its card has left.
+export function sourceInstalledMessage(update, title) {
+  const name = title || update.plan.skill.skill_id;
+  return update.held_install === true ? `${name} installed.` : `Update applied to ${name}.`;
+}
+
 export function sourceCardState(update, draft = initialSourceDraft(update), partFingerprints = {}) {
   const parts = sourceReviewParts(update);
   const changes = new Map(update.plan.changes.map(change => [change.part_id, change]));
@@ -287,15 +293,17 @@ function choiceNotes(option, idBase) {
 
 export function SourceUpdateCard({ update, title, draft: controlledDraft, partFingerprints = {}, ownership = {}, ref, now,
   onDraftChange, onApply, onSkip, onAdopt, onRecheck, onDeleteSkill, renderFile,
-  busy = false, loading = false, error, unavailable, freshness = "fresh" }) {
+  busy = false, installing = false, loading = false, error, unavailable, freshness = "fresh" }) {
   if (loading) return h(Notice, null, "Loading source comparison…");
   if (unavailable) return h(Notice, null, unavailable);
   if (!update) return error ? h(Notice, { kind: "error" }, error) : h(EmptyState, { title: "No source update" }, "There is no open update for this skill.");
   const closed = update.status !== "open";
   const draft = controlledDraft ?? initialSourceDraft(update);
   const state = sourceCardState(update, draft, partFingerprints);
-  const disabled = busy || !!error || freshness !== "fresh" || state.stale || closed;
-  const recheckDisabled = busy || !!error || closed;
+  // Follow-up C: while the host's one-step install runs, every control waits, whatever else the host says.
+  const working = busy || installing;
+  const disabled = working || !!error || freshness !== "fresh" || state.stale || closed;
+  const recheckDisabled = working || !!error || closed;
   const canEdit = !disabled && !!onDraftChange;
   const heldInstall = update.held_install === true;
   const github = update.plan.origin.kind === "github";
@@ -432,9 +440,12 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
   const verb = heldInstall ? "install" : "apply";
 
   return h(Panel, { title: heldInstall ? `New skill from GitHub: ${name}` : github ? `Update from GitHub: ${name}` : `Update from a local package: ${name}`,
-    className: "oms-source-card", "aria-busy": busy },
+    className: "oms-source-card", "aria-busy": working },
     github ? h(SourceRepositoryLine, { repository: update.repository ?? null, now }) : null,
     closed ? h("p", null, "Recorded historical comparison. The OMS side shows content at review time. This update no longer accepts decisions.")
+      // While the one-step install runs the same status line says so (follow-up C), so it is announced where the reader looks.
+      : installing ? h("p", { role: "status", className: "oms-source-sentence oms-source-installing" },
+        heldInstall ? `Installing ${name}…` : `Applying the update to ${name}…`)
       // The sentence carries the out-of-date and nothing-taken wording, so neither repeats below it.
       : h("p", { role: "status", className: "oms-source-sentence" }, sourceStatusSentence(update,
         { ...state, stale: state.stale || freshness === "stale", canApply: state.canApply && freshness === "fresh" && !error })),
@@ -459,8 +470,8 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
     !closed ? h("div", { className: "oms-source-actions" },
       onApply ? h(Button, { disabled: disabled || !state.canApply, onClick: () => {
         if (!disabled && state.canApply) onApply({ ...body, choices: state.choices, removal_consents: [...new Set(state.groups.flat())], save: !state.saved });
-      } }, heldInstall ? "Install skill" : "Apply update") : null,
-      heldInstall && onDeleteSkill ? h(Button, { variant: "secondary", disabled: busy, onClick: () => { if (!busy) onDeleteSkill(); } }, "Delete skill") : null,
+      } }, installing ? (heldInstall ? "Installing…" : "Applying…") : heldInstall ? "Install skill" : "Apply update") : null,
+      heldInstall && onDeleteSkill ? h(Button, { variant: "secondary", disabled: working, onClick: () => { if (!working) onDeleteSkill(); } }, "Delete skill") : null,
       onSkip && !heldInstall ? h(Button, { variant: "secondary", disabled, onClick: act(onSkip, body) }, "Skip this version") : null,
       onAdopt && !heldInstall ? h(Button, { variant: "secondary", disabled, onClick: act(onAdopt, body) }, "Keep my version and mark this update as seen") : null,
       onRecheck ? h(Button, { variant: "secondary", disabled: recheckDisabled, onClick: () => { if (!recheckDisabled) onRecheck(body); } }, "Check safety again") : null) : null,
