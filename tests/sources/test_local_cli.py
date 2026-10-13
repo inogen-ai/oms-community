@@ -46,3 +46,30 @@ def test_public_cli_reports_noninteractive_refusal_as_unsuccessful(source_world,
     assert main(["import", str(path), "--target", "expenses"]) == 1
     assert '"state": "awaiting_review"' in capsys.readouterr().out
     assert world.description() == "First description"
+
+
+def test_public_cli_reports_a_held_new_package_as_awaiting_review(source_world, tmp_path, monkeypatch, capsys):
+    import json
+    from oms.cli import main
+    from oms.settings.core import CoreSettings
+    import oms.adapters.neo4j.driver as driver_module
+    import oms.community.app as composition
+    world = source_world
+    world.policy.held = True
+    path = tmp_path / "input"
+    path.mkdir()
+    (path / "SKILL.md").write_bytes(world.blobs.get(world.package("c", "Incoming local text").manifest[0].blob_ref))
+    importer = uploads_for(world, tmp_path)._importer
+    world.policy.context = lambda: world.context
+    settings = CoreSettings(data_dir=tmp_path, tenant_id="acme")
+    monkeypatch.setattr(CoreSettings, "from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr(driver_module, "build_driver", lambda *args: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(composition, "build_community", lambda *args: SimpleNamespace(sources=world.service, importer=importer))
+    assert main(["import", str(path)]) == 1
+    reported = json.loads(capsys.readouterr().out)
+    assert reported["state"] == "awaiting_review" and reported["committed"]
+    outcome, = reported["outcomes"]
+    assert (outcome["skill"]["skill_id"], outcome["state"], outcome["code"]) == (
+        "expenses", "awaiting_review", "safety_review_required")
+    assert outcome["update_id"] == world.sources.open_update(world.skill).update_id
+    assert world.store.get_skill("expenses", tenant_id="acme").status.value == "held"

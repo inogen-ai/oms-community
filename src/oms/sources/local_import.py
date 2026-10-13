@@ -19,6 +19,7 @@ from oms.sources import operations, review
 from oms.sources.apply import PreparedApply, apply_parts, commit_apply
 from oms.sources.errors import SourceConflict, SourceNotFound, StaleMutation
 from oms.sources.forks import affected_owners
+from oms.sources.installation import hold_new_skill
 from oms.sources.local_package import retain_local_packages
 from oms.sources.local_projection import project_local
 from oms.sources.local_upload import LocalSelection, batch_request, describe_packages
@@ -145,10 +146,28 @@ def submit_local(service: SourceService, context: ActionContext, request: LocalI
                     state="complete", committed=False, outcomes=(SkillOutcome(skill=skill, state="unchanged"),)))
             if request.create:
                 if not new_allowed:
+                    if not request.approve:
+                        return operations.finish(bound.sources, operation,
+                                                 OperationResult(operation_id=operation.operation_id,
+                            state="blocked", committed=False,
+                            outcomes=(SkillOutcome(skill=skill, state="blocked",
+                                                   code="approval_or_checks_required"),)))
+                    # A package that may not go live as it is waits on a review card as
+                    # an empty held skill, as a repository install does (spec 2.1). A
+                    # local stream leaves the binding generation where it was, and the
+                    # skill records its upload origin as a direct create does.
+                    outcome, history_id = hold_new_skill(service, bound, context, operation,
+                        snapshot=incoming, name=request.local_name, domain=request.domain, guard=before.guard,
+                        check=checked, action="local_import", binding_generation=before.guard.binding,
+                        import_source_ref="source:" + origin.origin_id,
+                        put_origin_state=lambda current: current.sources.put_local_stream(holder))
+                    event_id = operation.operation_id + ":local-installed"
+                    bound.events.append_event(DurableEvent(event_id=event_id, tenant_id=skill.tenant_id,
+                        operation_id=operation.operation_id, action="local_import", skills=(skill,)))
                     return operations.finish(bound.sources, operation,
                                              OperationResult(operation_id=operation.operation_id,
-                        state="blocked", committed=False,
-                        outcomes=(SkillOutcome(skill=skill, state="blocked", code="approval_or_checks_required"),)))
+                        state="awaiting_review", committed=True, outcomes=(outcome,)),
+                        history_ids=(history_id,) if history_id else (), event_ids=(event_id,))
                 bound.graph.upsert_skill(Skill(id=skill.skill_id, name=request.local_name, domain=request.domain,
                     description="", tenant_id=skill.tenant_id, import_source_ref="source:" + origin.origin_id))
                 resolved = apply_parts(bound, incoming, incoming.effective_projection, now=service.clock(),

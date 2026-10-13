@@ -9,20 +9,65 @@ Changing the return type rather than adding a second method is deliberate. With
 two methods, a caller that wanted redactions and called the old one would
 silently get none, and that failure is invisible.
 """
-import re
+from bisect import bisect_left
 from collections.abc import Iterator
 from dataclasses import dataclass
+from itertools import accumulate
+import re
 from typing import Protocol, runtime_checkable
 
 from oms.domain.redaction import Redaction
 from oms.ingestion.schema import ExecutionContext, clip_context_fields
 
-_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+# The caps are the address limits (64 before the "@", 63 per label, 253 for a
+# domain). They keep the scan linear on long runs of dots or hyphens.
+_EMAIL_CANDIDATE = re.compile(r"\b[\w.+-]{1,64}@[\w-]{1,63}\.[\w.-]{1,252}\b")
 _PHONE_CANDIDATE = re.compile(r"(?<![\w/])(\+?\d[\d \t()-]{7,}\d)(?![\w/])")
 # A date, or a date and a time after a space or a `T`. The time is matched from
 # the candidate's start in the text, since the candidate itself stops at the colon.
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d+)?)?")
 _RANGE = re.compile(r"[1-9]\d*-\d+")
+# A bare ten-digit run in this range may be a Unix time in seconds (July 2017 to May 2033).
+_UNIX_TIME = re.compile(r"1[5-9]\d{8}")
+
+
+def _ends_in_a_letter_label(candidate: str) -> bool:
+    return candidate.rsplit(".", 1)[-1][:1].isalpha()
+
+
+class _EmailPattern:
+    """Email candidates whose last domain label starts with a letter.
+
+    A real address ends in an alphabetic top-level domain (`xn--` forms
+    included), and `react@18.3.1` is a package version. The check runs after the
+    match, not inside the expression, so a long dotted tail cannot make the
+    expression backtrack.
+
+    Trailing labels that do not start with a letter are trimmed, so the address
+    in `jane@company.com.2` is still found. The candidate is matched again up to
+    the cut, which is always a dot, so the word boundary at the new end holds in
+    the text as well. A package version keeps fewer than two labels and is kept.
+    """
+
+    def finditer(self, text: str) -> Iterator[re.Match[str]]:
+        for match in _EMAIL_CANDIDATE.finditer(text):
+            candidate = match.group(0)
+            if _ends_in_a_letter_label(candidate):
+                yield match
+                continue
+            local, _, domain = candidate.partition("@")
+            labels = domain.split(".")
+            while labels and not labels[-1][:1].isalpha():
+                labels.pop()
+            if len(labels) < 2:
+                continue
+            end = match.start() + len(local) + 1 + len(".".join(labels))
+            trimmed = _EMAIL_CANDIDATE.match(text, match.start(), end)
+            if trimmed is not None and _ends_in_a_letter_label(trimmed.group(0)):
+                yield trimmed
+
+
+_EMAIL = _EmailPattern()
 
 
 class _PhonePattern:
@@ -31,13 +76,27 @@ class _PhonePattern:
     A number does not run across a line, and a date or date-time (`2025-10-03`,
     `2025-10-03 09:00:00`), a plain range (`300000-600000`, `2019-2024`) or a path
     segment (`/12345-1706000000/`) is not a phone number. Real numbers keep a
-    leading `+` or `0`, spaces, brackets or more than one hyphen.
+    leading `+` or `0`, spaces, brackets or more than one hyphen. A run of fewer
+    than seven digits (SVG coordinates such as `0 0 12 12`) is not a phone number.
+
+    A bare Unix time in seconds (`1706000000`) is kept only with
+    `keep_unix_times`, for skill packages, where timestamps are common. Real
+    numbers share that shape (a Brazilian landline written bare, an Argentine
+    local mobile), so a correction, which is personal data, keeps redacting it.
     """
+
+    def __init__(self, *, keep_unix_times: bool = False) -> None:
+        self.keep_unix_times = keep_unix_times
 
     def finditer(self, text: str) -> Iterator[re.Match[str]]:
         for match in _PHONE_CANDIDATE.finditer(text):
+            candidate = match.group(0)
             date = _ISO_DATE.match(text, match.start())
-            if date is not None and date.end() >= match.end() or _RANGE.fullmatch(match.group(0)):
+            if date is not None and date.end() >= match.end() or _RANGE.fullmatch(candidate):
+                continue
+            if sum(char.isdigit() for char in candidate) < 7:
+                continue
+            if self.keep_unix_times and _UNIX_TIME.fullmatch(candidate):
                 continue
             yield match
 
@@ -88,9 +147,15 @@ def _substitute(text: str, pattern: re.Pattern, label: str,
     replaces inside one: a placeholder is not PII and matching within it would
     corrupt it.
     """
-    blocked = [(r.start, r.end) for r in existing]
+    # A match overlaps an earlier redaction when one starting before the match's end also
+    # ends after its start. With the redactions sorted by start, those starting before the
+    # end are a prefix found by bisection, and the furthest end in that prefix decides, so
+    # each match costs a lookup rather than a pass over every earlier redaction.
+    blocked = sorted((r.start, r.end) for r in existing)
+    starts = [start for start, _ in blocked]
+    reach = list(accumulate((end for _, end in blocked), max))
     fresh = [m for m in pattern.finditer(text)
-             if not any(start < m.end() and m.start() < end for start, end in blocked)]
+             if not ((before := bisect_left(starts, m.end())) and m.start() < reach[before - 1])]
     # Both kinds of span in one ordered walk, so the output is built once and
     # every offset in it is the offset of the string that was just appended.
     segments = sorted(
@@ -126,12 +191,20 @@ def _substitute(text: str, pattern: re.Pattern, label: str,
 
 
 class RegexSanitiser:
-    """Deterministic regex scrubber. Presidio is a drop-in replacement behind the same port."""
+    """Deterministic regex scrubber. Presidio is a drop-in replacement behind the same port.
+
+    `keep_unix_times` keeps a bare Unix time in seconds, as `_PhonePattern` says;
+    the source checks of skill packages set it, and everything else leaves it off.
+    """
+
+    def __init__(self, *, keep_unix_times: bool = False) -> None:
+        self.keep_unix_times = keep_unix_times
+        self._phone = _PhonePattern(keep_unix_times=True) if keep_unix_times else _PHONE
 
     def _scrub(self, text: str, counters: dict[str, int],
                seen: dict[str, str]) -> tuple[str, tuple[Redaction, ...]]:
         text, found = _substitute(text, _EMAIL, "EMAIL", counters, seen, ())
-        return _substitute(text, _PHONE, "PHONE", counters, seen, found)
+        return _substitute(text, self._phone, "PHONE", counters, seen, found)
 
     def sanitise(self, ctx: ExecutionContext) -> Sanitised:
         counters: dict[str, int] = {}

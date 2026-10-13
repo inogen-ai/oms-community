@@ -982,3 +982,30 @@ test("source status shows no install summary unless the screen asks for it", () 
     assert.match(shown, /s: /, name);
   }
 });
+
+test("a local package's cards name the package, not GitHub", () => {
+  const local = { kind: "local", origin_id: "o", generation: 1 };
+  const card0 = held(); card0.plan = { ...card0.plan, origin: local };
+  const shown = text(component("SourceUpdateCard", { update: card0, title: "brainstorming", partFingerprints: fingerprints, onApply() {} }));
+  assert.match(shown, /New skill from a local package: brainstorming/);
+  assert.doesNotMatch(shown, /GitHub/);
+  const gone = id => change(id, { kind: "rule", incoming: evidence(null, "absent"), base: evidence("Local"), local: evidence("Local") });
+  const card = update({ origin: local, changes: [gone("rule:a"), gone("rule:b")], conflicts: ["rule:a", "rule:b"].map(id => ({ part_id: id, reason: "deletion_consent", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] })), flags: ["conflict", "deletion_consent"] });
+  card.parts = Object.fromEntries(["rule:a", "rule:b"].map(id => [id, part(id, "rule", { label: id, attention: "decide", risks: ["removed_upstream"], default: null })]));
+  const tree = component("SourceUpdateCard", { update: card, partFingerprints: { "rule:a": "a", "rule:b": "b" }, onDraftChange() {} });
+  assert.match(text(tree), /Removed in the new package/);
+  assert.ok(nodes(tree).find(node => node.type === "fieldset" && node.props["aria-label"] === "Decision for every item in Removed in the new package"));
+  assert.doesNotMatch(text(tree), /Removed on GitHub/);
+});
+
+test("a replacement note names the new package for a local origin", () => {
+  const replacement = (id, old) => change(id, { kind: "rule", local: absentSide, linked_removals: [old] });
+  const replaced = origin => {
+    const changes = [replacement("rule:new1", "rule:old1"), change("rule:old1", { kind: "rule", incoming: absentSide, base: evidence("Old"), local: evidence("Old") })];
+    const card = update({ origin, changes, conflicts: changes.map(row => ({ part_id: row.part_id, reason: "ambiguous_replacement", allowed_choices: ["keep_oms", "use_upstream", "merged_text"] })) });
+    card.parts = Object.fromEntries(changes.map(row => [row.part_id, part(row.part_id, "rule", { attention: "decide", default: null, risks: ["unclear_identity"] })]));
+    return text(component("SourceUpdateCard", { update: card, partFingerprints: { "rule:new1": "a", "rule:old1": "b" }, onDraftChange() {} }));
+  };
+  assert.match(replaced({ kind: "local", origin_id: "o", generation: 1 }), /that the new package removed/);
+  assert.match(replaced({ kind: "github", origin_id: "o", generation: 1 }), /that GitHub removed/);
+});

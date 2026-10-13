@@ -50,8 +50,12 @@ class FileCheck:
 @dataclass(frozen=True)
 class SourceSafety:
     screen: object = field(default_factory=DeterministicScreen)
-    sanitiser: object = field(default_factory=RegexSanitiser)
-    max_text_chars: int = 100_000
+    # Skill packages hold timestamps, so a bare Unix time is kept here; a correction keeps redacting it.
+    sanitiser: object = field(default_factory=lambda: RegexSanitiser(keep_unix_times=True))
+    # One pass, because the screen weighs the whole text together and a cut could split a
+    # phrase. At this limit, hostile text with tens of thousands of addresses and numbers
+    # measured 2 to 6 s; the time grows linearly with the text and its findings.
+    max_text_chars: int = 1_000_000
 
     def __post_init__(self):
         if type(self.max_text_chars) is not int or self.max_text_chars <= 0:
