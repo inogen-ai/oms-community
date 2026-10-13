@@ -4,6 +4,7 @@ The selected packages are projected from the retained discovery bytes and checke
 before anything is written; the ordinary importer and its extensions are not
 involved. A source is created from the discovery the actor was admitted to.
 """
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from oms.domain.identity import SkillRef
@@ -101,17 +102,27 @@ def prepare(builder: ProjectionBuilder, discovery: DiscoveryResult, request: Ins
     return source_from_discovery(discovery), tuple(result)
 
 
-def hold_package(service, bound: MutationContext, context: ActionContext, operation: Operation, source: Source,
-                 package: Installation, guard: Generations, check: CheckResult) -> tuple[SkillOutcome, str | None]:
-    """Install a held package as an empty skill marked held, with a review card (spec 5.3).
+def hold_new_skill(service, bound: MutationContext, context: ActionContext, operation: Operation, *,
+                   snapshot: SourceSnapshot, name: str, domain: str, guard: Generations, check: CheckResult,
+                   action: str, put_origin_state: Callable[[MutationContext], None],
+                   binding_generation: int | None = None,
+                   import_source_ref: str | None = None) -> tuple[SkillOutcome, str | None]:
+    """Create a held package's skill empty and marked held, with a review card (spec 5.3).
 
-    Nothing from the package becomes live: the skill has identity fields only,
-    the binding has no baseline, and the content waits on the card until a
-    reviewer applies it. Returns the outcome and the history entry's id.
+    Nothing from the package becomes live: the skill has identity fields only, the
+    origin's state record has no baseline, and the content waits on the card until a
+    reviewer applies it. `put_origin_state(bound)` writes that record: a binding for
+    a repository, a local stream for an upload. `binding_generation` is the skill's
+    binding generation once that record is written, when writing it leaves the
+    generation where it was; by default it is the origin's own, which a new binding
+    advances to. `import_source_ref` is the skill's recorded import origin, for an
+    origin that records one on the skill. Returns the outcome and the history
+    entry's id.
     """
-    ref = package.snapshot.ref.origin.skill
-    bound.graph.upsert_skill(Skill(id=ref.skill_id, name=package.selection.local_name, description="",
-        domain=package.selection.domain, tenant_id=ref.tenant_id, status=SkillStatus.HELD))
+    ref = snapshot.ref.origin.skill
+    bound.graph.upsert_skill(Skill(id=ref.skill_id, name=name, description="", domain=domain,
+                                   tenant_id=ref.tenant_id, status=SkillStatus.HELD,
+                                   import_source_ref=import_source_ref))
     # The card pins the skill as this commit leaves it, because that is what
     # apply compares against. Creating the skill changes its content, and the
     # tracker advances a changed skill's content generation by exactly one when
@@ -120,25 +131,39 @@ def hold_package(service, bound: MutationContext, context: ActionContext, operat
     # own, as apply computes it, and is taken after the batch's other writes.
     local = project_local(bound.graph, ref, baseline=None, content_generation=guard.content + 1,
         ownership=bound.sources.ownership_for_skill(ref), policy_version=service.builder.policy_version)
-    plan = build_plan(None, package.snapshot, local, service._merge_policy(package.snapshot, check,
+    plan = build_plan(None, snapshot, local, service._merge_policy(snapshot, check,
         update_generation=1, policy_digest=service._policy_revision(context, bound, (ref,)),
-        first_reconciliation=True, history_evidence="initial"))
-    bound.sources.put_binding(Binding(origin=package.snapshot.ref.origin, source_id=source.source_id,
-        package_path=package.selection.package_path,
-        ref=package.acquired.resolved_ref.model_copy(update={"canonical_url": source.canonical_url}),
-        baseline=None, first_reconciliation=True, automatic_apply=service.automatic,
-        automation_actor_id=context.actor_id,
-        status=SourceStatus(state="updates_available", checked_at=service.clock())))
-    outcome = review.stage_update(bound, plan, package.snapshot, operation_id=operation.operation_id,
-                                  actor_id=context.actor_id, action="install")
+        binding_generation=binding_generation, first_reconciliation=True, history_evidence="initial"))
+    put_origin_state(bound)
+    outcome = review.stage_update(bound, plan, snapshot, operation_id=operation.operation_id,
+                                  actor_id=context.actor_id, action=action)
     # No source revision: the skill holds none of that revision's content yet.
     history = bound.history.capture_required(ref.skill_id, ref.tenant_id, cause=SkillVersionCause.SOURCE_INSTALL,
         actor=context.actor_id, source_operation_id=operation.operation_id,
-        source_origin_id=package.snapshot.ref.origin.origin_id)
+        source_origin_id=snapshot.ref.origin.origin_id)
     if outcome.state == "awaiting_review":
         outcome = outcome.model_copy(update={"code": "safety_review_required",
                                              "detail": describe_hold(distinct_findings(plan.check_findings))})
     return outcome, history.id if history else None
+
+
+def hold_package(service, bound: MutationContext, context: ActionContext, operation: Operation, source: Source,
+                 package: Installation, guard: Generations, check: CheckResult) -> tuple[SkillOutcome, str | None]:
+    """Install a held package as an empty skill marked held, with a review card (spec 5.3).
+
+    The binding is written with no baseline. Returns the outcome and the history
+    entry's id.
+    """
+    def put_binding(current: MutationContext) -> None:
+        current.sources.put_binding(Binding(origin=package.snapshot.ref.origin, source_id=source.source_id,
+            package_path=package.selection.package_path,
+            ref=package.acquired.resolved_ref.model_copy(update={"canonical_url": source.canonical_url}),
+            baseline=None, first_reconciliation=True, automatic_apply=service.automatic,
+            automation_actor_id=context.actor_id,
+            status=SourceStatus(state="updates_available", checked_at=service.clock())))
+    return hold_new_skill(service, bound, context, operation, snapshot=package.snapshot,
+                          name=package.selection.local_name, domain=package.selection.domain, guard=guard,
+                          check=check, action="install", put_origin_state=put_binding)
 
 
 def source_from_discovery(discovery: DiscoveryResult) -> Source:

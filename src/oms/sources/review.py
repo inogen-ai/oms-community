@@ -172,7 +172,7 @@ def validate_choices(update: Update, choices: tuple[DraftChoice, ...]) -> None:
             raise SourceConflict("review_choice_not_allowed")
         check = part_check(update.plan, change, conflicts.get(choice.part_id))
         if choice.acknowledged and (choice.choice != "use_upstream" or not check.held):
-            raise SourceConflict("review_choice_not_allowed", "only a flagged part taken from GitHub is acknowledged")
+            raise SourceConflict("review_choice_not_allowed", "only a flagged part taken from the new version can be accepted as it is")
         if choice.choice == "use_upstream" and check.held:
             categories = set(check.overridable)
             if not categories or not categories <= set(choice.acknowledged):

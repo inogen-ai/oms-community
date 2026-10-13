@@ -18,6 +18,9 @@ export const SOURCE_RISK_LABELS = Object.freeze({
   check_unavailable: "Could not be checked", your_edits: "You changed this in OMS", removed_upstream: "Removed on GitHub",
   unclear_identity: "OMS cannot match this to an existing part", script: "Script", other: "Needs a decision",
 });
+// A local package has no GitHub to remove a part from, so its group heading names the new package.
+const LOCAL_RISK_LABELS = Object.freeze({ removed_upstream: "Removed in the new package" });
+const riskLabel = (update, risk) => (update.plan.origin.kind === "local" ? LOCAL_RISK_LABELS[risk] : undefined) ?? SOURCE_RISK_LABELS[risk];
 const CHECK_RISKS = ["injection", "check_failed", "check_unavailable"];
 const PROSE = ["section", "rule", "example"];
 const KIND_ORDER = ["rule", "section", "example", "file", "field", "placement"];
@@ -169,7 +172,7 @@ export function sourceNeedsYou(update) {
     const risk = SOURCE_RISK_ORDER.find(code => part.risks.includes(code)) ?? "other";
     groups.set(risk, [...(groups.get(risk) ?? []), part]);
   }
-  return [...SOURCE_RISK_ORDER, "other"].filter(risk => groups.has(risk)).map(risk => ({ risk, label: SOURCE_RISK_LABELS[risk], parts: groups.get(risk) }));
+  return [...SOURCE_RISK_ORDER, "other"].filter(risk => groups.has(risk)).map(risk => ({ risk, label: riskLabel(update, risk), parts: groups.get(risk) }));
 }
 
 // The group forms of the spec labels (Global Constraints, ruling P5); scripts use Chris's wording (follow-up B).
@@ -365,8 +368,8 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
     const editable = canEdit && identified;
     const chosen = effective.get(part.part_id);
     const linked = change.linked_removals?.length ?? 0;
-    const reasons = new Map([...part.risks.map(risk => ({ text: SOURCE_RISK_LABELS[risk] ?? SOURCE_RISK_LABELS.other })), ...findingReasonRows(part.findings),
-      linked ? { text: `Replaces ${plural(linked, "part", "parts")} that GitHub removed; taking it removes ${linked === 1 ? "that part" : "them"} in OMS.` } : null]
+    const reasons = new Map([...part.risks.map(risk => ({ text: riskLabel(update, risk) ?? SOURCE_RISK_LABELS.other })), ...findingReasonRows(part.findings),
+      linked ? { text: `Replaces ${plural(linked, "part", "parts")} that ${github ? "GitHub" : "the new package"} removed; taking it removes ${linked === 1 ? "that part" : "them"} in OMS.` } : null]
       .filter(Boolean).map(reason => [reason.text, reason]));
     // Each line number is a button that opens "Show" at that line; the reason still never quotes the flagged text (ruling P4).
     // Only a host's file preview or prose text is numbered, so other line numbers stay plain text (ruling FB-2).
@@ -439,7 +442,7 @@ export function SourceUpdateCard({ update, title, draft: controlledDraft, partFi
   const fp = update.plan.fingerprint;
   const verb = heldInstall ? "install" : "apply";
 
-  return h(Panel, { title: heldInstall ? `New skill from GitHub: ${name}` : github ? `Update from GitHub: ${name}` : `Update from a local package: ${name}`,
+  return h(Panel, { title: heldInstall ? `New skill from ${github ? "GitHub" : "a local package"}: ${name}` : github ? `Update from GitHub: ${name}` : `Update from a local package: ${name}`,
     className: "oms-source-card", "aria-busy": working },
     github ? h(SourceRepositoryLine, { repository: update.repository ?? null, now }) : null,
     closed ? h("p", null, "Recorded historical comparison. The OMS side shows content at review time. This update no longer accepts decisions.")

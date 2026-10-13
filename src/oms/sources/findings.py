@@ -98,13 +98,20 @@ def text_findings(text: str, redactions: Iterable[Redaction], screened: ScreenRe
                   part_id: str | None = None) -> tuple[CheckFinding, ...]:
     found: list[CheckFinding] = []
     shift = 0
+    # The redactions are in text order, so line ends are counted on from the previous one,
+    # not again from the start: a long text with many findings stays linear. One out of
+    # order is counted from the start, as before.
+    line, counted = 1, 0
     for redaction in redactions:
         # Offsets index the sanitised output, so undo earlier length changes.
         start = redaction.start - shift
         shift += len(redaction.label) - len(redaction.original)
         category = redaction.label.strip("<>").split("_")[0].lower()
-        found.append(CheckFinding(path=path, part_id=part_id, line=text.count("\n", 0, start) + 1,
-                                  category=category))
+        if start < counted:
+            line, counted = 1, 0
+        line += text.count("\n", counted, start)
+        counted = start
+        found.append(CheckFinding(path=path, part_id=part_id, line=line, category=category))
     if screened.score >= _INJECTION_THRESHOLD:
         spans = tuple(screened.spans)
         line = text.count("\n", 0, min(spans)[0]) + 1 if spans else None
