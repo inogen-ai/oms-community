@@ -118,9 +118,11 @@ class UploadLimits:
     a trusted checkout does not need it. An HTTP endpoint does: without a cap
     the extraction step is a way to fill the server's disk with one request.
     """
-    max_archive_bytes: int = 35_000_000       # 35MB compressed
-    max_total_bytes: int = 100_000_000        # 100MB extracted, so a zip bomb stops here
-    max_file_bytes: int = 10_000_000          # 10MB per file
+    max_archive_bytes: int = 100_000_000      # 100MB compressed
+    max_total_bytes: int = 150_000_000        # 150MB extracted, so a zip bomb stops here
+    # 25MB per file: skills bundle templates and decks. The source budgets
+    # (`oms.sources.limits.FILE_BYTES`) sit at or above it.
+    max_file_bytes: int = 25_000_000
     max_files: int = 2_000
     # A preview nobody applied or discarded within this long is swept, so an
     # abandoned upload costs disk for a day rather than for ever.
@@ -166,6 +168,11 @@ class StagedUpload:
     queue_upload_id: str | None = None
 
 
+def _megabytes(size: int) -> str:
+    """A size as the reader reads it: "14.5 MB", "25 MB"."""
+    return f"{size / 1_000_000:.1f}".removesuffix(".0") + " MB"
+
+
 def _reject_unsafe_members(archive: zipfile.ZipFile, limits: UploadLimits) -> None:
     """Refuse the whole archive before a single byte is written.
 
@@ -201,13 +208,13 @@ def _reject_unsafe_members(archive: zipfile.ZipFile, limits: UploadLimits) -> No
             raise UnsafeArchive(f"{name!r} is not a regular file")
         if member.file_size > limits.max_file_bytes:
             raise UploadTooLarge(
-                f"{name!r} is {member.file_size // 1024}KB; the per-file limit is "
-                f"{limits.max_file_bytes // 1024}KB")
+                f"{name!r} is {_megabytes(member.file_size)}; the per-file limit is "
+                f"{_megabytes(limits.max_file_bytes)}")
         total += member.file_size
         if total > limits.max_total_bytes:
             raise UploadTooLarge(
                 "the archive expands to more than "
-                f"{limits.max_total_bytes // 1_000_000}MB")
+                f"{_megabytes(limits.max_total_bytes)}")
 
 
 class UploadService:
@@ -247,8 +254,8 @@ class UploadService:
         filename = clean_filename(filename)
         if len(archive) > self._limits.max_archive_bytes:
             raise UploadTooLarge(
-                f"the upload is {len(archive) // 1_000_000}MB; the limit is "
-                f"{self._limits.max_archive_bytes // 1_000_000}MB")
+                f"the upload is {_megabytes(len(archive))}; the limit is "
+                f"{_megabytes(self._limits.max_archive_bytes)}")
         try:
             zf = zipfile.ZipFile(BytesIO(archive))
         except zipfile.BadZipFile as exc:
