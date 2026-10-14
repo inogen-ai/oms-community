@@ -46,7 +46,7 @@
     },
     "README.md": {
       "mode": 420,
-      "sha256": "1ef6c57c688f5c56e803503f222b89271ae70a718970b32e409f6939ae81237f"
+      "sha256": "4e9f9d87db260c703166cf4526c700d39286fe2023b5e8cccfb13cb7b2e26ad5"
     },
     "SECURITY.md": {
       "mode": 420,
@@ -1174,7 +1174,7 @@
     },
     "src/oms/publish/render.py": {
       "mode": 420,
-      "sha256": "0c901b9f7c4004e500726179a664faa3380f9e8285073e0f703c4b313f2543ce"
+      "sha256": "e894d2b807243e1a34f5d2d9f0c08ce592e88fe8e72362ac17e5fc7bb586ff71"
     },
     "src/oms/publish/urls.py": {
       "mode": 420,
@@ -1527,6 +1527,10 @@
     "tests/community/test_instruction_policy.py": {
       "mode": 420,
       "sha256": "57a99e44383ffa213b95509fd45438c6a05290b0165648f09a0121ce8f5b8368"
+    },
+    "tests/community/test_macos_refresh_agent.py": {
+      "mode": 420,
+      "sha256": "e9c46e0b0459d6fdc6aeef4a1f558da3a140a4fdb4b02030eaeb00649bede454"
     },
     "tests/community/test_manual_amendment.py": {
       "mode": 420,
