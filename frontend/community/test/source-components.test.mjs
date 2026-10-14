@@ -1080,7 +1080,11 @@ test("revealSourceLine finds a line inside an excerpt block and falls back to it
   const inner = mark(500);
   const excerpt = { scrollTop: 0, getBoundingClientRect: () => rect(100, 360), focus() { this.focused = true; },
     querySelector: selector => selector === ".oms-source-flagged" || selector === '[data-line="1286"]' ? inner : null };
-  const root = { open: true, dataset: { omsLine: "1286" }, querySelector: selector => selector === ".oms-source-numbered" ? main : null, querySelectorAll: () => [main, excerpt] };
+  // The excerpt blocks sit beside the main preview in its own container; the disclosure may hold
+  // other previews, which the reveal must not search.
+  main.parentElement = { querySelectorAll: selector => selector === ".oms-source-excerpt .oms-source-numbered" ? [excerpt] : [] };
+  const other = { scrollTop: 0, getBoundingClientRect: () => rect(0, 360), querySelector: () => ({ getBoundingClientRect: () => rect(900, 920), scrollIntoView() { throw new Error("another preview was searched"); } }) };
+  const root = { open: true, dataset: { omsLine: "1286" }, querySelector: selector => selector === ".oms-source-numbered" ? main : null, querySelectorAll: () => [main, other, excerpt] };
   // The main preview's ref runs revealSourceLine on its disclosure once the preview is mounted.
   const tree = component("SourceFileComparison", { path: "big.js", absent: ["base", "local"], onDownload() {}, upstream: { text: "a", excerpts: [] } });
   const reveal = () => nodes(tree).find(node => node.type === "pre" && node.props.ref).props.ref({ closest: () => root });

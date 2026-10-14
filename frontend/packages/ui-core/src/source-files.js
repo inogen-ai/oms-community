@@ -39,7 +39,10 @@ export function sourceLineScrollTop(container, line, scrollTop) {
  */
 export function revealSourceLine(root) {
   const preview = root.querySelector(".oms-source-numbered");
-  const previews = preview ? [preview, ...[...(root.querySelectorAll?.(".oms-source-numbered") ?? [])].filter(block => block !== preview)] : [];
+  // Only this preview's own excerpt blocks, never another file's or another column's preview: a
+  // search of the whole disclosure scrolled the page to a line the reader had not asked for.
+  const excerpts = [...(preview?.parentElement?.querySelectorAll?.(".oms-source-excerpt .oms-source-numbered") ?? [])];
+  const previews = preview ? [preview, ...excerpts.filter(block => block !== preview)] : [];
   const asked = /^\d+$/.test(root.dataset.omsLine ?? "") ? root.dataset.omsLine : null;
   // The line may sit in the main preview or in one of the excerpt blocks after it.
   const owner = previews.find(block => block.querySelector(asked ? `[data-line="${asked}"]` : ".oms-source-flagged")) ?? null;
