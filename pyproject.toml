@@ -1,6 +1,6 @@
 [project]
 name = "oms-core"
-version = "1.5.4"
+version = "1.5.5"
 description = "Local skill custody, manual learning and portable publication"
 requires-python = ">=3.12"
 license = "SUL-1.0"

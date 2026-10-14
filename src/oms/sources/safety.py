@@ -21,7 +21,6 @@ from oms.sources.errors import SourceConflict
 from oms.sources.excerpts import file_shows, part_view_fits
 from oms.sources.files import verified_bytes
 from oms.sources.findings import ACCEPTABLE_CODES, acceptable_hold, checked_findings
-from oms.sources.limits import FILE_BYTES
 from oms.sources.models import (
     CheckFinding, CheckResult, LocalState, ManifestEntry, MergePlan, PartKind, PlanFlag, ProjectionPart, SourceSnapshot,
 )
@@ -69,10 +68,15 @@ class SourceSafety:
     # phrase. At this limit, hostile text with tens of thousands of addresses and numbers
     # measured 2 to 6 s; the time grows linearly with the text and its findings.
     max_text_chars: int = 1_000_000
+    # The largest file a package may keep; a larger one is held, and the hold cannot be accepted.
+    # The upload gate's default; a host may set it per tenant (the paid console does).
+    max_file_bytes: int = 25_000_000
 
     def __post_init__(self):
         if type(self.max_text_chars) is not int or self.max_text_chars <= 0:
             raise ValueError('text check budget must be a positive integer')
+        if type(self.max_file_bytes) is not int or self.max_file_bytes <= 0:
+            raise ValueError('file size limit must be a positive integer')
 
     def check_text(self, text: str, *, path: str | None = None, part_id: str | None = None) -> CheckResult:
         """Sanitiser and screen over one text. With a `path`, the text is a file the card shows in
@@ -119,8 +123,8 @@ class SourceSafety:
         return tuple(not_shown(result) for result in results)
 
     def check_file(self, body: bytes, *, path: str | None = None,
-                   maximum_bytes: int = FILE_BYTES) -> CheckResult:
-        if len(body) > maximum_bytes:
+                   maximum_bytes: int | None = None) -> CheckResult:
+        if len(body) > (self.max_file_bytes if maximum_bytes is None else maximum_bytes):
             return CheckResult(state='held', code='file_size_limit',
                                findings=(CheckFinding(path=path, category='file_size'),))
         # A binary file gets size and structure checks only; the code says so,

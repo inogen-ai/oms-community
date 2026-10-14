@@ -92,7 +92,7 @@ function findingReasonRows(findings = []) {
   return [...groups].map(([category, rows]) => {
     const [kind, ...rest] = category.split(":");
     const detail = words(rest.join(":"));
-    if (category === "file_size") return { text: "The file is larger than 25 MB" };
+    if (category === "file_size") return { text: "The file is larger than the size limit for one file" };
     if (kind === "check_unavailable" && rest.length) return { text: `A required check could not run (${detail})` };
     if (kind === "policy" && rest.length) return { text: `Conflicts with a workspace safety rule (${detail})` };
     const noun = Object.hasOwn(FINDING_NOUNS, category) ? FINDING_NOUNS[category]

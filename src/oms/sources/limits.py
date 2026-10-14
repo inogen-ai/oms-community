@@ -31,29 +31,32 @@ class BudgetExceeded(RuntimeError):
             self.code = "source_limit_exceeded"
 
 
-# The largest file a source package may carry, here and in the file check. At or above the
-# upload gate's own limit (25 MB), so a file an upload admits is never refused or held later.
-FILE_BYTES = 25 * 1024 * 1024
+# The largest file a source package may carry. A budget, not the policy: the safety check's
+# `max_file_bytes` and the upload gate decide what a tenant allows, up to the upload ceilings
+# (`oms.skills.upload`: 50MB a file, 250MB an upload unpacking to 375MB). These budgets sit at or
+# above those ceilings, so a file a tenant allows is never refused later with a bare code.
+FILE_BYTES = 50 * 1024 * 1024
 
 
 @dataclass(frozen=True)
 class AcquisitionLimits:
     operation_seconds: float = 300
     command_seconds: float = 60
-    package_bytes: int = 150 * 1024 * 1024
+    package_bytes: int = 384 * 1024 * 1024
     file_bytes: int = FILE_BYTES
     files: int = 2000
     refs: int = 10000
     tree_entries: int = 100000
     path_bytes: int = 4096
     nesting: int = 64
-    acquired_bytes: int = 128 * 1024 * 1024
-    expanded_bytes: int = 256 * 1024 * 1024
+    acquired_bytes: int = 384 * 1024 * 1024
+    expanded_bytes: int = 384 * 1024 * 1024
     cache_bytes: int = 512 * 1024 * 1024
     history_commits: int = 4096
     per_tenant: int = 4
     per_process: int = 8
-    stdout_bytes: int = 32 * 1024 * 1024
+    # One command reads at least one whole blob, so this sits above `file_bytes`.
+    stdout_bytes: int = 64 * 1024 * 1024
     stderr_bytes: int = 64 * 1024
 
     def __post_init__(self):
