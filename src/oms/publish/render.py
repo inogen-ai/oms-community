@@ -2216,6 +2216,18 @@ if [ "$local_refresh" = 1 ]; then
   fi
   exit 0
 fi
+# The macOS launch agent (section 4) starts this at half past every hour and
+# marks the run. Such a run refreshes only once three hours, less five
+# minutes for the clock, have passed since the last scheduled one, so the
+# period lives here and the agent never has to change. A run by hand always
+# refreshes.
+if [ "\\${{OMS_SCHEDULED_BY:-}}" = launchd ]; then
+  last=\\$(cat "$OMS_DIR/last-scheduled-refresh" 2>/dev/null || true)
+  case "\\$last" in ''|*[!0-9]*) last=0 ;; esac
+  now=\\$(date +%s)
+  [ \\$((now - last)) -ge 10500 ] || exit 0
+  printf '%s\\n' "\\$now" > "$OMS_DIR/last-scheduled-refresh"
+fi
 # Extra skill sources first (installer section 0d), so a refusal is on disk
 # before the installer reads it. git's own words decide what a failure means.
 # Refused access is a revocation: its marker makes the installer unlink that
@@ -2273,13 +2285,15 @@ chmod +x "$OMS_DIR/.oms-refresh.sh.tmp"
 mv "$OMS_DIR/.oms-refresh.sh.tmp" "$OMS_DIR/oms-refresh.sh"
 
 # Scheduling is the conditional half: only a clone has anything to pull, and
-# only a machine with crontab can be given a schedule. Every branch that
-# does not schedule says so and names the manual alternative, because a bundle
-# that silently never refreshes is the failure this whole file exists to avoid.
+# only a machine with a scheduler can be given a schedule: a launch agent on
+# macOS, cron elsewhere. Every branch that does not schedule says so and names
+# the manual alternative, because a bundle that silently never refreshes is the
+# failure this whole file exists to avoid.
 if [ -n "$INSTALL_REVISION" ] && [ ! -e "$SRC/.git" ]; then
   printf '%s\\n' "$INSTALL_REVISION" > "$OMS_DIR/local-revision"
 fi
 local_plist="$HOME/Library/LaunchAgents/ai.inogen.oms.local-refresh.plist"
+refresh_agent="$HOME/Library/LaunchAgents/ai.inogen.oms.refresh.plist"
 if [ -e "$SRC/.git" ] && [ -f "$local_plist" ]; then
   # Changing from local publication to Git must retire the minute-based job
   # before the shared refresh script becomes a scheduled Git updater.
@@ -2287,6 +2301,14 @@ if [ -e "$SRC/.git" ] && [ -f "$local_plist" ]; then
     launchctl bootout "gui/$(id -u)" "$local_plist" >/dev/null 2>&1 || true
   fi
   rm -f "$local_plist"
+fi
+if [ ! -e "$SRC/.git" ] && [ -f "$refresh_agent" ] && [ "${{OMS_SCHEDULED_BY:-}}" != launchd ]; then
+  # And the other way: a tree that is no longer a clone has nothing for the
+  # Git agent to pull. Never from the agent's own run, which this would stop.
+  if command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)" "$refresh_agent" >/dev/null 2>&1 || true
+  fi
+  rm -f "$refresh_agent"
 fi
 if [ "${{OMS_REFRESHING:-}}" = 1 ]; then
   : # A scheduled run only reconciles files; it never re-registers itself.
@@ -2329,33 +2351,83 @@ elif [ ! -d "$SRC/.git" ]; then
   echo "  no scheduled refresh: this tree is not a git clone, so there is nothing to pull."
   echo "  To update, copy in a newer bundle and re-run install.sh. From a clone,"
   echo "  'sh $OMS_DIR/oms-refresh.sh' would do it for you."
-elif ! command -v crontab >/dev/null 2>&1; then
-  echo "  no scheduled refresh: this machine has no crontab command."
-  echo "  Update by hand any time with: sh '$OMS_DIR/oms-refresh.sh'"
+elif [ "${{OMS_SCHEDULED_BY:-}}" = launchd ]; then
+  : # The agent's own run: reloading the agent would stop the job doing it.
 else
-  # Every three hours, not @daily: cron never runs a job it missed, so a
-  # laptop asleep at midnight skipped the day's only pull. The marker keeps
-  # its old name because it is how an existing entry is found and replaced,
-  # which is also how a machine on the old schedule moves to this one.
-  LINE="0 */3 * * * sh '$OMS_DIR/oms-refresh.sh' >/dev/null 2>&1 # oms-daily-pull"
-  # The `|| true` is load-bearing under `set -e`: grep exits 1 when it selects
-  # nothing, which is the normal case on a machine whose only crontab entry is
-  # ours (or which has no crontab at all). Without it the subshell dies before
-  # `echo "$LINE"`, and `crontab -` installs an EMPTY crontab - so the refresh
-  # would unschedule itself on its own second run.
-  #
-  # Tested with `if`, not run bare, and that is the load-bearing part: stock
-  # macOS refuses `crontab -` until the calling terminal has Full Disk Access,
-  # and under `set -e` a bare pipeline would abort the installer with rc=1 and
-  # no "Done." line AFTER every piece of real work had already succeeded. An
-  # `if` condition is exempt from errexit, so the refusal is reported instead.
-  if (crontab -l 2>/dev/null | grep -v -e "# oms-daily-pull" -e '# oms-local-refresh' || true; echo "$LINE") | crontab -; then
-    echo "  refresh scheduled every three hours"
-  else
-    echo "  no scheduled refresh: crontab refused to install the entry."
-    echo "  On macOS this usually means the terminal needs Full Disk Access"
-    echo "  (System Settings > Privacy & Security > Full Disk Access)."
+  agent_scheduled=0
+  if [ "$(uname -s 2>/dev/null || true)" = Darwin ] && command -v launchctl >/dev/null 2>&1; then
+    # macOS gets a launch agent, not cron. A cron job may read its crontab
+    # but not write it (`crontab -` needs Full Disk Access, which cron jobs
+    # do not have), so a cron-run refresh can never change its own schedule,
+    # but it can load an agent. launchd also runs a calendar job it missed
+    # while the Mac slept as soon as it wakes, where cron skips it. The agent
+    # fires every hour at :30 and the refresh script decides whether three
+    # hours have passed; :30 also keeps clear of an old midnight cron line.
+    mkdir -p "$HOME/Library/LaunchAgents"
+    escaped_refresh=$(printf '%s' "$OMS_DIR/oms-refresh.sh" | sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' -e 's/>/\\&gt;/g')
+    cat > "$refresh_agent" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>ai.inogen.oms.refresh</string>
+<key>ProgramArguments</key><array><string>/bin/sh</string><string>$escaped_refresh</string></array>
+<key>StartCalendarInterval</key><dict><key>Minute</key><integer>30</integer></dict>
+<key>RunAtLoad</key><true/>
+<key>EnvironmentVariables</key><dict><key>OMS_SCHEDULED_BY</key><string>launchd</string></dict>
+</dict></plist>
+PLIST
+    # Stamped before loading: RunAtLoad starts a run at once, and that run
+    # should find the refresh happening now rather than start another.
+    date +%s > "$OMS_DIR/last-scheduled-refresh"
+    launchctl bootout "gui/$(id -u)" "$refresh_agent" >/dev/null 2>&1 || true
+    if launchctl bootstrap "gui/$(id -u)" "$refresh_agent" >/dev/null 2>&1; then
+      agent_scheduled=1
+    else
+      # No login session to load it into (over SSH, say): cron below.
+      rm -f "$refresh_agent"
+    fi
+  fi
+  if [ "$agent_scheduled" = 1 ]; then
+    echo "  refresh scheduled every three hours (launch agent)"
+    # The cron line an earlier installer wrote. Removing it fails when this
+    # runs from that very cron job; the line then only adds a midnight
+    # refresh, and the next run in a terminal removes it.
+    if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -q -e '# oms-daily-pull'; then
+      if (crontab -l 2>/dev/null | grep -v -e '# oms-daily-pull' || true) | crontab - 2>/dev/null; then
+        echo "  removed the cron entry an earlier installer wrote"
+      else
+        echo "  the old daily cron entry stays: macOS would not let this run change the crontab."
+        echo "  It is harmless. Running this installer in Terminal removes it."
+      fi
+    fi
+  elif ! command -v crontab >/dev/null 2>&1; then
+    echo "  no scheduled refresh: this machine has no crontab command."
     echo "  Update by hand any time with: sh '$OMS_DIR/oms-refresh.sh'"
+  else
+    # Every three hours, not @daily: cron never runs a job it missed, so a
+    # laptop asleep at midnight skipped the day's only pull. The marker keeps
+    # its old name because it is how an existing entry is found and replaced,
+    # which is also how a machine on the old schedule moves to this one.
+    LINE="0 */3 * * * sh '$OMS_DIR/oms-refresh.sh' >/dev/null 2>&1 # oms-daily-pull"
+    # The `|| true` is load-bearing under `set -e`: grep exits 1 when it selects
+    # nothing, which is the normal case on a machine whose only crontab entry is
+    # ours (or which has no crontab at all). Without it the subshell dies before
+    # `echo "$LINE"`, and `crontab -` installs an EMPTY crontab - so the refresh
+    # would unschedule itself on its own second run.
+    #
+    # Tested with `if`, not run bare, and that is the load-bearing part: stock
+    # macOS refuses `crontab -` until the calling terminal has Full Disk Access,
+    # and under `set -e` a bare pipeline would abort the installer with rc=1 and
+    # no "Done." line AFTER every piece of real work had already succeeded. An
+    # `if` condition is exempt from errexit, so the refusal is reported instead.
+    if (crontab -l 2>/dev/null | grep -v -e "# oms-daily-pull" -e '# oms-local-refresh' || true; echo "$LINE") | crontab -; then
+      echo "  refresh scheduled every three hours"
+    else
+      echo "  no scheduled refresh: crontab refused to install the entry."
+      echo "  On macOS this usually means the terminal needs Full Disk Access"
+      echo "  (System Settings > Privacy & Security > Full Disk Access)."
+      echo "  Update by hand any time with: sh '$OMS_DIR/oms-refresh.sh'"
+    fi
   fi
 fi
 
