@@ -13,13 +13,14 @@ from typing import Literal
 
 from oms.sources.compare import same_value
 from oms.sources.files import script_change
-from oms.sources.findings import PERSONAL_DATA, CheckFindingView, distinct_findings, finding_view, personal_data_only
+from oms.sources.findings import PERSONAL_DATA, CheckFindingView, acceptable_hold, distinct_findings, finding_view
 from oms.sources.models import Change, CheckFinding, Conflict, MergePlan, PartKind
-from oms.sources.primitives import NonEmpty, Record
+from oms.sources.primitives import AcknowledgedCategory, NonEmpty, Record
+from oms.sources.safety import NOT_SHOWN
 
-RiskCode = Literal["personal_data", "injection", "check_failed", "check_unavailable", "your_edits",
+RiskCode = Literal["personal_data", "injection", "check_failed", "check_unavailable", "not_shown", "your_edits",
                    "removed_upstream", "unclear_identity", "script"]
-RISK_ORDER: tuple[RiskCode, ...] = ("injection", "check_failed", "check_unavailable", "personal_data",
+RISK_ORDER: tuple[RiskCode, ...] = ("injection", "check_failed", "check_unavailable", "not_shown", "personal_data",
                                    "removed_upstream", "your_edits", "unclear_identity", "script")
 # Reasons the comparison gives (compare.py, files.py, merge.py). Any other code in a
 # conflict's reason was added by a check that did not pass.
@@ -46,7 +47,7 @@ class PartReview(Record):
     attention: Literal["decide", "safe", "automatic"]
     risks: tuple[RiskCode, ...] = ()
     default: Literal["use_upstream"] | None = None
-    overridable: tuple[Literal["phone", "email"], ...] = ()
+    overridable: tuple[AcknowledgedCategory, ...] = ()
     findings: tuple[CheckFindingView, ...] = ()
 
 
@@ -100,10 +101,14 @@ def part_check(plan: MergePlan, change: Change, conflict: Conflict | None) -> Pa
         risks.add("check_failed")
     if findings and not risks:
         risks.add("personal_data")
-    # Ruling R6: only personal data alone, and only where the plan still allows taking it.
+    # The card does not show all the flagged words, so it says why the part cannot be taken as it is.
+    if NOT_SHOWN in codes:
+        risks.add("not_shown")
+    # Ruling R6, widened on 14 October 2026: only personal data and visible instructions to an AI
+    # model, and only where the plan still allows taking the part. Each category is confirmed once.
     overridable = (tuple(sorted({finding.category for finding in findings}))
-                   if risks == {"personal_data"} and conflict is not None and personal_data_only(codes, findings)
-                   and "use_upstream" in conflict.allowed_choices else ())
+                   if risks <= {"personal_data", "injection"} and conflict is not None
+                   and acceptable_hold(codes, findings) and "use_upstream" in conflict.allowed_choices else ())
     return PartCheck(findings=findings, codes=codes, risks=frozenset(risks), overridable=overridable)
 
 

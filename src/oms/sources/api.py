@@ -5,7 +5,7 @@ action context. The routes map typed source errors to status codes and a stable
 error envelope, serve bounded file previews, and expose the explicit approval of an
 uploaded local package.
 """
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 import logging
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -20,10 +20,11 @@ from starlette.exceptions import HTTPException
 from oms.domain.identity import SkillRef
 from oms.sources import api_models as dto
 from oms.sources import models as m
-from oms.sources.api_models import FilePreview, OperationView
+from oms.sources.api_models import FileExcerpt, FilePreview, OperationView
 from oms.sources.credentials import ProfileAccessError
 from oms.sources.discovery import DiscoveryAccessError
 from oms.sources.errors import CheckThrottled, SourceConflict, SourceError, SourceForbidden, SourceNotFound
+from oms.sources.excerpts import excerpts, file_preview
 from oms.sources.files import FileSide, require_path
 from oms.sources.git_reader import AcquisitionError
 from oms.sources.limits import BudgetExceeded
@@ -120,8 +121,10 @@ def source_routes(service: SourceService, reads: SourceReads,
     @router.get("/skill-updates/{update_id}/files")
     def update_file(update_id: str, request: Request, path: str,
                     side: Literal["base", "local", "upstream"], preview: bool = True):
-        body = reads.update_file(context(request, "read"), update_id, side, path)
-        return file_response(path, side, body, preview=preview)
+        ctx = context(request, "read")
+        body = reads.update_file(ctx, update_id, side, path)
+        lines = reads.update_finding_lines(ctx, update_id, path) if preview and side == "upstream" else ()
+        return file_response(path, side, body, preview=preview, excerpt_lines=lines)
 
     def generation(ctx, row):
         return m.Generations(skill=SkillRef(ctx.tenant_id, row.skill_id), content=row.content, binding=row.binding)
@@ -198,7 +201,19 @@ HEADERS = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
            "Content-Security-Policy": "sandbox"}
 
 
-def file_response(path: str, side: FileSide, body: bytes, *, preview: bool) -> Response:
+def excerpts_for(text: str, held_lines: int, flagged: Iterable[int]) -> list[FileExcerpt]:
+    """Windows of whole lines around flagged lines the bounded preview does not hold.
+
+    Lines are numbered as the safety checks number them: only a line feed ends a line. The safety
+    check reads the same windows (`oms.sources.excerpts`), so an AI-instruction flag is only ever
+    taken as it is when these excerpts or the preview show its words.
+    """
+    return [FileExcerpt(start_line=start, lines=lines, cut_lines=cut)
+            for start, lines, cut in excerpts(text, held_lines, flagged)]
+
+
+def file_response(path: str, side: FileSide, body: bytes, *, preview: bool,
+                  excerpt_lines: Iterable[int] = ()) -> Response:
     require_path(path)
     if not preview:
         disposition = "attachment; filename*=UTF-8''" + quote(path.rsplit("/", 1)[-1], safe="")
@@ -209,14 +224,16 @@ def file_response(path: str, side: FileSide, body: bytes, *, preview: bool) -> R
         binary = "\x00" in text
     except UnicodeDecodeError:
         text, binary = "", True
-    truncated = False
+    truncated, shown = False, []
     if not binary:
-        bounded = body[:65536].decode("utf-8", errors="ignore")
-        bounded = "".join(bounded.splitlines(keepends=True)[:1000])
-        truncated = bounded != text
-        text = bounded
+        preview = file_preview(text, body)
+        truncated = preview.truncated
+        if truncated and side == "upstream":
+            # A line the preview shows only in part is not held.
+            shown = excerpts_for(text, preview.held, excerpt_lines)
+        text = preview.text
     result = FilePreview(path=path, side=side, size=len(body), binary=binary,
-                         text=None if binary else text, truncated=truncated)
+                         text=None if binary else text, truncated=truncated, excerpts=shown)
     return JSONResponse(result.model_dump(), headers=HEADERS)
 
 

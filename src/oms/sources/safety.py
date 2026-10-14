@@ -6,7 +6,7 @@ cannot run says so rather than passing, which the plan turns into a hold (spec ย
 The live holds stop an update from touching rules that are already held, flagged or
 tainted, whatever the upstream text looks like.
 """
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 import logging
 from typing import Literal, TYPE_CHECKING
@@ -18,8 +18,9 @@ from oms.ports.blob_store import BlobStore
 from oms.security.constraint_patterns import shared_danger, targets_the_system
 from oms.security.injection import DeterministicScreen
 from oms.sources.errors import SourceConflict
+from oms.sources.excerpts import file_shows, part_view_fits
 from oms.sources.files import verified_bytes
-from oms.sources.findings import personal_data_only, text_findings
+from oms.sources.findings import ACCEPTABLE_CODES, acceptable_hold, checked_findings
 from oms.sources.models import (
     CheckFinding, CheckResult, LocalState, ManifestEntry, MergePlan, PartKind, PlanFlag, ProjectionPart, SourceSnapshot,
 )
@@ -31,6 +32,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_FINDINGS = 100
+# The reason a hold carries when the card does not show the words of one of its located
+# AI-instruction findings: no reviewer may take it as it is.
+NOT_SHOWN = 'flagged_text_not_shown'
+
+
+def not_shown(result: CheckResult) -> CheckResult:
+    """The result, marked when it holds a located AI-instruction finding the card does not show."""
+    if (result.state != 'held' or NOT_SHOWN in result.reasons
+            or not any(row.category.startswith('injection:') and row.line is not None for row in result.findings)):
+        return result
+    return result.model_copy(update={'reasons': (*result.reasons, NOT_SHOWN)})
 
 
 @dataclass(frozen=True)
@@ -62,6 +74,8 @@ class SourceSafety:
             raise ValueError('text check budget must be a positive integer')
 
     def check_text(self, text: str, *, path: str | None = None, part_id: str | None = None) -> CheckResult:
+        """Sanitiser and screen over one text. With a `path`, the text is a file the card shows in
+        its bounded preview and the excerpts around its flagged lines."""
         # Exact types, not isinstance: a subclass of either could be backed by
         # a model, and the promise that a source check never infers anything
         # (spec ยง7.7) is kept by refusing to run with anything but these two.
@@ -82,8 +96,26 @@ class SourceSafety:
             reasons.append('injection_screen_hold')
         if not reasons:
             return CheckResult(state='passed', code='source_text_checked')
-        findings = text_findings(text, clean.redactions, screened, path=path, part_id=part_id)
+        findings, truncated, spans = checked_findings(text, clean.redactions, screened, path=path, part_id=part_id)
+        if truncated:
+            # Lines the card cannot show are unknown to the reviewer, so the hold is never acceptable.
+            reasons.append('findings_truncated')
+        # An AI-instruction flag is taken as it is only when the card shows its words. The card
+        # shows SKILL.md through its parts, which carry that rule, never as a file preview.
+        if (path is not None and path != "SKILL.md"
+                and not file_shows(text, (row.line for row in findings if row.line is not None), spans)):
+            reasons.append(NOT_SHOWN)
         return CheckResult(state='held', code='source_text_hold', reasons=tuple(reasons), findings=findings)
+
+    def check_part(self, value: object, *, part_id: str,
+                   strings: Iterable[str] | None = None) -> tuple[CheckResult, ...]:
+        """Each text of a section, rule, example or field part (by default, every string in its
+        value), checked. The card shows the part as one bounded view; when the part is longer, an
+        AI-instruction flag's words may be past its end, so none is taken as it is."""
+        results = tuple(self.check_text(text, part_id=part_id) for text in (texts(value) if strings is None else strings))
+        if all(result.state != 'held' for result in results) or part_view_fits(value):
+            return results
+        return tuple(not_shown(result) for result in results)
 
     def check_file(self, body: bytes, *, path: str | None = None,
                    maximum_bytes: int = 10 * 1024 * 1024) -> CheckResult:
@@ -142,15 +174,24 @@ def screen_snapshot(snapshot: SourceSnapshot, blobs: BlobStore,
     # Per-file state is derived from the findings, so the invariant is: a file
     # that did not pass always contributes a finding naming its path, and those
     # are kept ahead of the display cap. If even they overflow the cap, the
-    # result says "findings_truncated" and every file takes the whole result.
+    # result says "file_findings_truncated" and every file takes the whole result.
     guaranteed: list[CheckFinding] = []
     extra: list[CheckFinding] = []
+    # Reasons no reviewer may take as they are (a cut list, flagged text the card does not show):
+    # any check's mark the whole result, and a file's own travel with that file alone.
+    blocking: list[str] = []
+    file_reasons: dict[str, list[str]] = {}
 
     def note(result: CheckResult, *, path: str | None = None, part_id: str | None = None) -> CheckResult:
         nonlocal first, unavailable
         if result.state == "passed":
             return result
         unavailable = unavailable or result.state == "unavailable"
+        # Only the first result's reasons are kept whole, so a later check's own are added here.
+        own = [reason for reason in result.reasons if reason not in ACCEPTABLE_CODES]
+        blocking.extend(own)
+        if path is not None:
+            file_reasons.setdefault(path, []).extend(own)
         found = result.findings
         if not found:
             category = (f"check_unavailable:{result.code}" if result.state == "unavailable"
@@ -174,18 +215,25 @@ def screen_snapshot(snapshot: SourceSnapshot, blobs: BlobStore,
         note(checks.check_file(body, path=entry.path), path=entry.path)
     for part in snapshot.effective_projection:
         if part.evidence.kind == "known":
-            for text in texts(part.evidence.value):
-                note(checks.check_text(text, part_id=part.part_id), part_id=part.part_id)
+            for result in checks.check_part(part.evidence.value, part_id=part.part_id):
+                note(result, part_id=part.part_id)
     if first is None:
         return CheckResult(state="passed", code="package_bytes_checked")
-    # Any dropped finding marks the result truncated: what was cut is unknown, so it is never
-    # personal data alone. Only an overflow of the per-file findings stops files being told apart.
-    dropped = len(guaranteed) + len(extra) > MAX_FINDINGS
-    findings = (guaranteed + extra)[:MAX_FINDINGS]
-    reasons = (first.reasons + (("findings_truncated",) if dropped else ())
-               + (("file_findings_truncated",) if len(guaranteed) > MAX_FINDINGS else ()))
+    # Any dropped finding, here or in a check that cut its own list, marks the whole result
+    # truncated: what was cut is unknown, so it is never acceptable as it is. A file is marked
+    # only when its own list was cut or the cap dropped one of its findings, so the files beside
+    # it keep theirs. Only an overflow of the per-file findings stops files being told apart.
+    listed = guaranteed + extra
+    if len(listed) > MAX_FINDINGS:
+        blocking.append("findings_truncated")
+        for path in dict.fromkeys(finding.path for finding in listed[MAX_FINDINGS:] if finding.path is not None):
+            file_reasons.setdefault(path, []).append("findings_truncated")
+    reasons = tuple(dict.fromkeys(first.reasons + tuple(blocking)
+                                  + (("file_findings_truncated",) if len(guaranteed) > MAX_FINDINGS else ())))
     return CheckResult(state="unavailable" if unavailable else "held", code=first.code,
-                       reasons=reasons, findings=tuple(findings))
+                       reasons=reasons, findings=tuple(listed[:MAX_FINDINGS]),
+                       file_reasons=tuple((path, tuple(dict.fromkeys(own))) for path, own in file_reasons.items()
+                                          if own))
 
 
 def texts(value):
@@ -199,14 +247,19 @@ def texts(value):
             yield from texts(item)
 
 
-def personal_data_hold(result: CheckResult) -> bool:
-    """A held result whose only findings are personal data (spec D2, ruling R6)."""
-    return result.state == "held" and personal_data_only((result.code, *result.reasons), result.findings)
+def acceptable_hold_result(result: CheckResult) -> bool:
+    """A held result a reviewer may take as it is: only personal data and visible instructions
+    to an AI model (spec D2, ruling R6, widened on 14 October 2026)."""
+    return result.state == "held" and acceptable_hold((result.code, *result.reasons), result.findings)
+
+
+# The earlier name, kept for callers that still import it.
+personal_data_hold = acceptable_hold_result
 
 
 def acknowledges(result: CheckResult, categories: frozenset[str] | None) -> bool:
-    """Whether a reviewer accepted this held result: held only for personal data they confirmed (spec D2)."""
-    return (bool(categories) and personal_data_hold(result)
+    """Whether a reviewer accepted this held result: held only for findings they confirmed (spec D2)."""
+    return (bool(categories) and acceptable_hold_result(result)
             and all(finding.category in categories for finding in result.findings))
 
 
@@ -234,8 +287,7 @@ def screen_selected(snapshot: SourceSnapshot, writes: tuple[ProjectionPart, ...]
             if result.state != "passed" and not acknowledges(result, accepted.get(part.part_id)):
                 return result
         else:
-            for text in texts(part.evidence.value):
-                result = checks.check_text(text, part_id=part.part_id)
+            for result in checks.check_part(part.evidence.value, part_id=part.part_id):
                 if result.state != "passed" and not acknowledges(result, accepted.get(part.part_id)):
                     return result
     return CheckResult(state="passed", code="resolved_writes_checked")
@@ -364,10 +416,10 @@ def screen_policy(graph: "GraphStore | None", reviews: "ReviewQueue | None", blo
         return CheckResult(state='unavailable', code='source_policy_state_unavailable')
     checked = (screen_snapshot(snapshot, blobs) if writes is None else
              screen_selected(snapshot, writes, blobs, manifest=manifest, acknowledged=acknowledged))
-    # The plan may release a whole-package hold for personal data alone on parts it keeps
+    # The plan may release a whole-package hold a reviewer could take as it is, on parts it keeps
     # (ruling F1), so that hold must not stand in for the stages after it. They still run, and
-    # any hold they find is the result; only when they all pass does the personal data stand.
-    if (checked.state != 'passed' and not (writes is None and personal_data_hold(checked))) or writes == ():
+    # any hold they find is the result; only when they all pass does the acceptable hold stand.
+    if (checked.state != 'passed' and not (writes is None and acceptable_hold_result(checked))) or writes == ():
         return checked
     parts = snapshot.effective_projection if writes is None else writes
     entries = snapshot.manifest if manifest is None else manifest

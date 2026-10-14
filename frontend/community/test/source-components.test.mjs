@@ -1009,3 +1009,94 @@ test("a replacement note names the new package for a local origin", () => {
   assert.match(replaced({ kind: "local", origin_id: "o", generation: 1 }), /that the new package removed/);
   assert.match(replaced({ kind: "github", origin_id: "o", generation: 1 }), /that GitHub removed/);
 });
+
+const injectionCard = (parts) => {
+  const changes = parts.map(([path]) => change(`file:${path}`, { kind: "file", base: unknownSide, local: absentSide, incoming: evidence({ path, digest: path, size: 1, mode: 33188 }) }));
+  return { ...update({ base: null, changes, conflicts: changes.map(row => ({ part_id: row.part_id, reason: "unknown_base", allowed_choices: ["keep_oms", "use_upstream"] })) }), held_install: true,
+    parts: Object.fromEntries(parts.map(([path, risks, overridable]) => [`file:${path}`, part(`file:${path}`, "file", { label: path, attention: "decide", risks, default: null, overridable })])) };
+};
+
+test("a visible AI-instruction flag is taken anyway with its own note and category", () => {
+  const described = (tree, label) => (input(tree, label).props["aria-describedby"]?.split(" ") ?? []).map(id => text(nodes(tree).find(node => node.props?.id === id)));
+  let draft;
+  const card = injectionCard([["a.md", ["injection"], ["injection:role-switch"]], ["b.md", ["personal_data"], ["email"]], ["c.md", ["personal_data", "injection"], ["email", "injection:role-switch"]]]);
+  const tree = component("SourceUpdateCard", { update: card, partFingerprints: { "file:a.md": "a", "file:b.md": "b", "file:c.md": "c" }, onDraftChange: value => { draft = value; } });
+  assert.deepEqual(described(tree, "Take it anyway for a.md"), ["This keeps the flagged text in the skill."]);
+  assert.deepEqual(described(tree, "Take it anyway for b.md"), ["This keeps the personal data in the skill."]);
+  assert.deepEqual(described(tree, "Take it anyway for c.md"), ["This keeps the flagged text in the skill."]);
+  input(tree, "Take it anyway for a.md").props.onChange({ target: { checked: true } });
+  assert.deepEqual(draft.choices.map(row => [row.part_id, row.choice, row.acknowledged]), [["file:a.md", "use_upstream", ["injection:role-switch"]]]);
+});
+
+test("an AI-instruction part with no acceptable category stays blocked", () => {
+  const tree = component("SourceUpdateCard", { update: injectionCard([["a.md", ["injection"], []], ["b.md", ["injection", "personal_data"], ["email"]]]), partFingerprints: { "file:a.md": "a", "file:b.md": "b" }, onDraftChange() {} });
+  assert.equal(input(tree, "Take it anyway for a.md"), undefined);
+  assert.equal(input(tree, "Take it anyway for b.md"), undefined);
+});
+
+test("a flagged part whose words the card does not show says why it cannot be taken as it is", () => {
+  const card = injectionCard([["a.md", ["injection", "not_shown"], []], ["b.md", ["injection"], ["injection:role-switch"]]]);
+  const tree = component("SourceUpdateCard", { update: card, partFingerprints: { "file:a.md": "a", "file:b.md": "b" }, onDraftChange() {} });
+  const item = nodes(tree).find(node => node.props?.["aria-label"] === "Item a.md");
+  assert.match(text(item), /Some flagged words are not shown here in full, so this item cannot be taken as it is/);
+  assert.equal(input(tree, "Take it anyway for a.md"), undefined);
+  assert.ok(input(tree, "Leave out for a.md"));
+  assert.ok(input(tree, "Take it anyway for b.md"));
+  assert.doesNotMatch(text(nodes(tree).find(node => node.props?.["aria-label"] === "Item b.md")), /not shown here/);
+  assert.equal(ui.SOURCE_RISK_ORDER.indexOf("not_shown"), ui.SOURCE_RISK_ORDER.indexOf("check_unavailable") + 1);
+});
+
+test("the AI-instruction group never offers 'Take all N anyway'; a personal-data group still does", () => {
+  const ai = component("SourceUpdateCard", { update: injectionCard([["a.md", ["injection"], ["injection:role-switch"]], ["b.md", ["injection"], ["injection:fake-tag"]]]), partFingerprints: { "file:a.md": "a", "file:b.md": "b" }, onDraftChange() {} });
+  assert.doesNotMatch(text(ai), /Take all/);
+  assert.ok(input(ai, "Take it anyway for a.md"));
+  assert.ok(input(ai, "Take it anyway for b.md"));
+  const mixed = component("SourceUpdateCard", { update: injectionCard([["a.md", ["personal_data"], ["email"]], ["b.md", ["personal_data", "injection"], ["email", "injection:role-switch"]]]), partFingerprints: { "file:a.md": "a", "file:b.md": "b" }, onDraftChange() {} });
+  assert.doesNotMatch(text(mixed), /Take all/);
+  const pd = component("SourceUpdateCard", { update: injectionCard([["a.md", ["personal_data"], ["email"]], ["b.md", ["personal_data"], ["phone"]]]), partFingerprints: { "file:a.md": "a", "file:b.md": "b" }, onDraftChange() {} });
+  assert.match(text(pd), /Take all 2 anyway/);
+});
+
+test("an excerpt is a numbered block that marks the flagged line it holds", () => {
+  const lines = Array.from({ length: 55 }, (_, index) => `Row ${1266 + index}`);
+  const flagged = [{ line: 5, label: "looks like a phone number" }, { line: 1286, label: "looks like an AI instruction" }, { line: 4000, label: "looks like a phone number" }];
+  const tree = component("SourceFileComparison", { path: "big.js", absent: ["base", "local"], flagged, onDownload() {},
+    upstream: { text: numbered(1000), truncated: true, size: 90000, excerpts: [{ start_line: 1266, lines, cut_lines: [1290] }] } });
+  assert.ok(headings(tree).concat(nodes(tree).filter(node => node.props?.className === "oms-source-excerpt-title").map(text)).includes("Lines 1266 to 1320"));
+  const block = nodes(tree).find(node => node.props?.["aria-label"] === "Lines 1266 to 1320");
+  assert.deepEqual(numberedLines(block).map(node => node.props["data-line"]).slice(0, 2), [1266, 1267]);
+  assert.equal(numberedLines(block).length, 55);
+  assert.deepEqual(flaggedLines(block).map(node => [node.props["data-line"], tagOf(node)]), [[1286, "looks like an AI instruction"]]);
+  assert.match(text(numberedLines(block)[24]), /^Row 1290…/);
+  assert.deepEqual(flaggedLines(tree).map(node => node.props["data-line"]), [5, 1286]);
+  assert.doesNotMatch(text(tree), /Line 1286 is beyond/);
+  assert.match(text(tree), /Line 4000 is beyond this preview\./);
+});
+
+test("revealSourceLine finds a line inside an excerpt block and falls back to its first flagged line", () => {
+  const rect = (top, height) => ({ top, height });
+  const mark = top => ({ getBoundingClientRect: () => rect(top, 20), scrollIntoView() {} });
+  const main = { scrollTop: 0, getBoundingClientRect: () => rect(0, 360), focus() { this.focused = true; }, querySelector: () => null };
+  const inner = mark(500);
+  const excerpt = { scrollTop: 0, getBoundingClientRect: () => rect(100, 360), focus() { this.focused = true; },
+    querySelector: selector => selector === ".oms-source-flagged" || selector === '[data-line="1286"]' ? inner : null };
+  const root = { open: true, dataset: { omsLine: "1286" }, querySelector: selector => selector === ".oms-source-numbered" ? main : null, querySelectorAll: () => [main, excerpt] };
+  // The main preview's ref runs revealSourceLine on its disclosure once the preview is mounted.
+  const tree = component("SourceFileComparison", { path: "big.js", absent: ["base", "local"], onDownload() {}, upstream: { text: "a", excerpts: [] } });
+  const reveal = () => nodes(tree).find(node => node.type === "pre" && node.props.ref).props.ref({ closest: () => root });
+  reveal();
+  assert.equal(excerpt.scrollTop, ui.sourceLineScrollTop(rect(100, 360), rect(500, 20), 0));
+  assert.ok(excerpt.focused);
+  assert.equal(main.focused, undefined);
+  assert.equal(root.dataset.omsLine, undefined);
+  excerpt.scrollTop = 0; delete excerpt.focused;
+  reveal();
+  assert.equal(excerpt.scrollTop, ui.sourceLineScrollTop(rect(100, 360), rect(500, 20), 0));
+  assert.equal(excerpt.focused, undefined);
+});
+
+test("a one-line excerpt is titled with its single line", () => {
+  const tree = component("SourceFileComparison", { path: "big.js", absent: ["base", "local"], onDownload() {},
+    upstream: { text: numbered(1000), truncated: true, excerpts: [{ start_line: 5000, lines: ["x"], cut_lines: [] }] } });
+  assert.ok(nodes(tree).some(node => node.props?.["aria-label"] === "Line 5000"));
+});

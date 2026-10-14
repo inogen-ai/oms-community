@@ -12,16 +12,20 @@ const escapeId = value => [...value].map(c => /[A-Za-z0-9-]/.test(c) ? c : `_${c
 const changeId = partId => "oms-source-change-" + escapeId(partId);
 const removes = change => change.action === "remove" || (change.incoming.kind === "absent" && change.local.kind !== "absent");
 
-export const SOURCE_RISK_ORDER = Object.freeze(["injection", "check_failed", "check_unavailable", "personal_data", "removed_upstream", "your_edits", "unclear_identity", "script"]);
+export const SOURCE_RISK_ORDER = Object.freeze(["injection", "check_failed", "check_unavailable", "not_shown", "personal_data", "removed_upstream", "your_edits", "unclear_identity", "script"]);
 export const SOURCE_RISK_LABELS = Object.freeze({
   personal_data: "Looks like personal data", injection: "Looks like instructions to an AI", check_failed: "Failed a safety check",
-  check_unavailable: "Could not be checked", your_edits: "You changed this in OMS", removed_upstream: "Removed on GitHub",
+  check_unavailable: "Could not be checked", not_shown: "Some flagged words are not shown here in full, so this item cannot be taken as it is",
+  your_edits: "You changed this in OMS", removed_upstream: "Removed on GitHub",
   unclear_identity: "OMS cannot match this to an existing part", script: "Script", other: "Needs a decision",
 });
 // A local package has no GitHub to remove a part from, so its group heading names the new package.
 const LOCAL_RISK_LABELS = Object.freeze({ removed_upstream: "Removed in the new package" });
 const riskLabel = (update, risk) => (update.plan.origin.kind === "local" ? LOCAL_RISK_LABELS[risk] : undefined) ?? SOURCE_RISK_LABELS[risk];
 const CHECK_RISKS = ["injection", "check_failed", "check_unavailable"];
+// An AI-instruction flag can be taken only where the server lists an injection category as overridable.
+const ACKNOWLEDGES_INJECTION = part => part.overridable.some(name => name.startsWith("injection:"));
+const BLOCKING_RISKS = part => CHECK_RISKS.filter(risk => risk !== "injection" || !ACKNOWLEDGES_INJECTION(part));
 const PROSE = ["section", "rule", "example"];
 const KIND_ORDER = ["rule", "section", "example", "file", "field", "placement"];
 const KIND_NOUNS = { rule: ["rule", "rules"], section: ["section", "sections"], example: ["example", "examples"], file: ["file", "files"], field: ["skill detail", "skill details"], placement: ["placement change", "placement changes"] };
@@ -145,9 +149,9 @@ export function sourceChoiceOptions(update, change, part, conflict) {
   const removal = removes(change);
   const options = [];
   if (allowed.includes("keep_oms")) options.push({ choice: "keep_oms", label: removal ? "Keep it" : fresh ? "Leave out" : "Keep yours" });
-  if (allowed.includes("use_upstream") && !part.risks.some(risk => CHECK_RISKS.includes(risk))) {
-    if (!part.risks.includes("personal_data")) options.push({ choice: "use_upstream", label: removal ? "Remove it in OMS too" : takeLabel(update) });
-    else if (part.overridable.length) options.push({ choice: "use_upstream", acknowledged: [...part.overridable], label: "Take it anyway", note: "This keeps the personal data in the skill." });
+  if (allowed.includes("use_upstream") && !part.risks.some(risk => BLOCKING_RISKS(part).includes(risk))) {
+    if (!part.risks.includes("personal_data") && !part.risks.includes("injection")) options.push({ choice: "use_upstream", label: removal ? "Remove it in OMS too" : takeLabel(update) });
+    else if (part.overridable.length) options.push({ choice: "use_upstream", acknowledged: [...part.overridable], label: "Take it anyway", note: ACKNOWLEDGES_INJECTION(part) ? "This keeps the flagged text in the skill." : "This keeps the personal data in the skill." });
   }
   if (allowed.includes("merged_text")) options.push({ choice: "merged_text", label: "Edit the text" });
   return options;
@@ -191,7 +195,9 @@ export function sourceGroupOptions(update, group) {
   const fresh = group.parts.every(part => update.held_install === true || changes.get(part.part_id).local.kind === "absent");
   // Taking a replacement removes the parts it replaces; the group says so, not only "Choose each" (ruling T6-4).
   const linked = new Set(group.parts.flatMap(part => changes.get(part.part_id).linked_removals ?? []));
-  return ["use_upstream", "keep_oms"].filter(choice => per.every(options => options.some(option => option.choice === choice)))
+  // AI-instruction flags are taken part by part: a group never offers "Take all N anyway" for them.
+  const injected = per.some(options => options.some(option => option.choice === "use_upstream" && option.acknowledged?.some(name => name.startsWith("injection:"))));
+  return ["use_upstream", "keep_oms"].filter(choice => per.every(options => options.some(option => option.choice === choice)) && !(injected && choice === "use_upstream"))
     .map(choice => {
       const first = per[0].find(option => option.choice === choice);
       // Every "anyway" form shows the note, the group's as well as each item's.

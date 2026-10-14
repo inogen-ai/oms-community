@@ -433,7 +433,7 @@ test("opening a flagged file shows its first flagged line, marked and tagged, an
   const item = page.getByRole("region", { name: "Item references/contacts.md" });
   await expect(item.getByText("3 lines look like a phone number: lines 40, 263, 400")).toBeVisible();
   await item.locator(".oms-source-show > summary").click();
-  const preview = item.locator(".oms-source-numbered");
+  const preview = item.locator(".oms-source-numbered").first();
   const first = preview.locator('[data-line="40"]');
   await expect(first).toHaveClass(/oms-source-flagged/);
   await expect(first.locator(".oms-source-flag")).toHaveText("looks like a phone number");
@@ -454,7 +454,7 @@ test("a line number in the reason opens Show at that line", async ({ page }) => 
   await sourceFixture(page, { flagged: true });
   await page.goto("/import/?github=sources&update=update-1");
   const item = page.getByRole("region", { name: "Item references/contacts.md" });
-  const preview = item.locator(".oms-source-numbered");
+  const preview = item.locator(".oms-source-numbered").first();
   // Wait for the preview to load inside the closed disclosure.
   await expect(preview.locator('[data-line="263"]')).toHaveCount(1);
   await item.getByRole("button", { name: "Show line 263 of references/contacts.md" }).click();
@@ -484,7 +484,7 @@ test("a line number clicked before the preview loads scrolls to that line once i
   await expect(item.locator(".oms-source-show")).toHaveAttribute("open", "");
   await expect(item.getByText("Loading preview…")).toBeVisible();
   release();
-  const preview = item.locator(".oms-source-numbered");
+  const preview = item.locator(".oms-source-numbered").first();
   await expect(preview.locator('[data-line="263"]')).toBeInViewport();
   await expect(preview.locator('[data-line="40"]')).not.toBeInViewport();
   await expect(preview).toBeFocused();

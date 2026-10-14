@@ -25,6 +25,7 @@ from oms.sources.projection import ProjectionBuilder
 from oms.sources import installation, operations
 from oms.sources.apply import apply_parts
 from oms.sources.errors import SourceConflict, SourceForbidden, SourceNotFound, StaleMutation, SourceError
+from oms.sources.findings import ACCEPTABLE_CODES
 from oms.sources.links import parse_link
 from oms.sources.local_projection import project_local
 from oms.sources.merge import MergePolicy, build_plan
@@ -53,9 +54,12 @@ def _file_result(check, path):
         return check
     findings = tuple(finding for finding in check.findings if finding.path == path)
     if findings:
-        # Dropped findings may have belonged to this file, so the truncation travels with it.
-        return CheckResult(state="held", code=check.code, findings=findings,
-                           reasons=("findings_truncated",) if "findings_truncated" in check.reasons else ())
+        # A reason no reviewer may take as it is (a cut list, flagged text the card does not show)
+        # travels with the file it came from. A result that does not say which file gives it to
+        # every file: dropped findings may have been this file's.
+        reasons = (dict(check.file_reasons).get(path, ()) if check.file_reasons is not None
+                   else tuple(reason for reason in check.reasons if reason not in ACCEPTABLE_CODES))
+        return CheckResult(state="held", code=check.code, findings=findings, reasons=reasons)
     return CheckResult(state="passed", code="file_checked")
 
 

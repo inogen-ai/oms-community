@@ -8,6 +8,7 @@ from oms.domain.models import ReviewItem
 from oms.domain.types import Verdict
 from oms.ports.mutation import MutationContext
 from oms.sources.errors import SourceConflict, SourceNotFound, StaleMutation
+from oms.sources.findings import PERSONAL_DATA
 from oms.sources.models import (
     Binding, BlockedAttempt, DraftChoice, Evidence, LocalState, LocalStream, MergePlan,
     OriginRef, PartKind, ProjectionPart, SkillOutcome, SnapshotRef, SourceSnapshot, SourceStatus, Update,
@@ -174,29 +175,42 @@ def validate_choices(update: Update, choices: tuple[DraftChoice, ...]) -> None:
         if choice.acknowledged and (choice.choice != "use_upstream" or not check.held):
             raise SourceConflict("review_choice_not_allowed", "only a flagged part taken from the new version can be accepted as it is")
         if choice.choice == "use_upstream" and check.held:
+            # The acknowledgement names exactly the part's own categories: a missing one asks
+            # again, an extra one is refused.
             categories = set(check.overridable)
             if not categories or not categories <= set(choice.acknowledged):
-                raise SourceConflict("personal_data_acknowledgement_required",
-                                     "Confirm that this personal data may be kept.")
+                raise SourceConflict("personal_data_acknowledgement_required", _confirm(categories))
             if set(choice.acknowledged) - categories:
                 raise SourceConflict("review_choice_not_allowed", "acknowledged categories do not match this part")
         if choice.choice == "merged_text" and SourceSafety().check_text(choice.merged_text).state != "passed":
             raise SourceConflict("required_check_held", "merged text not safe")
 
 
+def _confirm(categories: set[str]) -> str:
+    if categories and categories <= PERSONAL_DATA:
+        return "Confirm that this personal data may be kept."
+    return "Confirm that this flagged text may be kept."
+
+
 def acknowledgements(update: Update) -> dict[str, frozenset[str]]:
-    """Personal-data categories the reviewer confirmed, by part (spec 5)."""
+    """Finding categories the reviewer confirmed may be kept, by part (spec 5)."""
     return {choice.part_id: frozenset(choice.acknowledged) for choice in update.drafts
             if choice.choice == "use_upstream" and choice.acknowledged}
 
 
 def acknowledgement_detail(update: Update) -> str | None:
-    """The history line for an apply that kept personal data (ruling R11), or None."""
+    """The history line for an apply that kept flagged text (ruling R11), or None.
+
+    Personal data alone keeps its own wording; any kept instruction to an AI model makes it flagged text."""
     changes = {change.part_id: change for change in update.plan.changes}
-    kept = [f"{part_label(changes[choice.part_id], flagged=True)} ({', '.join(sorted(choice.acknowledged))})"
-            for choice in update.drafts
-            if choice.choice == "use_upstream" and choice.acknowledged and choice.part_id in changes]
-    return "Kept personal data on review: " + "; ".join(kept) if kept else None
+    taken = [choice for choice in update.drafts
+             if choice.choice == "use_upstream" and choice.acknowledged and choice.part_id in changes]
+    if not taken:
+        return None
+    kept = "; ".join(f"{part_label(changes[choice.part_id], flagged=True)} ({', '.join(sorted(choice.acknowledged))})"
+                     for choice in taken)
+    personal = all(category in PERSONAL_DATA for choice in taken for category in choice.acknowledged)
+    return ("Kept personal data on review: " if personal else "Kept flagged text on review: ") + kept
 
 
 def aligned_snapshot(incoming: SourceSnapshot, update: Update, local: LocalState) -> SourceSnapshot:
