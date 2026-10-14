@@ -5,7 +5,9 @@ from typing import Literal, Self
 from pydantic import Field, model_validator
 
 from oms.domain.identity import SkillRef
-from oms.sources.primitives import Generation, Generations, LocalPackage, NonEmpty, PlanFingerprint, Record, ResolvedRef
+from oms.sources.primitives import (
+    AcknowledgedCategory, Generation, Generations, LocalPackage, NonEmpty, PlanFingerprint, Record, ResolvedRef,
+)
 
 
 class DraftChoice(Record):
@@ -13,9 +15,10 @@ class DraftChoice(Record):
     choice: Literal["keep_oms", "use_upstream", "merged_text"]
     merged_text: str | None = None
     part_fingerprint: NonEmpty
-    # Personal-data categories the reviewer confirmed may be kept (spec 5). Which
-    # choice and part may carry them is judged by `review.validate_choices`.
-    acknowledged: tuple[Literal["phone", "email"], ...] = ()
+    # Finding categories the reviewer confirmed may be kept (spec 5): personal data
+    # (`phone`, `email`) or a visible instruction to an AI model (`injection:<name>`).
+    # Which choice and part may carry them is judged by `review.validate_choices`.
+    acknowledged: tuple[AcknowledgedCategory, ...] = ()
 
     @model_validator(mode="after")
     def merged_choice(self) -> Self:

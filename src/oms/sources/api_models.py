@@ -169,6 +169,13 @@ class DiscoveryView(Body):
     repository: RepositoryView | None = None
 
 
+class FileExcerpt(Body):
+    """Whole lines of a long file around a flagged line, numbered from one by line feeds only."""
+    start_line: int
+    lines: list[str]
+    cut_lines: list[int] = []
+
+
 class FilePreview(Body):
     path: str
     side: Literal["base", "local", "upstream", "discovery"]
@@ -178,6 +185,7 @@ class FilePreview(Body):
     truncated: bool
     byte_limit: int = 65536
     line_limit: int = 1000
+    excerpts: list[FileExcerpt] = []
     media_type: Literal["text/plain"] = "text/plain"
 
 

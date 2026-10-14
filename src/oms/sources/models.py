@@ -155,6 +155,11 @@ class CheckResult(Record):
     code: NonEmpty
     reasons: tuple[str, ...] = ()
     findings: tuple[CheckFinding, ...] = ()
+    # Set by the whole-package screen only: per file, its own reasons that no reviewer may take as
+    # they are (a cut list of findings, flagged text the card does not show), so each file takes
+    # only its own. None when nothing said which file, and then every file takes the whole result's.
+    # Never stored or returned.
+    file_reasons: tuple[tuple[str, tuple[str, ...]], ...] | None = Field(default=None, exclude=True)
 
     def __bool__(self) -> bool:
         raise TypeError("Inspect check.state explicitly")

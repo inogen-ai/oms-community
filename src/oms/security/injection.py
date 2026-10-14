@@ -7,9 +7,14 @@ will miss a phrasing nobody anticipated, which is precisely why the port
 exists and why a hit flags to review instead of rejecting.
 """
 import re
+from collections.abc import Iterable
 
 from oms.ports.injection_screen import CLEAN, ScreenResult
-from oms.security.normalise import probe
+from oms.security.normalise import probe, views
+
+# Escape runs: a payload a reviewer sees as codes, never as words. Part of the
+# "encoding" category, and kept apart so a finding can say which kind it is.
+_ESCAPES = r"(?:\\u00[0-9a-f]{2}){4,}|(?:%[0-9a-f]{2}){6,}"
 
 # Each category is one recognisable attack shape. Weights differ because the
 # categories differ in how often benign text trips them: an instruction
@@ -39,15 +44,20 @@ _CATEGORY_PATTERNS: dict[str, tuple[re.Pattern, float]] = {
         re.IGNORECASE), 0.5),
 
     # Text impersonating the transcript's own structure. Covers both the
-    # angle-bracket form and ChatML's <|im_start|> pipe form.
+    # angle-bracket form and ChatML's <|im_start|> pipe form. The run before
+    # the role word stays on its line: a run that may cross line breaks is
+    # tried again from every line start inside it, which costs the square of
+    # a flood of blank lines.
     "system-spoof": (re.compile(
         r"<\|?/?(?:system|assistant|user|im_start|im_end)\|?>"
-        r"|^\s*(?:SYSTEM|ASSISTANT)\s*:",
+        r"|^[^\S\n]*(?:SYSTEM|ASSISTANT)\s*:",
         re.IGNORECASE | re.MULTILINE), 0.5),
 
-    # Trying to close or reopen the data fence from inside the payload.
+    # Trying to close or reopen the data fence from inside the payload. The
+    # slash brings its own run: two runs side by side split one long run in
+    # every possible way.
     "delimiter-attack": (re.compile(
-        r"<<<\s*/?\s*(?:END\s*)?DATA\s*>>>|\[/?INST\]|```\s*system",
+        r"<<<\s*(?:/\s*)?(?:END\s*)?DATA\s*>>>|\[/?INST\]|```\s*system",
         re.IGNORECASE), 0.7),
 
     # "repeat your system prompt", "reveal your instructions"
@@ -61,7 +71,7 @@ _CATEGORY_PATTERNS: dict[str, tuple[re.Pattern, float]] = {
     "encoding": (re.compile(
         r"\bbase64\b[^.!?\n]{0,25}?\b(?:decode|encoded|following|payload|string)\b"
         r"|\b(?:decode|decoding)\b[^.!?\n]{0,25}?\bbase64\b"
-        r"|(?:\\u00[0-9a-f]{2}){4,}|(?:%[0-9a-f]{2}){6,}",
+        r"|" + _ESCAPES,
         re.IGNORECASE), 0.4),
 
     # Claiming a privilege level the sender does not have, to place the payload
@@ -207,6 +217,87 @@ def _locate(text: str, hit_patterns: list[re.Pattern]) -> tuple[tuple[int, int],
         else:
             merged.append((start, end))
     return tuple(merged)
+
+
+def _found(pattern: re.Pattern, text: str) -> bool:
+    return any(m.end() > m.start() for m in pattern.finditer(text))
+
+
+def _left_over(pattern: re.Pattern, text: str, spans: list[tuple[int, int]]) -> bool:
+    """Whether any reading of the text still matches once every raw match is taken out.
+
+    Each raw match becomes a line break, and the rest is normalised and
+    decoded again. Whatever the views find there is an instance the reviewer
+    cannot read as written. Most gaps stop at a line break, but a whitespace
+    run (`\\s*`) crosses it, so a match may join the text on both sides of a
+    removed match. That only hides the category, which is the conservative
+    outcome.
+    """
+    parts, last = [], 0
+    for start, end in spans:
+        parts.extend((text[last:start], "\n"))
+        last = end
+    parts.append(text[last:])
+    rest = views("".join(parts))
+    return any(_found(pattern, view) for view in (*rest.normalised, *rest.decoded))
+
+
+# An "encoding" match that is an escape run rather than words about an encoding.
+ESCAPE_RUN = re.compile(_ESCAPES, re.IGNORECASE)
+
+
+def _first_word(text: str, start: int, end: int) -> int:
+    # A pattern anchored at a line start may take the blank lines before its words.
+    while start < end and text[start].isspace():
+        start += 1
+    return start
+
+
+def category_spans(text: str, categories: Iterable[str]) -> dict[str, tuple[tuple[int, int], ...]]:
+    """Every match of each named category in the ORIGINAL text, or none when
+    the reviewer cannot see every instance of it there.
+
+    The screen decides on the probe, so a category it found may not be in the
+    words a reviewer reads at all: letter-spaced, decoded or homoglyph text
+    matches only there. Each category is looked for with its own pattern on
+    the raw text, never through another category's match, so a disguised
+    category cannot borrow the place of a visible one.
+
+    Nor can a disguised copy hide behind a visible instance of its own
+    category. Every raw match of the pattern is taken out, and the category
+    keeps its matches only when no normalised, de-spaced, leet or decoded
+    reading of what is left matches it, and no decoded fragment of the whole
+    text does either (a payload short enough to sit inside a raw match).
+    Comparing match counts instead is not enough: a decoy raw match that
+    normalisation breaks makes room for one disguised copy elsewhere.
+
+    Each span starts at the match's first non-whitespace character. Hidden
+    characters are given as the first one only; an unknown name (a score with
+    no category) has no span.
+    """
+    found: dict[str, tuple[tuple[int, int], ...]] = {}
+    whole = None
+    for name in categories:
+        if name == "invisible-characters":
+            hidden = _INVISIBLE.search(text)
+            found[name] = (hidden.span(),) if hidden is not None else ()
+            continue
+        pattern = _CATEGORY_PATTERNS.get(name, (None,))[0]
+        spans = ([m.span() for m in pattern.finditer(text) if m.end() > m.start()]
+                 if pattern is not None else [])
+        if spans:
+            whole = whole or views(text)
+            if any(_found(pattern, fragment) for fragment in whole.decoded) or _left_over(pattern, text, spans):
+                spans = []
+        found[name] = tuple((_first_word(text, start, end), end) for start, end in spans)
+    return found
+
+
+def category_offsets(text: str, categories: Iterable[str]) -> dict[str, int | None]:
+    """Where each named category first shows in the ORIGINAL text, or None
+    when the reviewer cannot see every instance of it there (see
+    `category_spans`)."""
+    return {name: spans[0][0] if spans else None for name, spans in category_spans(text, categories).items()}
 
 
 class DeterministicScreen:

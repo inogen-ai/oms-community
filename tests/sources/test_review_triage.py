@@ -130,12 +130,16 @@ def test_scripts_are_confirmed_even_when_they_pass():
     assert parts["file:notes.md"].attention == "safe"
 
 
-def test_only_personal_data_alone_can_be_overridden():
+def test_only_personal_data_and_visible_instructions_can_be_overridden():
     def flagged(path, *categories, reason="unknown_base,source_text_hold", allowed=("keep_oms", "use_upstream")):
         return (change("file:" + path, PartKind.FILE), conflict("file:" + path, reason, allowed),
                 tuple(CheckFinding(path=path, line=index + 1, category=category)
                       for index, category in enumerate(categories)))
-    rows = [flagged("mixed.md", "phone", "injection:instruction-override"),
+    hidden = flagged("hidden.md", "injection:role-switch")
+    hidden = (*hidden[:2], (*hidden[2], CheckFinding(path="hidden.md", category="injection:instruction-override")))
+    rows = [flagged("mixed.md", "phone", "injection:invisible-characters"),
+            flagged("visible.md", "phone", "injection:role-switch"),
+            hidden,
             flagged("both.md", "phone", "email"),
             flagged("withdrawn.md", "phone", allowed=("keep_oms",)),
             flagged("big.bin", "file_size", reason="unknown_base,file_size_limit"),
@@ -146,6 +150,9 @@ def test_only_personal_data_alone_can_be_overridden():
     update = plan([row[0] for row in rows], [row[1] for row in rows], [f for row in rows for f in row[2]])
     parts = review_parts(update, held_install=True)
     assert (parts["file:mixed.md"].risks, parts["file:mixed.md"].overridable) == (("injection",), ())
+    assert (parts["file:visible.md"].risks, parts["file:visible.md"].overridable) == (
+        ("injection",), ("injection:role-switch", "phone"))
+    assert (parts["file:hidden.md"].risks, parts["file:hidden.md"].overridable) == (("injection",), ())
     assert (parts["file:both.md"].risks, parts["file:both.md"].overridable) == (("personal_data",), ("email", "phone"))
     assert (parts["file:withdrawn.md"].risks, parts["file:withdrawn.md"].overridable) == (("personal_data",), ())
     assert parts["file:big.bin"].risks == ("check_failed",)

@@ -13,12 +13,12 @@ from typing import Literal
 from oms.sources.compare import UnitDecision, compare_field, compare_prose, compare_rule, compare_unit, same_value
 from oms.sources.identity import align_projection as _align, moved_parts, sequence_key
 from oms.sources.files import compare_file, file_evidence, script_change
-from oms.sources.findings import personal_data_only
+from oms.sources.findings import acceptable_hold
 from oms.sources.models import (
     Change, CheckFinding, CheckResult, Conflict, Evidence, GraphMapping, LocalState, MergePlan,
     PartKind, PlanFingerprint, PlanFlag, ProjectionPart, SourceSnapshot,
 )
-from oms.sources.safety import MAX_FINDINGS, FileCheck, SafetyRestriction, SourceSafety
+from oms.sources.safety import MAX_FINDINGS, NOT_SHOWN, FileCheck, SafetyRestriction, SourceSafety
 
 
 @dataclass(frozen=True)
@@ -111,24 +111,24 @@ def _located(finding: CheckFinding, key: str, kind: PartKind) -> CheckFinding:
     return finding
 
 
-def _personal_data_only(check: CheckResult, key: str, kind: PartKind) -> bool:
+def _acceptable(check: CheckResult, key: str, kind: PartKind) -> bool:
     """A hold an administrator may override (spec D2): held, with findings that all
-    belong to this part and are all personal data. A check that could not run, or a
-    whole-package result that names other files, is never one."""
+    belong to this part and are all personal data or visible instructions to an AI model.
+    A check that could not run, or a whole-package result that names other files, is never one."""
     path = key.removeprefix('file:') if kind == PartKind.FILE else None
     own = all((finding.path is None or finding.path == path) and (finding.part_id is None or finding.part_id == key)
               for finding in check.findings)
-    return (check.state == 'held' and own and personal_data_only((check.code, *check.reasons), check.findings))
+    return (check.state == 'held' and own and acceptable_hold((check.code, *check.reasons), check.findings))
 
 
-def _kept_personal_data(check: CheckResult, kept: frozenset[str]) -> bool:
-    """A whole-package hold that is personal data alone, found only on parts the plan keeps (ruling F1).
+def _kept_acceptable(check: CheckResult, kept: frozenset[str]) -> bool:
+    """A whole-package hold a reviewer could take as it is, found only on parts the plan keeps (ruling F1).
 
     A reviewer who took such a part anyway, or left it out, is not asked again on every later check
     of the same commit. A finding counts when it names a kept part (by part id, or a file by its
     path); a SKILL.md finding counts through a finding of the same category on a projected part,
     which must be kept too. Anything else, including a finding no kept part accounts for, holds."""
-    if check.state != 'held' or not personal_data_only((check.code, *check.reasons), check.findings):
+    if check.state != 'held' or not acceptable_hold((check.code, *check.reasons), check.findings):
         return False
     in_parts = {finding.category for finding in check.findings
                 if finding.part_id is not None and finding.path in (None, 'SKILL.md')}
@@ -330,25 +330,27 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                 if type(policy.safety) is not SourceSafety:
                     checks.append(CheckResult(state='unavailable', code='deterministic_checks_unavailable'))
                 else:
-                    checks.extend(policy.safety.check_text(text, part_id=key) for text in _texts(after.value))
+                    # The card shows the incoming part as it was recorded, so its view is judged on that.
+                    checks.extend(policy.safety.check_part(recorded[1].value, part_id=key,
+                                                           strings=_texts(after.value)))
         # A check that could not run is not a pass (spec §7.7); it holds the
         # part like a failure does. Taking the unscreened upstream text is
         # withdrawn for a check that could not run and for any finding other than
-        # personal data; personal data alone keeps it, and apply then needs the
-        # reviewer's acknowledgement. Its findings join the plan's own list, so a
-        # part held here is named even when the policy's screen passed, and each
-        # part keeps its own findings.
+        # personal data or a visible instruction to an AI model; those alone keep
+        # it, and apply then needs the reviewer's acknowledgement. Its findings
+        # join the plan's own list, so a part held here is named even when the
+        # policy's screen passed, and each part keeps its own findings.
         for check in checks:
             if check.state != 'passed':
                 flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
                 reasons.append(check.code)
-                # The reasons that make a hold more than personal data travel with the conflict.
+                # The reasons a hold carries beyond its text hold travel with the conflict.
                 reasons.extend(reason for reason in check.reasons
-                               if reason in ('findings_truncated', 'injection_screen_hold'))
+                               if reason in ('findings_truncated', 'injection_screen_hold', NOT_SHOWN))
                 located = [_located(finding, key, kind) for finding in check.findings]
                 part_findings.extend(located)
                 part_located.setdefault(key, []).extend(located)
-                if not _personal_data_only(check, key, kind):
+                if not _acceptable(check, key, kind):
                     choices = tuple(choice for choice in choices if choice != 'use_upstream')
         restriction = restrictions.get(key)
         if restriction is not None:
@@ -370,7 +372,7 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
         if reasons:
             conflicts[key] = Conflict(part_id=key, reason=','.join(dict.fromkeys(reasons)), allowed_choices=choices)
     # The plan keeps at most MAX_FINDINGS findings of parts. A part whose findings were cut cannot
-    # be called personal data alone, so it is marked truncated and loses the override (ruling R6).
+    # be called acceptable, so it is marked truncated and loses the override (ruling R6).
     kept = set(tuple(dict.fromkeys(part_findings))[:MAX_FINDINGS])
     for key, located in part_located.items():
         if key in conflicts and not all(finding in kept for finding in located):
@@ -407,10 +409,10 @@ def build_plan(base: SourceSnapshot | None, incoming: SourceSnapshot,
                                       allowed_choices=old_conflict.allowed_choices if old_conflict
                                       else _choices(change.kind))
     # The required checks screen the whole package, so they are judged once the plan knows
-    # which parts change: personal data on parts that stay as they are holds nothing.
+    # which parts change: an acceptable finding on parts that stay as they are holds nothing.
     kept = frozenset(key for key, change in changes.items() if change.action == 'keep')
     for check in policy.required_checks:
-        if check.state != 'passed' and not _kept_personal_data(check, kept):
+        if check.state != 'passed' and not _kept_acceptable(check, kept):
             flags.add(PlanFlag.REQUIRED_CHECK_UNAVAILABLE if check.state == 'unavailable' else PlanFlag.SAFETY_HOLD)
             check_findings.extend(check.findings or (CheckFinding(category=f'policy:{check.code}'),))
     if conflicts:

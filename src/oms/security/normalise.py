@@ -20,6 +20,7 @@ Two rules keep it honest:
 import base64
 import binascii
 import codecs
+from dataclasses import dataclass
 import re
 import unicodedata
 
@@ -88,6 +89,31 @@ def _decoded_fragments(text: str) -> list[str]:
     return out
 
 
+@dataclass(frozen=True)
+class Views:
+    """Every de-obfuscated reading of a text, kept apart.
+
+    `normalised` reads the whole text again: NFKC with hidden characters and
+    lookalikes undone, then de-spaced, then each of those with leetspeak undone.
+    `decoded` holds what was hidden inside it. A screen matches their join (the
+    probe); a reviewer reads only the raw text, so comparing a view with the raw
+    text tells whether a match is one the reviewer can see.
+    """
+    normalised: tuple[str, ...] = ()
+    decoded: tuple[str, ...] = ()
+
+
+def views(text: str) -> Views:
+    if not text:
+        return Views()
+    base = unicodedata.normalize("NFKC", text)
+    base = _INVISIBLE.sub("", base)
+    base = base.translate(_CONFUSABLES)
+    despaced = _despace(base)
+    return Views(normalised=(base, despaced, base.translate(_LEET), despaced.translate(_LEET)),
+                 decoded=tuple(_decoded_fragments(base)))
+
+
 def probe(text: str) -> str:
     """The string a screen should match against: the original plus every
     de-obfuscated and decoded view of it, concatenated.
@@ -98,10 +124,5 @@ def probe(text: str) -> str:
     """
     if not text:
         return ""
-    base = unicodedata.normalize("NFKC", text)
-    base = _INVISIBLE.sub("", base)
-    base = base.translate(_CONFUSABLES)
-    despaced = _despace(base)
-    views = [base, despaced, base.translate(_LEET), despaced.translate(_LEET)]
-    views.extend(_decoded_fragments(base))
-    return "\n".join(v for v in views if v)
+    seen = views(text)
+    return "\n".join(v for v in (*seen.normalised, *seen.decoded) if v)

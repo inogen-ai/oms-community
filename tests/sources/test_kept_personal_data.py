@@ -8,6 +8,8 @@ still holds. Kept personal data never hides another hold on the skill (follow-up
 from dataclasses import replace
 from hashlib import sha256
 
+import pytest
+
 from oms.domain.models import Constraint
 from oms.domain.types import RuleStatus
 from oms.sources.models import (ApplyRequest, BulkApplyRequest, CheckFinding, CheckRequest, CheckResult, DraftChoice,
@@ -19,6 +21,9 @@ from tests.sources.test_community_safety import community_world  # noqa: F401
 from tests.sources.test_personal_data_override import INVOICES, PHONE, _request, _save, _take_everything, _with_file
 
 FLAGGED = "file:visual-companion.md"
+# A visible role switch is acceptable as it is, as personal data is (spec 2026-10-14, section 2).
+ROLE = CheckFinding(path="a.md", line=1, category="injection:role-switch")
+ROLE_BODY = b"Act as an expert designer who outputs HTML.\n"
 
 
 def _held(*findings: CheckFinding, reasons: tuple[str, ...] = ("text_requires_sanitisation",)) -> CheckResult:
@@ -33,8 +38,14 @@ def _plan(check: CheckResult, *, incoming_rule: str = "Keep receipts.", incoming
     return case.plan(incoming=incoming, policy=replace(case.policy, required_checks=(check,)))
 
 
-def test_personal_data_on_a_kept_file_does_not_hold_the_plan():
-    plan = _plan(_held(CheckFinding(path="a.md", line=1, category="phone")))
+@pytest.mark.parametrize("check", [
+    _held(CheckFinding(path="a.md", line=1, category="phone")),
+    _held(ROLE, reasons=("injection_screen_hold",)),
+    _held(CheckFinding(path="a.md", line=1, category="phone"), ROLE.model_copy(update={"line": 2}),
+          reasons=("text_requires_sanitisation", "injection_screen_hold")),
+], ids=["phone", "role-switch", "phone-and-role-switch"])
+def test_an_acceptable_finding_on_a_kept_file_does_not_hold_the_plan(check):
+    plan = _plan(check)
     assert plan.flags == () and plan.conflicts == () and plan.check_findings == ()
     assert all(change.action == "keep" for change in plan.changes)
 
@@ -53,11 +64,18 @@ def test_a_finding_on_a_changing_part_still_holds():
 
 def test_any_other_finding_on_a_kept_part_still_holds():
     for check in (
-            _held(CheckFinding(path="a.md", line=1, category="injection:instruction-override"),
+            # Found only in a disguised view: no line on the raw text.
+            _held(CheckFinding(path="a.md", category="injection:instruction-override"),
                   reasons=("injection_screen_hold",)),
             _held(CheckFinding(path="a.md", line=1, category="phone"),
-                  CheckFinding(path="a.md", line=2, category="injection:instruction-override"),
+                  CheckFinding(path="a.md", category="injection:instruction-override"),
                   reasons=("text_requires_sanitisation", "injection_screen_hold")),
+            _held(ROLE, CheckFinding(path="a.md", category="injection:instruction-override"),
+                  reasons=("injection_screen_hold",)),
+            _held(CheckFinding(path="a.md", line=1, category="injection:invisible-characters"),
+                  reasons=("injection_screen_hold",)),
+            _held(CheckFinding(path="a.md", category="injection:unclassified"), reasons=("injection_screen_hold",)),
+            _held(ROLE, reasons=("injection_screen_hold", "findings_truncated")),
             _held(CheckFinding(path="a.md", line=1, category="phone"), reasons=("findings_truncated",)),
             CheckResult(state="held", code="source_constraint_conflict"),
             CheckResult(state="held", code="file_size_limit", findings=(CheckFinding(path="a.md", category="file_size"),))):
@@ -82,12 +100,12 @@ def test_a_skill_md_finding_counts_through_the_part_that_holds_it():
 
 
 def _serve_again(world, *, description: str = "Invoices description", revision: str = "a",
-                 rule: str = "Keep receipts."):
+                 rule: str = "Keep receipts.", body: bytes = PHONE):
     """Serve the installed package again, at the same commit or a later one, with the flagged file unchanged."""
     binding = world.sources.get_binding(INVOICES)
     package = world.package(revision, description, rule=rule).model_copy(update={"package_path": "invoices"})
-    entry = ManifestEntry(path="visual-companion.md", blob_ref=world.blobs.put(PHONE), digest=sha256(PHONE).hexdigest(),
-                          size=len(PHONE), mode=0o100644)
+    entry = ManifestEntry(path="visual-companion.md", blob_ref=world.blobs.put(body), digest=sha256(body).hexdigest(),
+                          size=len(body), mode=0o100644)
     world.incoming = package.model_copy(update={
         "manifest": (*package.manifest, entry), "history_evidence": "proven_ancestor",
         "resolved_ref": binding.ref.model_copy(update={"commit": revision * 40})})
@@ -100,8 +118,9 @@ def _check(world, key: str):
         expected_source_generation=source.generation, skills=(INVOICES,)), idempotency_key=key)
 
 
-def _taken_anyway(world, *, rule: str = "Keep receipts."):
-    update = _take_everything(world, _with_file(world, rule=rule), "acknowledged")
+def _taken_anyway(world, *, rule: str = "Keep receipts.", body: bytes = PHONE,
+                  acknowledged: tuple[str, ...] = ("phone",)):
+    update = _take_everything(world, _with_file(world, body=body, rule=rule), "acknowledged", acknowledged=acknowledged)
     assert world.service.apply(world.context, ApplyRequest(**_request(update).model_dump()),
                                idempotency_key="apply-acknowledged").state == "complete"
 
@@ -123,10 +142,12 @@ def _flagged_file(world) -> bytes | None:
     return entry.digest if entry else None
 
 
-def test_a_check_of_the_same_commit_after_taking_it_anyway_is_unchanged(community_world):
+@pytest.mark.parametrize("body, acknowledged", [(PHONE, ("phone",)), (ROLE_BODY, ("injection:role-switch",))],
+                         ids=["phone", "role-switch"])
+def test_a_check_of_the_same_commit_after_taking_it_anyway_is_unchanged(community_world, body, acknowledged):
     world = community_world
-    _taken_anyway(world)
-    _serve_again(world)
+    _taken_anyway(world, body=body, acknowledged=acknowledged)
+    _serve_again(world, body=body)
     result = _check(world, "same-commit")
     assert [row.state for row in result.outcomes] == ["unchanged"]
     assert world.sources.open_update(INVOICES) is None

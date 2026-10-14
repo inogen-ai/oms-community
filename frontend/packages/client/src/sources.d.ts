@@ -29,7 +29,7 @@ export interface SourceChange extends SourceRecord {
 export type SourceDraftChoice = {
   readonly format_version?: 1; readonly part_id: string; readonly part_fingerprint: string;
 } & ({ readonly choice: "keep_oms"; readonly merged_text?: null }
-  | { readonly choice: "use_upstream"; readonly merged_text?: null; readonly acknowledged?: readonly ("phone" | "email")[] }
+  | { readonly choice: "use_upstream"; readonly merged_text?: null; readonly acknowledged?: readonly ("phone" | "email" | `injection:${string}`)[] }
   | { readonly choice: "merged_text"; readonly merged_text: string });
 export interface SourceConflict extends SourceRecord {
   readonly part_id: string; readonly reason: string; readonly allowed_choices: readonly SourceDraftChoice["choice"][];
@@ -116,6 +116,8 @@ export interface SourceFilePreview {
   readonly path: string; readonly side: "base" | "local" | "upstream" | "discovery"; readonly size: number;
   readonly binary: boolean; readonly text: string | null; readonly truncated: boolean;
   readonly byte_limit: number; readonly line_limit: number; readonly media_type: "text/plain";
+  /** Windows around flagged lines beyond the preview; `cut_lines` are line numbers cut at 2,000 characters. */
+  readonly excerpts?: readonly { readonly start_line: number; readonly lines: readonly string[]; readonly cut_lines: readonly number[] }[];
 }
 export interface DiscoverSourceBody { url: string; credential_profile_id?: string | null; ref_kind?: "branch" | "tag" | "commit" | null; ref_name?: string | null; package_path?: string | null; discovery_root?: string }
 export interface InstallSourceBody { discovery_id: string; selections: readonly { package_path: string; local_name: string; domain: string }[] }
@@ -133,14 +135,14 @@ export interface SourceAutomationBody extends SourceBindingBody { enabled: boole
 export interface SourceResolvedCheck extends SourceRecord {
   readonly state: "passed" | "held" | "unavailable"; readonly code: string; readonly reasons: readonly string[];
 }
-export type SourceRiskCode = "personal_data" | "injection" | "check_failed" | "check_unavailable" | "your_edits"
+export type SourceRiskCode = "personal_data" | "injection" | "check_failed" | "check_unavailable" | "not_shown" | "your_edits"
   | "removed_upstream" | "unclear_identity" | "script";
 /** Where a check held and why: never the matched text. `path` is null for a SKILL.md part. */
 export interface SourceCheckFinding { readonly path: string | null; readonly part_id: string | null; readonly line: number | null; readonly category: string; readonly summary: string }
 export interface SourcePartReview extends SourceRecord {
   readonly part_id: string; readonly kind: SourcePartKind; readonly label: string;
   readonly attention: "decide" | "safe" | "automatic"; readonly risks: readonly SourceRiskCode[];
-  readonly default: "use_upstream" | null; readonly overridable: readonly ("phone" | "email")[];
+  readonly default: "use_upstream" | null; readonly overridable: readonly ("phone" | "email" | `injection:${string}`)[];
   readonly findings: readonly SourceCheckFinding[];
 }
 export interface SourceReviewSummary extends SourceRecord {

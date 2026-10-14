@@ -18,6 +18,9 @@ from oms.domain.types import Mutability
 type JSONValue = None | bool | int | float | str | list[JSONValue] | dict[str, JSONValue]
 NonEmpty = Annotated[str, Field(min_length=1)]
 Generation = Annotated[int, Field(ge=0, strict=True)]
+# A finding category a reviewer may confirm keeping: personal data, or a named screen category.
+ACKNOWLEDGEABLE = r"^(?:phone|email|injection:[a-z0-9-]+)$"
+AcknowledgedCategory = Annotated[str, Field(pattern=ACKNOWLEDGEABLE)]
 
 
 class Record(BaseModel):

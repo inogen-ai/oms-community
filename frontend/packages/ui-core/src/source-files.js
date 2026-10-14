@@ -39,8 +39,14 @@ export function sourceLineScrollTop(container, line, scrollTop) {
  */
 export function revealSourceLine(root) {
   const preview = root.querySelector(".oms-source-numbered");
+  // Only this preview's own excerpt blocks, never another file's or another column's preview: a
+  // search of the whole disclosure scrolled the page to a line the reader had not asked for.
+  const excerpts = [...(preview?.parentElement?.querySelectorAll?.(".oms-source-excerpt .oms-source-numbered") ?? [])];
+  const previews = preview ? [preview, ...excerpts.filter(block => block !== preview)] : [];
   const asked = /^\d+$/.test(root.dataset.omsLine ?? "") ? root.dataset.omsLine : null;
-  const target = preview ? preview.querySelector(asked ? `[data-line="${asked}"]` : ".oms-source-flagged") : null;
+  // The line may sit in the main preview or in one of the excerpt blocks after it.
+  const owner = previews.find(block => block.querySelector(asked ? `[data-line="${asked}"]` : ".oms-source-flagged")) ?? null;
+  const target = owner ? owner.querySelector(asked ? `[data-line="${asked}"]` : ".oms-source-flagged") : null;
   if (!target) {
     const note = preview && asked ? root.querySelector(`[data-beyond="${asked}"]`) : null;
     if (!note) return;
@@ -49,10 +55,10 @@ export function revealSourceLine(root) {
     note.scrollIntoView?.({ block: "nearest" });
     return;
   }
-  preview.scrollTop = sourceLineScrollTop(preview.getBoundingClientRect(), target.getBoundingClientRect(), preview.scrollTop);
+  owner.scrollTop = sourceLineScrollTop(owner.getBoundingClientRect(), target.getBoundingClientRect(), owner.scrollTop);
   if (asked) {
     delete root.dataset.omsLine;
-    preview.focus?.({ preventScroll: true });
+    owner.focus?.({ preventScroll: true });
   }
   // Brings the line into the page's view too, when the preview sits below the fold.
   target.scrollIntoView?.({ block: "nearest" });
@@ -89,17 +95,27 @@ export function sourceTextLines(value, truncated = false) {
  * tagged in plain words; a flagged line the preview does not hold is named below it, in a note a
  * line-number button can move focus to. It only ever sits inside a disclosure the reader opens (ruling P4).
  */
-export function numberedSourceText({ lines, held }, label, flagged = []) {
+export function numberedSourceText({ lines, held }, label, flagged = [], excerpts = []) {
   const tags = new Map(flagged.map(row => [row.line, row.label]));
+  const blocks = (Array.isArray(excerpts) ? excerpts : []).filter(block => Number.isInteger(block?.start_line) && Array.isArray(block.lines) && block.lines.length);
+  const covered = line => blocks.some(block => line >= block.start_line && line < block.start_line + block.lines.length);
+  const row = (number, line, tag, shown, cut) => h("span", { key: number, className: tag ? "oms-source-line oms-source-flagged" : "oms-source-line", "data-line": shown ? number : undefined },
+    line, cut ? "…" : null, tag ? " " : null, tag ? h("span", { className: "oms-source-flag" }, tag) : null);
   return h(Fragment, null,
     h("pre", { tabIndex: 0, "aria-label": label, className: "oms-source-numbered", ref: revealWhenShown }, lines.map((line, index) => {
-      const number = index + 1, tag = number <= held ? tags.get(number) : undefined;
+      const number = index + 1;
       // A line cut short by the excerpt is shown without a number, so nothing points at it.
-      return h("span", { key: number, className: tag ? "oms-source-line oms-source-flagged" : "oms-source-line", "data-line": number <= held ? number : undefined },
-        line, tag ? " " : null, tag ? h("span", { className: "oms-source-flag" }, tag) : null);
+      return row(number, line, number <= held ? tags.get(number) : undefined, number <= held, false);
     })),
-    flagged.filter(row => row.line > held).map(row => h("p", { key: row.line, className: "oms-source-beyond", tabIndex: -1, "data-beyond": row.line },
-      `Line ${row.line} is beyond this preview.`)));
+    blocks.map(block => {
+      const last = block.start_line + block.lines.length - 1, title = last === block.start_line ? `Line ${last}` : `Lines ${block.start_line} to ${last}`, cuts = new Set(block.cut_lines ?? []);
+      return h("section", { key: block.start_line, className: "oms-source-excerpt", "aria-label": title },
+        h("p", { className: "oms-source-excerpt-title" }, title),
+        h("pre", { tabIndex: 0, "aria-label": `${label}: ${title}`, className: "oms-source-numbered" },
+          block.lines.map((line, index) => row(block.start_line + index, line, tags.get(block.start_line + index), true, cuts.has(block.start_line + index)))));
+    }),
+    flagged.filter(item => item.line > held && !covered(item.line)).map(item => h("p", { key: item.line, className: "oms-source-beyond", tabIndex: -1, "data-beyond": item.line },
+      `Line ${item.line} is beyond this preview.`)));
 }
 
 // The column names follow where the update comes from (ruling FB-1): a re-imported package is not GitHub.
@@ -133,7 +149,7 @@ export function SourceFileComparison({ path, base, local, upstream, absent = [],
             : value?.unavailable ? h("p", null, value.unavailable) : !value ? h("p", null, "Preview not loaded")
               : value.binary ? h("p", null, "Binary file. Text preview unavailable.")
                 : typeof value.text === "string" ? h("div", null, excerpt ? h("p", null, "Bounded excerpt: download to inspect the complete file.") : null,
-                  numbered ? numberedSourceText(numbered, `${title} text`, flagged)
+                  numbered ? numberedSourceText(numbered, `${title} text`, flagged, value.excerpts)
                     : h("pre", { tabIndex: 0, "aria-label": `${title} text` }, preview.text)) : h("p", null, "Text preview unavailable"),
         value?.size !== undefined ? h("p", null, `${value.size} bytes`) : null,
         value?.digest ? h("p", null, "Digest: ", h("code", null, value.digest)) : null,

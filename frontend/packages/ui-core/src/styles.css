@@ -429,10 +429,12 @@
 .oms-source-parts :is(th, td) { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--oms-line); overflow-wrap: anywhere; }
 .oms-source-undo { border-top: 1px solid var(--oms-line); margin-top: 18px; padding-top: 12px; }
 /* The GitHub side's preview: line numbers, flagged lines marked and tagged; a line number in a reason is a button. */
-.oms-source-numbered .oms-source-line { display: block; position: relative; min-height: 1.65em; padding-left: 3.6em; }
-.oms-source-numbered .oms-source-line::before { content: attr(data-line); position: absolute; left: 0; width: 2.8em; text-align: right; color: var(--oms-muted); user-select: none; }
+.oms-source-numbered .oms-source-line { display: block; position: relative; min-height: 1.65em; padding-left: 6.5ch; }
+.oms-source-numbered .oms-source-line::before { content: attr(data-line); position: absolute; left: 0; width: 5ch; text-align: right; color: var(--oms-muted); user-select: none; }
 .oms-source-numbered .oms-source-flagged { background: var(--oms-error-paper); box-shadow: inset 3px 0 0 var(--oms-error-line); }
 .oms-source-flag { display: inline-block; margin-left: 0.5em; padding: 0 6px; border: 1px solid var(--oms-error-line); border-radius: 4px; color: var(--oms-error-ink); font: 600 11px/1.5 system-ui, sans-serif; white-space: nowrap; user-select: none; }
+.oms-source-excerpt { margin-top: 12px; }
+.oms-source-excerpt-title { margin: 0 0 4px; color: var(--oms-muted); font-weight: 600; }
 .oms-source-line-link { display: inline; min-width: 0; min-height: 0; height: auto; margin: 0; padding: 0; border: 0; border-radius: 0; background: none; color: var(--oms-accent); font: inherit; text-decoration: underline; cursor: pointer; }
 .oms-source-line-link:hover { color: var(--oms-accent-hover); }
 .oms-source-beyond:focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }

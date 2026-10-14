@@ -276,6 +276,19 @@ class SourceReads:
             raise SourceNotFound("file_not_found")
         return verified_bytes(self.blobs, entry)
 
+    def update_finding_lines(self, context: ActionContext, update_id: str, path: str) -> list[int]:
+        """The lines the update's own findings name in one file; the card lists the same findings."""
+        require_path(path)
+
+        def read(bound):
+            update = bound.sources.get_update(update_id, tenant_id=context.tenant_id)
+            if update is None or retired_update(bound.sources, update):
+                raise SourceNotFound("update_not_found")
+            self._skill(context, bound.graph, update.plan.skill)
+            return sorted({finding.line for finding in update.plan.check_findings
+                           if finding.path == path and finding.line is not None})
+        return self.service._read(context, "read", (), read, read_only=True)
+
     def update_file(self, context: ActionContext, update_id: str, side: FileSide, path: str) -> bytes:
         require_path(path)
 

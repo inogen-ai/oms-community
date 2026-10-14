@@ -3,6 +3,8 @@ export type SourceFileSide = "base" | "local" | "upstream";
 export interface SourceFileSidePreview {
   text?: string | null; size?: number; digest?: string; binary?: boolean; truncated?: boolean;
   loading?: boolean; error?: string; unavailable?: string;
+  /** Windows around flagged lines beyond the preview; `cut_lines` are line numbers cut short. */
+  excerpts?: readonly { start_line: number; lines: readonly string[]; cut_lines?: readonly number[] }[];
 }
 /** A flagged line of the GitHub side and its plain tag ("looks like a phone number"), never the matched text. */
 export interface SourceFlaggedLine { line: number; label: string }

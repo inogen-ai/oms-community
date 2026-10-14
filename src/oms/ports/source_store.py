@@ -136,7 +136,8 @@ class SourcePolicy(Protocol):
                         acknowledged: Mapping[str, frozenset[str]] | None = None) -> CheckResult:
         """Screen actual selected writes while retaining the original upstream evidence.
 
-        `acknowledged` names, by part, the personal-data categories a reviewer confirmed may be kept."""
+        `acknowledged` names, by part, the finding categories a reviewer confirmed may be kept:
+        personal data, or a visible instruction to an AI model."""
         ...
 
     def automatic_eligibility(self, plan: MergePlan, binding: Binding) -> CheckResult: ...

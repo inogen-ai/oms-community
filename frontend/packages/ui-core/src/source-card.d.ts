@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { SourceRefDisplay } from "./source-status.js";
 import type { SourceRepositoryDisplay } from "./source-repository.js";
 import type { SourceFileSide, SourceFlaggedLine } from "./source-files.js";
+export type SourceCardAcknowledged = "phone" | "email" | `injection:${string}`;
 export interface SourceCardFingerprint {
   content_generation: number; binding_generation: number; update_generation: number;
   policy_version: string; policy_digest?: string | null; local_digest: string; candidate_digest: string;
@@ -13,17 +14,17 @@ export interface SourceCardChange {
 }
 export type SourceCardChoice = { part_id: string; part_fingerprint: string } & (
   | { choice: "keep_oms"; merged_text?: null }
-  | { choice: "use_upstream"; merged_text?: null; acknowledged?: readonly ("phone" | "email")[] }
+  | { choice: "use_upstream"; merged_text?: null; acknowledged?: readonly SourceCardAcknowledged[] }
   | { choice: "merged_text"; merged_text: string }
 );
-export type SourceCardRisk = "personal_data" | "injection" | "check_failed" | "check_unavailable" | "your_edits"
+export type SourceCardRisk = "personal_data" | "injection" | "check_failed" | "check_unavailable" | "not_shown" | "your_edits"
   | "removed_upstream" | "unclear_identity" | "script";
 /** Where a check held and why: never the matched text. */
 export interface SourceCardFinding { path: string | null; part_id: string | null; line: number | null; category: string; summary: string }
 /** The server's triage of one change: what the card asks about, and why. */
 export interface SourceCardPart {
   part_id: string; kind: string; label: string; attention: "decide" | "safe" | "automatic";
-  risks: readonly SourceCardRisk[]; default: "use_upstream" | null; overridable: readonly ("phone" | "email")[];
+  risks: readonly SourceCardRisk[]; default: "use_upstream" | null; overridable: readonly SourceCardAcknowledged[];
   findings: readonly SourceCardFinding[];
 }
 export interface SourceCardSummary {
@@ -51,7 +52,7 @@ export interface SourceCardAction { skill_id: string; fingerprint: SourceCardFin
 export type SourceCardApply = SourceCardAction & { choices: readonly SourceCardChoice[]; removal_consents: readonly string[]; save: boolean };
 /** One radio: `acknowledged` and `note` are set on "Take it anyway". */
 export interface SourceCardOption {
-  choice: SourceCardChoice["choice"]; label: string; acknowledged?: readonly ("phone" | "email")[]; note?: string;
+  choice: SourceCardChoice["choice"]; label: string; acknowledged?: readonly SourceCardAcknowledged[]; note?: string;
 }
 export interface SourceCardGroup { risk: SourceCardRisk | "other"; label: string; parts: readonly SourceCardPart[] }
 export interface SourceCardGroupOption {
