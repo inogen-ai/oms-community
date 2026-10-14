@@ -402,7 +402,7 @@
     },
     "frontend/community/test/source-components.test.mjs": {
       "mode": 420,
-      "sha256": "fe73bac7b0e874c9a2a512a7e2da0172e4224a8bddce8306f37ffd33ae8cd15f"
+      "sha256": "e9033968efe3a25b21d61bbdcf790a6b543463a96debb1ce10a8c05f4f4ed706"
     },
     "frontend/community/test/source-lookup.test.mjs": {
       "mode": 420,
@@ -694,7 +694,7 @@
     },
     "frontend/packages/ui-core/src/source-files.js": {
       "mode": 420,
-      "sha256": "c56485647f7565e3e869d1c8576909bbd5fe5912e6bd688c0f9d75f4d6b87114"
+      "sha256": "5157080762ca2ea72abaa64b219b7bfc4fdd343c721499153efe5be59540aea1"
     },
     "frontend/packages/ui-core/src/source-lookup.d.ts": {
       "mode": 420,
