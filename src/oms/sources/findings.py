@@ -18,7 +18,7 @@ from oms.sources.primitives import ACKNOWLEDGEABLE
 _LABELS = {
     "phone": "looks like a phone number",
     "email": "looks like an email address",
-    "file_size": "is larger than 25 MB",
+    "file_size": "is larger than the size limit for one file",
 }
 _INJECTION_THRESHOLD = 0.5
 PERSONAL_DATA: frozenset[str] = frozenset({"phone", "email"})

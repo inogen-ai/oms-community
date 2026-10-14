@@ -761,7 +761,7 @@ test("finding reasons count lines and never need the matched text", () => {
   assert.deepEqual(ui.sourceFindingReasons([f("phone", 263), f("phone", 264), f("phone", 265), f("phone", 265)]), ["3 lines look like a phone number: lines 263, 264, 265"]);
   assert.deepEqual(ui.sourceFindingReasons([f("email", 4)]), ["1 line looks like an email address: line 4"]);
   assert.deepEqual(ui.sourceFindingReasons([f("injection:instruction-override", null)]), ["Looks like instructions to an AI (instruction override)"]);
-  assert.deepEqual(ui.sourceFindingReasons([f("file_size", null)]), ["The file is larger than 25 MB"]);
+  assert.deepEqual(ui.sourceFindingReasons([f("file_size", null)]), ["The file is larger than the size limit for one file"]);
   assert.deepEqual(ui.sourceFindingReasons([f("check_unavailable:text_check_limit", null)]), ["A required check could not run (text check limit)"]);
   assert.deepEqual(ui.sourceFindingReasons([f("policy:source_constraint_conflict", null)]), ["Conflicts with a workspace safety rule (source constraint conflict)"]);
   assert.deepEqual(ui.sourceFindingReasons(Array.from({ length: 12 }, (_, index) => f("phone", index + 1))), ["12 lines look like a phone number: lines 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 2 more"]);

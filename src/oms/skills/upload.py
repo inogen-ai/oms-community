@@ -38,7 +38,7 @@ import zipfile
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Callable, Literal
 
 from oms.domain.ids import normalise as _normalise
 from oms.domain.repo import ReservedSkillId
@@ -110,6 +110,14 @@ class UploadNotFound(Exception):
     or discarded already."""
 
 
+# The most a host may allow, whatever its settings say. 50MB a file: GitHub warns
+# above 50MB and refuses above 100MB, and published skill files are pushed there.
+# 250MB an upload: the server holds an upload in memory two to three times over
+# (the request body, a folder's assembled archive, the extracted reads).
+MAX_FILE_BYTES_CEILING = 50_000_000
+MAX_UPLOAD_BYTES_CEILING = 250_000_000
+
+
 @dataclass(frozen=True)
 class UploadLimits:
     """Bounds on what one upload may carry.
@@ -121,12 +129,21 @@ class UploadLimits:
     max_archive_bytes: int = 100_000_000      # 100MB compressed
     max_total_bytes: int = 150_000_000        # 150MB extracted, so a zip bomb stops here
     # 25MB per file: skills bundle templates and decks. The source budgets
-    # (`oms.sources.limits.FILE_BYTES`) sit at or above it.
+    # (`oms.sources.limits`) sit at or above the ceilings.
     max_file_bytes: int = 25_000_000
     max_files: int = 2_000
     # A preview nobody applied or discarded within this long is swept, so an
     # abandoned upload costs disk for a day rather than for ever.
     max_staged_seconds: int = 86_400
+
+    @classmethod
+    def for_megabytes(cls, *, file_mb: int, upload_mb: int) -> UploadLimits:
+        """A host's settings, in megabytes, kept between 1MB and the ceilings.
+        An upload may unpack to one and a half times its own size."""
+        file_bytes = min(max(int(file_mb), 1) * 1_000_000, MAX_FILE_BYTES_CEILING)
+        upload_bytes = min(max(int(upload_mb), 1) * 1_000_000, MAX_UPLOAD_BYTES_CEILING)
+        return cls(max_archive_bytes=upload_bytes, max_total_bytes=upload_bytes * 3 // 2,
+                   max_file_bytes=file_bytes)
 
 
 @dataclass
@@ -220,15 +237,23 @@ def _reject_unsafe_members(archive: zipfile.ZipFile, limits: UploadLimits) -> No
 class UploadService:
     def __init__(self, *, store: GraphStore, importer: SkillImporter,
                  staging_root: Path, sanitiser=None,
-                 limits: UploadLimits | None = None, source_service=None) -> None:
+                 limits: UploadLimits | None = None, source_service=None,
+                 limits_for: Callable[[str], UploadLimits] | None = None) -> None:
         self._store = store
         self._importer = importer
         self._staging_root = Path(staging_root)
         self._sanitiser = sanitiser
         self._limits = limits or UploadLimits()
+        # A host that lets each tenant set its own limits reads them here, once
+        # per upload, so a changed setting applies to the next upload.
+        self._limits_for = limits_for
         self._staged: dict[str, StagedUpload] = {}
         self._states: dict[str, ImportState] = {}
         self._source_service = source_service
+
+    def limits(self, tenant_id: str) -> UploadLimits:
+        """The limits this tenant's next upload is held to."""
+        return self._limits if self._limits_for is None else self._limits_for(tenant_id)
 
     def configure_sources(self, service) -> None:
         self._source_service = service
@@ -252,16 +277,17 @@ class UploadService:
             raise UploadRefused("Invalid upload intake purpose")
         self._sweep_abandoned()
         filename = clean_filename(filename)
-        if len(archive) > self._limits.max_archive_bytes:
+        limits = self.limits(tenant_id)
+        if len(archive) > limits.max_archive_bytes:
             raise UploadTooLarge(
                 f"the upload is {_megabytes(len(archive))}; the limit is "
-                f"{_megabytes(self._limits.max_archive_bytes)}")
+                f"{_megabytes(limits.max_archive_bytes)}")
         try:
             zf = zipfile.ZipFile(BytesIO(archive))
         except zipfile.BadZipFile as exc:
             raise UnsafeArchive("that file is not a readable zip archive") from exc
         with zf:
-            _reject_unsafe_members(zf, self._limits)
+            _reject_unsafe_members(zf, limits)
             upload_id = f"upload-{uuid.uuid4().hex}"
             if purpose == "queue" and queue_upload_id is None:
                 queue_upload_id = upload_id

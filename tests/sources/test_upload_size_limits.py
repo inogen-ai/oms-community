@@ -10,7 +10,6 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from oms.skills.upload import UploadLimits, UploadTooLarge, UploadService
-from oms.sources.findings import _label
 from oms.sources.limits import AcquisitionLimits
 from oms.sources.local_upload import LocalSelection, LocalUploadRequest, apply_source_upload
 from oms.sources.safety import SourceSafety
@@ -36,8 +35,7 @@ def test_later_budgets_never_refuse_what_the_upload_admits():
     assert SourceSafety().check_file(body, path="assets/deck.pptx").code != "file_size_limit"
 
 
-def test_the_size_hold_names_the_limit_it_applies():
-    assert _label("file_size") == "is larger than 25 MB"
+def test_a_file_over_the_default_limit_is_held_for_its_size():
     held = SourceSafety().check_file(b"\x00" * (26 * 1024 * 1024 + 1), path="assets/huge.bin")
     assert held.code == "file_size_limit"
 
