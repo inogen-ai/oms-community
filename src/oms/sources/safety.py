@@ -21,6 +21,7 @@ from oms.sources.errors import SourceConflict
 from oms.sources.excerpts import file_shows, part_view_fits
 from oms.sources.files import verified_bytes
 from oms.sources.findings import ACCEPTABLE_CODES, acceptable_hold, checked_findings
+from oms.sources.limits import FILE_BYTES
 from oms.sources.models import (
     CheckFinding, CheckResult, LocalState, ManifestEntry, MergePlan, PartKind, PlanFlag, ProjectionPart, SourceSnapshot,
 )
@@ -118,7 +119,7 @@ class SourceSafety:
         return tuple(not_shown(result) for result in results)
 
     def check_file(self, body: bytes, *, path: str | None = None,
-                   maximum_bytes: int = 10 * 1024 * 1024) -> CheckResult:
+                   maximum_bytes: int = FILE_BYTES) -> CheckResult:
         if len(body) > maximum_bytes:
             return CheckResult(state='held', code='file_size_limit',
                                findings=(CheckFinding(path=path, category='file_size'),))

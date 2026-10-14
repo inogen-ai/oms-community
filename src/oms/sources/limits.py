@@ -31,12 +31,17 @@ class BudgetExceeded(RuntimeError):
             self.code = "source_limit_exceeded"
 
 
+# The largest file a source package may carry, here and in the file check. At or above the
+# upload gate's own limit (25 MB), so a file an upload admits is never refused or held later.
+FILE_BYTES = 25 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class AcquisitionLimits:
     operation_seconds: float = 300
     command_seconds: float = 60
-    package_bytes: int = 100 * 1024 * 1024
-    file_bytes: int = 10 * 1024 * 1024
+    package_bytes: int = 150 * 1024 * 1024
+    file_bytes: int = FILE_BYTES
     files: int = 2000
     refs: int = 10000
     tree_entries: int = 100000
