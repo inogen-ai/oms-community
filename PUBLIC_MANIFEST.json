@@ -874,7 +874,7 @@
     },
     "src/oms/cli.py": {
       "mode": 420,
-      "sha256": "2e13c5f461dc178f54d991aeb7da7f6d2d48fa1a2431de4526bcf9295727a3a1"
+      "sha256": "cd042649500d6b8e5d8b0656603bc6973af8409807e78006daf001c80b6f0a86"
     },
     "src/oms/client/__init__.py": {
       "mode": 420,
@@ -1090,7 +1090,7 @@
     },
     "src/oms/ports/graph_store.py": {
       "mode": 420,
-      "sha256": "ca0e1ca3507442994a906c012638d6f4b03d0e4a532ea6f565f2bb4ccfe468b2"
+      "sha256": "9f45f1a9bf1008573760d8dccac8878903ce3e598e3ebf7157ca5794996a0582"
     },
     "src/oms/ports/import_extension.py": {
       "mode": 420,
@@ -1599,6 +1599,10 @@
     "tests/community/test_rule_json_fields.py": {
       "mode": 420,
       "sha256": "0fccb5f0953653e765c747a1de2d13e845e51ca0560c2176c69683bbebe98458"
+    },
+    "tests/community/test_rule_ownership_cli.py": {
+      "mode": 420,
+      "sha256": "741da3f709d9dddf55ee91a549f06f13a3663623fd5a66e1d5f30a48932c4d92"
     },
     "tests/community/test_rule_ownership_routes.py": {
       "mode": 420,

@@ -22,8 +22,11 @@ class RuleOwnershipError(Exception):
     skill it does not belong to. One rule, one skill: the write is refused and
     nothing of it is stored.
 
-    Not a ValueError on purpose: a handler that turns ValueError into a
-    message for the person must not turn a broken writer into advice."""
+    The message names the rule and both skills, and it is safe to show. This
+    is not a ValueError on purpose: a handler that maps every ValueError to
+    "invalid input" must not catch a refused write by accident. A handler that
+    shows the refusal names the class, as the web API (409, or 422 for an
+    upload), the sources routes (409) and the import command do."""
 
 
 #: The transaction fields `clear_transaction_context` removes: the snippet of

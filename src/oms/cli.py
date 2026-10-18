@@ -72,13 +72,15 @@ def main(argv=None):
             from oms.web.capabilities import capabilities_for
             result = capabilities_for("community", services, build_routes(services))
         elif args.command == "import":
+            # RuleOwnershipError is not a ValueError, so both handlers below name it.
+            from oms.ports.graph_store import RuleOwnershipError
             if services.sources is not None:
                 from oms.sources.local_import import import_local_path
                 from oms.sources.errors import SourceError
                 try:
                     outcome = import_local_path(services.sources, services.importer,
                         services.sources.policy.context(), args.path, targets=tuple(args.target))
-                except (SourceError, ValueError, OSError) as exc:
+                except (SourceError, ValueError, OSError, RuleOwnershipError) as exc:
                     print(f"Import refused: {exc}", file=sys.stderr)
                     return 1
                 print(outcome.model_dump_json(indent=2))
@@ -91,7 +93,7 @@ def main(argv=None):
             from oms.sources.errors import SourceConflict, StaleMutation
             try:
                 result = asdict(method(args.path, settings.tenant_id))
-            except (ImportIdentityConflict, SourceConflict, StaleMutation) as exc:
+            except (ImportIdentityConflict, SourceConflict, StaleMutation, RuleOwnershipError) as exc:
                 print(f"Import refused: {exc}", file=sys.stderr)
                 return 1
         elif args.command == "ingest":
