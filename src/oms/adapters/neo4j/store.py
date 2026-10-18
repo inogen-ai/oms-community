@@ -350,11 +350,37 @@ class Neo4jGraphStore:
             row = session.run("MATCH (n:Tag {id:$id}) RETURN n.name AS name", id=tag_id).single()
             return row["name"] if row else None
 
+    # The skills a rule is in, read after locking the rule node so two
+    # writers cannot both pass the test (the idiom `claim_compile` uses).
+    _OWNERS = (
+        "MATCH (r:Rule {id:$rule, tenant_id:$tenant}) "
+        "SET r._ownership_lock = true REMOVE r._ownership_lock WITH r "
+        "OPTIONAL MATCH (r)-[:BELONGS_TO]->(owner:Skill {tenant_id:$tenant}) "
+        "WITH r, collect(DISTINCT owner.id) AS owned "
+        "OPTIONAL MATCH (placing:Section {tenant_id:$tenant})-[:CONTAINS_RULE]->(r) "
+        "WITH r, owned, collect(DISTINCT placing.skill_id) AS placed "
+        "RETURN owned + placed AS owners")
+
+    @classmethod
+    def _refuse_other_owner(cls, tx, rule_id: str, skill_id: str, tenant_id: str) -> None:
+        row = tx.run(cls._OWNERS, rule=rule_id, tenant=tenant_id).single()
+        others = sorted({owner for owner in (row["owners"] if row else []) if owner and owner != skill_id})
+        if others:
+            raise RuleOwnershipError(f"rule {rule_id} is in {', '.join(others)}; "
+                                     f"one rule belongs to one skill, so it cannot also be in {skill_id}")
+
     def attach_edge(self, edge: Edge, *, tenant_id: str) -> None:
         def write(tx):
             endpoints = self._edge_endpoints(tx, edge, tenant_id)
             if endpoints is None:
                 raise KeyError("Relationship endpoints are missing or outside the tenant")
+            if edge.type is EdgeType.BELONGS_TO:
+                self._refuse_other_owner(tx, edge.from_id, edge.to_id, tenant_id)
+            elif edge.type is EdgeType.CONTAINS_RULE:
+                # This edge is the placement itself, so it meets attach_rule's test.
+                section = tx.run("MATCH (s:Section {id:$id, tenant_id:$tenant}) RETURN s.skill_id AS skill",
+                                 id=edge.from_id, tenant=tenant_id).single()
+                self._refuse_other_owner(tx, edge.to_id, section["skill"], tenant_id)
             tx.run("MATCH (a),(b) WHERE elementId(a)=$start AND elementId(b)=$end "
                    f"MERGE (a)-[r:{edge.type.value}]->(b) SET r += $props",
                    start=endpoints[0], end=endpoints[1], props=edge.properties).consume()
@@ -1127,13 +1153,16 @@ class Neo4jGraphStore:
             raise SectionMutabilityError(
                 f"section {section_id} is {sec.mutability.value}; cannot attach rule"
             )
-        with self._driver.session() as session:
-            session.run(
+
+        def write(tx):
+            self._refuse_other_owner(tx, rule.id, sec.skill_id, tenant_id)
+            tx.run(
                 "MATCH (s:Section {id:$sid, tenant_id:$scope_tenant}), (r:Rule {id:$rid, tenant_id:$scope_tenant}) "
                 "MERGE (s)-[rel:CONTAINS_RULE]->(r) "
                 "SET rel.order = $order, rel.group = $group",
-                sid=section_id, rid=rule.id, order=order, group=group,
-             scope_tenant=tenant_id)
+                sid=section_id, rid=rule.id, order=order, group=group, scope_tenant=tenant_id).consume()
+        with self._driver.session() as session:
+            session.execute_write(write)
 
     def detach_rule(self, rule_id: str, section_id: str, *, tenant_id: str) -> None:
         with self._driver.session() as session:
@@ -1160,18 +1189,27 @@ class Neo4jGraphStore:
     def inherit_placements(self, retired_rule_id: str, successor: Rule, *, tenant_id: str) -> None:
         if successor.tenant_id != tenant_id:
             raise ValueError("Successor tenant differs from placement owner")
-        # Copy every CONTAINS_RULE membership of the retired rule (with its order
-        # and group) onto the successor, so a superseding rule renders in the
-        # retired rule's place. CONTAINS_RULE only lives on system-aggregated
-        # sections, so no mutability guard is needed.
+        # Copy the retired rule's CONTAINS_RULE memberships (with their order and
+        # group) onto the successor, so a superseding rule renders in the retired
+        # rule's place. CONTAINS_RULE only lives on system-aggregated sections,
+        # so no mutability guard is needed. The successor is locked before its
+        # skills are read, as `_OWNERS` does.
         with self._driver.session() as session:
             session.run(
-                "MATCH (s:Section {tenant_id:$scope_tenant})-[old:CONTAINS_RULE]->(:Rule {id:$rid, tenant_id:$scope_tenant}) "
                 "MATCH (succ:Rule {id:$sid, tenant_id:$scope_tenant}) "
+                "SET succ._ownership_lock = true REMOVE succ._ownership_lock WITH succ "
+                "OPTIONAL MATCH (succ)-[:BELONGS_TO]->(own:Skill {tenant_id:$scope_tenant}) "
+                "WITH succ, collect(DISTINCT own.id) AS owned "
+                "OPTIONAL MATCH (p:Section {tenant_id:$scope_tenant})-[:CONTAINS_RULE]->(succ) "
+                "WITH succ, owned, collect(DISTINCT p.skill_id) AS placed "
+                "WITH succ, owned + placed AS owners "
+                "MATCH (s:Section {tenant_id:$scope_tenant})-[old:CONTAINS_RULE]->(:Rule {id:$rid, tenant_id:$scope_tenant}) "
+                # One rule, one skill: only places in the successor's own skill pass on.
+                "WHERE size(owners) = 0 OR s.skill_id IN owners "
                 "MERGE (s)-[new:CONTAINS_RULE]->(succ) "
                 "SET new.order = old.order, new.group = old.group",
                 rid=retired_rule_id, sid=successor.id,
-             scope_tenant=tenant_id)
+             scope_tenant=tenant_id).consume()
 
     def attach_block(self, block: ContentBlock, section_id: str, *, tenant_id: str) -> None:
         if block.tenant_id != tenant_id:

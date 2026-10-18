@@ -9,6 +9,7 @@ from oms.domain.models import Edge, Rule, Section, Skill
 from oms.domain.types import EdgeType, Mutability, SectionKind
 from oms.skills.service import SkillAdminService
 from oms.sources.errors import StaleMutation
+from tests.legacy_rules import place_rule, share_rule
 
 
 def _skill(store, skill_id, *, domain="finance"):
@@ -53,7 +54,7 @@ def test_shared_rule_edit_advances_every_including_skill_and_nothing_else(mutati
     store.attach_edge(Edge(EdgeType.BELONGS_TO, "shared", "expenses"), tenant_id="acme")
     store.upsert_section(Section(id="placing-rules", skill_id="placing", kind=SectionKind.RULES,
         heading="Rules", order=0, mutability=Mutability.SYSTEM_AGGREGATED, tenant_id="acme"))
-    store.attach_rule(store.get_rule("shared"), "placing-rules", order=0, tenant_id="acme")
+    place_rule(store, store.get_rule("shared"), "placing-rules", order=0, tenant_id="acme")
     before = {name: _generation(mutation_case, name) for name in ("expenses", "placing", "bystander")}
 
     def reword(graph, queue):
@@ -73,8 +74,8 @@ def test_deleting_a_co_owner_advances_the_remaining_owner(mutation_case):
     store = mutation_case.store
     _skill(store, "other")
     store.upsert_rule(Rule(id="shared", body="Keep receipts", tenant_id="acme"))
-    for owner in ("expenses", "other"):
-        store.attach_edge(Edge(EdgeType.BELONGS_TO, "shared", owner), tenant_id="acme")
+    store.attach_edge(Edge(EdgeType.BELONGS_TO, "shared", "expenses"), tenant_id="acme")
+    share_rule(store, "shared", "other", tenant_id="acme")
     before = mutation_case.capture_generation()
     mutation_case.repository.atomic("delete-other", "acme", lambda graph, queue:
         SkillAdminService(store=graph).delete_skill("other", "acme"))

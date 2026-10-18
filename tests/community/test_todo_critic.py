@@ -19,6 +19,7 @@ from oms.domain.types import ArtefactKind, EdgeType, SkillVersionCause
 from oms.settings.core import CoreSettings
 from oms.web.api import create_app
 from tests.community.test_critic_workflow import critic_neo4j_driver  # noqa: F401
+from tests.legacy_rules import share_rule
 
 
 ORIGIN = {"Origin": "http://127.0.0.1:4318"}
@@ -409,8 +410,7 @@ def test_rule_expansion_is_bidirectional_and_tenant_scoped(workspace):
     second = _seed_skill(workspace, "second")
     foreign = _seed_skill(workspace, "foreign", tenant="other")
     rule = _seed_rule(workspace, "shared", first.id)
-    workspace.services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO,
-        from_id=rule.id, to_id=second.id), tenant_id="acme")
+    share_rule(workspace.services.store, rule.id, second.id, tenant_id="acme")
     with pytest.raises((ValueError, KeyError)):
         workspace.services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO,
             from_id=rule.id, to_id=foreign.id), tenant_id="acme")

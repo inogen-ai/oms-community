@@ -1,5 +1,6 @@
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from copy import deepcopy
 from oms.domain.copies import COPY_KIND, RuleSlot, copy_example_id, first_rule_id
@@ -136,6 +137,8 @@ class InMemoryGraphStore:
         self._compile_mutex = threading.Lock()
         self._workflow_mutex = threading.RLock()
         self._compile_claims: dict[str, str] = {}
+        # One rule, one skill; only `legacy_shared_rules` turns this off.
+        self._enforce_rule_ownership = True
         self.rules: dict[str, Rule] = {}
         self.transactions: dict[str, Transaction] = {}
         self.skills: dict[SkillRef, Skill] = {}
@@ -257,7 +260,37 @@ class InMemoryGraphStore:
         if pair is None:
             raise KeyError("Relationship endpoints are missing or outside the tenant")
         source, target = pair
+        if edge.type is EdgeType.BELONGS_TO:
+            self._refuse_other_owner(edge.from_id, edge.to_id, tenant_id)
+        elif edge.type is EdgeType.CONTAINS_RULE:
+            self._refuse_other_owner(edge.to_id, self.sections[source[1]].skill_id, tenant_id)
         self._attach_typed_edge(edge, tenant_id, source[0], target[0])
+
+    def _rule_owners(self, rule_id: str, tenant_id: str) -> set[str]:
+        """The skills a rule is in: those it BELONGS_TO and those whose sections place it."""
+        owned = {e.to_id for e in self.edges if e.type is EdgeType.BELONGS_TO
+                 and e.from_id == rule_id and e.tenant_id == tenant_id}
+        placed = {self.sections[key].skill_id for key, ids in self.section_to_rules.items()
+                  if key.tenant_id == tenant_id and rule_id in ids and key in self.sections}
+        return owned | placed
+
+    def _refuse_other_owner(self, rule_id: str, skill_id: str, tenant_id: str) -> None:
+        if not self._enforce_rule_ownership:
+            return
+        others = self._rule_owners(rule_id, tenant_id) - {skill_id}
+        if others:
+            raise RuleOwnershipError(f"rule {rule_id} is in {', '.join(sorted(others))}; "
+                                     f"one rule belongs to one skill, so it cannot also be in {skill_id}")
+
+    @contextmanager
+    def legacy_shared_rules(self) -> Iterator["InMemoryGraphStore"]:
+        """Tests only: inside the block a rule may get a second skill or a place in
+        another skill's section, the state the schema 3 split starts from."""
+        previous, self._enforce_rule_ownership = self._enforce_rule_ownership, False
+        try:
+            yield self
+        finally:
+            self._enforce_rule_ownership = previous
 
     def _attach_typed_edge(self, edge: Edge, tenant_id: str, source_kind: str, target_kind: str) -> None:
         scoped = _ScopedEdge(type=edge.type, from_id=edge.from_id, to_id=edge.to_id,
@@ -737,6 +770,7 @@ class InMemoryGraphStore:
             raise ValueError("Rule does not belong to this tenant")
         if sec.mutability is not Mutability.SYSTEM_AGGREGATED:
             raise SectionMutabilityError(f"section {section_id} is {sec.mutability.value}; cannot attach rule")
+        self._refuse_other_owner(rule.id, sec.skill_id, tenant_id)
         bucket = self.section_to_rules.setdefault(key, [])
         if rule.id not in bucket:
             bucket.append(rule.id)
@@ -780,10 +814,17 @@ class InMemoryGraphStore:
         old = self.rules.get(retired_rule_id)
         if old is None or old.tenant_id != tenant_id or successor.tenant_id != tenant_id:
             raise ValueError("Placement inheritance crosses tenant ownership")
+        # One rule, one skill: only places in the successor's own skill pass on.
+        owners = self._rule_owners(successor.id, tenant_id)
         for section, placements in list(self.section_rule_placements.items()):
             placement = placements.get(retired_rule_id)
-            if section.tenant_id == tenant_id and placement is not None:
-                self.attach_rule(successor, section.skill_id, order=placement.order, group=placement.group, tenant_id=tenant_id)
+            if section.tenant_id != tenant_id or placement is None or section not in self.sections:
+                continue
+            if self._enforce_rule_ownership and owners and self.sections[section].skill_id not in owners:
+                continue
+            self.attach_rule(successor, section.skill_id, order=placement.order, group=placement.group,
+                             tenant_id=tenant_id)
+            owners = self._rule_owners(successor.id, tenant_id)
 
     def attach_block(self, block: ContentBlock, section_id: str, *, tenant_id: str) -> None:
         key = SkillRef(tenant_id, section_id)

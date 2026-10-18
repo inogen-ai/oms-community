@@ -127,19 +127,21 @@ def test_equivalent_placement_read_orders_have_identical_fingerprint(mutation_ca
     assert content_digest(store, mutation_case.skill) == expected
 
 
-def test_adding_another_rule_owner_invalidates_the_original_owner(mutation_case):
+def test_a_refused_second_owner_writes_nothing_and_leaves_the_owner_fresh(mutation_case):
     from oms.domain.models import Edge, Rule, Skill
     from oms.domain.types import EdgeType
+    from oms.ports.graph_store import RuleOwnershipError
     store = mutation_case.store
-    store.upsert_rule(Rule(id="shared-rule", body="Keep receipts", tenant_id="acme"))
-    store.attach_edge(Edge(EdgeType.BELONGS_TO, "shared-rule", "expenses"), tenant_id="acme")
+    store.upsert_rule(Rule(id="owned-rule", body="Keep receipts", tenant_id="acme"))
+    store.attach_edge(Edge(EdgeType.BELONGS_TO, "owned-rule", "expenses"), tenant_id="acme")
     store.upsert_skill(Skill(id="other", name="Other", description="preserve", domain="finance", tenant_id="acme"))
     before = mutation_case.capture_generation()
-    mutation_case.repository.atomic("attach-owner", "acme", lambda graph, queue:
-        graph.attach_edge(Edge(EdgeType.BELONGS_TO, "shared-rule", "other"), tenant_id="acme"))
-    with pytest.raises(StaleMutation):
-        mutation_case.apply_prepared(before, "stale ownership decision")
-    assert mutation_case.capture_generation().content == before.content + 1
+    with pytest.raises(RuleOwnershipError):
+        mutation_case.repository.atomic("attach-owner", "acme", lambda graph, queue:
+            graph.attach_edge(Edge(EdgeType.BELONGS_TO, "owned-rule", "other"), tenant_id="acme"))
+    assert [s.id for s in store.skills_for_rule("owned-rule", tenant_id="acme")] == ["expenses"]
+    mutation_case.apply_prepared(before, "prepared before the refused write")
+    assert mutation_case.description() == "prepared before the refused write"
 
 
 @pytest.mark.parametrize("target", ["graph", "reviews", "sources", "events"])

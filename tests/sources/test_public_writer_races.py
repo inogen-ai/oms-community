@@ -5,6 +5,7 @@ from oms.domain.models import ContentBlock, Edge, Rule, Section
 from oms.domain.types import EdgeType, Mutability, SectionKind
 from oms.skills.service import SkillAdminService
 from oms.sources.errors import StaleMutation
+from tests.legacy_rules import share_rule
 
 
 def prepared_content(case):
@@ -275,51 +276,56 @@ def test_required_editor_history_failure_rolls_back_metadata(mutation_case):
     assert mutation_case.snapshot() == before
 
 
-def shared_import(mutation_case, tmp_path):
-    from oms.domain.models import Skill
-    from oms.domain.types import SkillVersionCause
+def owned_import(mutation_case, tmp_path):
     from oms.publish.publisher import Publisher
     from oms.skills.history import SkillHistory
     importer = importer_for(mutation_case, tmp_path)
     importer._history = SkillHistory(store=mutation_case.store, publisher=Publisher(mutation_case.store))
     root = skill_files(tmp_path)
     importer.import_directory(root, "acme")
-    mutation_case.store.upsert_skill(Skill(id="other", name="Other", description="Other", domain="finance", tenant_id="acme"))
     rule = mutation_case.store.rules_for_skill("expenses", tenant_id="acme")[0]
-    mutation_case.store.attach_edge(Edge(EdgeType.BELONGS_TO, rule.id, "other"), tenant_id="acme")
-    importer._history.capture_required("other", "acme", cause=SkillVersionCause.CREATED)
     with (root / "SKILL.md").open("a") as file:
         file.write("  Example: Keep an itemized receipt.\n")
     return importer, root, rule
 
 
-def test_import_captures_history_for_other_owners_of_a_changed_shared_rule(mutation_case, tmp_path):
-    importer, root, rule = shared_import(mutation_case, tmp_path)
-    before = mutation_case.store.latest_skill_version("acme", "other")
-    importer.import_directory(root, "acme")
-    after = mutation_case.store.latest_skill_version("acme", "other")
-    assert after.id != before.id
-    assert "Keep an itemized receipt." in after.parts_json
-    assert len(mutation_case.store.examples_for_rule(rule.id, tenant_id="acme")) == 1
+def shared_import(mutation_case, tmp_path):
+    from oms.domain.models import Skill
+    from oms.domain.types import SkillVersionCause
+    importer, root, rule = owned_import(mutation_case, tmp_path)
+    mutation_case.store.upsert_skill(Skill(id="other", name="Other", description="Other", domain="finance", tenant_id="acme"))
+    share_rule(mutation_case.store, rule.id, "other", tenant_id="acme")
+    importer._history.capture_required("other", "acme", cause=SkillVersionCause.CREATED)
+    return importer, root, rule
 
 
-def test_shared_owner_history_failure_rolls_back_the_entire_import(mutation_case, tmp_path, monkeypatch):
-    from oms.skills.history import SkillHistory
+def test_an_import_that_meets_a_rule_still_shared_between_skills_is_refused_and_writes_nothing(mutation_case, tmp_path):
+    # The import places the rule in its section again, which a rule in two
+    # skills may no longer have; nothing changes in either skill.
+    from oms.ports.graph_store import RuleOwnershipError
     importer, root, rule = shared_import(mutation_case, tmp_path)
     before = mutation_case.snapshot()
     versions = mutation_case.store.skill_versions("acme", "other")
-    capture = SkillHistory.capture_required
-
-    def fail(self, skill_id, tenant_id, **kwargs):
-        result = capture(self, skill_id, tenant_id, **kwargs)
-        if skill_id == "other":
-            raise OSError("Shared history unavailable")
-        return result
-    monkeypatch.setattr(SkillHistory, "capture_required", fail)
-    with pytest.raises(OSError, match="Shared history unavailable"):
+    with pytest.raises(RuleOwnershipError):
         importer.import_directory(root, "acme")
     assert mutation_case.snapshot() == before
     assert mutation_case.store.skill_versions("acme", "other") == versions
+    assert mutation_case.store.examples_for_rule(rule.id, tenant_id="acme") == []
+
+
+def test_an_owner_history_failure_rolls_back_the_entire_import(mutation_case, tmp_path, monkeypatch):
+    from oms.skills.history import SkillHistory
+    importer, root, rule = owned_import(mutation_case, tmp_path)
+    before = mutation_case.snapshot()
+    capture = SkillHistory.capture_required
+
+    def fail(self, skill_id, tenant_id, **kwargs):
+        capture(self, skill_id, tenant_id, **kwargs)
+        raise OSError("Owner history unavailable")
+    monkeypatch.setattr(SkillHistory, "capture_required", fail)
+    with pytest.raises(OSError, match="Owner history unavailable"):
+        importer.import_directory(root, "acme")
+    assert mutation_case.snapshot() == before
     assert mutation_case.store.examples_for_rule(rule.id, tenant_id="acme") == []
 
 

@@ -1,9 +1,9 @@
 import pytest
 
-from oms.domain.models import Edge, Skill
-from oms.domain.types import EdgeType
+from oms.domain.models import Skill
 from oms.sources.models import DiscoveryResult, DiscoveredPackage, InstallRequest, InstallSelection, ApplyRequest, DraftChoice, SaveDraftRequest
 from oms.sources.review import part_fingerprint
+from tests.legacy_rules import share_rule
 from tests.sources.test_review_lifecycle import request
 
 
@@ -19,7 +19,7 @@ def example_card(world, before, after, *, shared):
     if shared:
         def share(graph, queue):
             graph.upsert_skill(Skill(id="other", name="Other", description="", domain="finance", tenant_id="acme"))
-            graph.attach_edge(Edge(EdgeType.BELONGS_TO, parent.id, "other"), tenant_id="acme")
+            share_rule(graph, parent.id, "other", tenant_id="acme")
         world.repository.atomic("share", "acme", share)
     world.incoming = world.package("b", "First description", example=after)
     result = world.check()

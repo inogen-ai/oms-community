@@ -12,6 +12,7 @@ from oms.sources.errors import SourceConflict
 from oms.sources.models import ApplyRequest, DraftChoice, PlanFlag, SaveDraftRequest
 from oms.sources.review import part_fingerprint
 from oms.sources.safety import eligibility
+from tests.legacy_rules import share_rule
 
 
 def _update(world, key):
@@ -95,7 +96,7 @@ def test_reintroduced_rule_preserves_shared_owner_on_upstream_choice(source_worl
     world = source_world
     old_id = _withdraw_keep_edit(world)
     world.store.upsert_skill(Skill(id="other", name="Other", description="", domain="finance", tenant_id="acme"))
-    world.store.attach_edge(Edge(EdgeType.BELONGS_TO, old_id, "other"), tenant_id="acme")
+    share_rule(world.store, old_id, "other", tenant_id="acme")
     update = _update(world, "reintroduce-shared")
     assert any(change.action == "conflict" for change in update.plan.changes if change.kind == "rule")
     update = _resolve(world, update, "use_upstream", key="choose-shared")
@@ -122,7 +123,7 @@ def test_identical_wording_reorder_preserves_confirmations(source_world, shared)
     world.store.attach_edge(Edge(EdgeType.DERIVED_FROM, rule.id, "human-confirmation"), tenant_id="acme")
     if shared:
         world.store.upsert_skill(Skill(id="other", name="Other", description="", domain="finance", tenant_id="acme"))
-        world.store.attach_edge(Edge(EdgeType.BELONGS_TO, rule.id, "other"), tenant_id="acme")
+        share_rule(world.store, rule.id, "other", tenant_id="acme")
     lineage = {row.id for row in world.store.lineage(rule.id)}
     world.incoming = world.package("b", "First description", rule="File expenses monthly.\n- Keep receipts.")
     update = _resolve(world, _update(world, "reorder"), "use_upstream")
@@ -237,7 +238,7 @@ def test_renamed_source_part_keeps_shared_owner_in_mutation_scope(source_world):
     part = next(row for row in baseline.effective_projection if row.kind == "rule")
     mapping = next(row for row in baseline.graph_mappings if row.part_id == part.part_id)
     world.store.upsert_skill(Skill(id="other", name="Other", description="", domain="finance", tenant_id="acme"))
-    world.store.attach_edge(Edge(EdgeType.BELONGS_TO, mapping.entity_ids[0], "other"), tenant_id="acme")
+    share_rule(world.store, mapping.entity_ids[0], "other", tenant_id="acme")
     local = project_local(world.store, world.skill, baseline=baseline)
     incoming = baseline.model_copy(update={
         "effective_projection": tuple(row.model_copy(update={"part_id": "rule:renamed"})
