@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from oms.community.matching import LocalMatcher, exact_text
 from oms.community.placement import RuleInsertion, insertion_sections, insert_rule
+from oms.domain.copies import CopyCause, copy_rule_id, first_rule_id, learning_copy_id
+from oms.domain.identity import SkillRef
 from oms.domain.models import Edge, ReviewItem, Rule
 from oms.domain.types import EdgeType, Plane, RuleStatus, SignalType, SkillVersionCause, Verdict
 from oms.ports.workflow import DispositionResult, TERMINAL_STATES, effective_state
@@ -15,6 +17,7 @@ from oms.ports.custody import RetentionDisabled
 from oms.publish.publisher import Publisher
 from oms.publish.parts import document_revision
 from oms.security.injection import DeterministicScreen
+from oms.skills.copies import link_copies
 from oms.skills.history import SkillHistory
 from oms.skills.service import SkillAdminService
 
@@ -335,10 +338,10 @@ class ManualReviewService:
                             raise DecisionConflict("This document has changed. Reload it before placing the new rule.")
                         if placement.section_id not in {section["id"] for section in insertion_sections(store, placement.skill_id, tenant_id=tenant_id)}:
                             raise ManualDecisionError("Choose a rule section in the selected skill.")
-                    rule_id = f"rule-{txn.id}"
+                    rule_id = first_rule_id(txn.id)
                     if store.get_rule(rule_id) is not None:
                         raise DecisionConflict("the correction already has a rule")
-                    rule = Rule(id=rule_id, body=body, tenant_id=tenant_id)
+                    rule = None
                 else:
                     rule = store.get_rule(decision.rule_id or "")
                     if (rule is None or rule.tenant_id != tenant_id or rule.status is not RuleStatus.ACTIVE
@@ -351,14 +354,37 @@ class ManualReviewService:
                     if not is_exact and (not decision.confirm_reinforcement or decision.expected_rule_body is None):
                         raise ManualDecisionError("different wording requires explicit confirmation after comparing the existing rule")
                     rule_id = rule.id
+                if decision.action == "create":
+                    # One rule, one skill (spec 5.2): one copy per chosen skill,
+                    # each placed only in its own skill.
+                    placements = {placement.skill_id: placement for placement in decision.placements}
+                    made = []
+                    for index, skill_id in enumerate(skill_ids):
+                        copy_id = rule_id if index == 0 else learning_copy_id(txn.id, SkillRef(tenant_id, skill_id))
+                        copy = Rule(id=copy_id, body=body, tenant_id=tenant_id)
+                        store.upsert_rule(copy)
+                        store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=copy_id, to_id=txn.id), tenant_id=tenant_id)
+                        store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=copy_id, to_id=skill_id), tenant_id=tenant_id)
+                        if skill_id in placements:
+                            insert_rule(store, copy, placements[skill_id])
+                        made.append(copy_id)
+                    link_copies(store, made, cause=CopyCause.MANUAL, tenant_id=tenant_id)
+                else:
+                    # Confirmed in its own skill; every other chosen skill gets a copy.
                     rule.corroboration_count += 1
-                store.upsert_rule(rule)
-                store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule_id, to_id=txn.id), tenant_id=tenant_id)
-                for skill_id in skill_ids:
-                    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id=skill_id), tenant_id=tenant_id)
-                for placement in decision.placements:
-                    insert_rule(store, rule, placement)
-                skill_ids = sorted({s.id for s in store.skills_for_rule(rule_id, tenant_id=tenant_id)})
+                    store.upsert_rule(rule)
+                    store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule_id, to_id=txn.id), tenant_id=tenant_id)
+                    home = {s.id for s in store.skills_for_rule(rule_id, tenant_id=tenant_id)}
+                    targets = [skill_id for skill_id in skill_ids if skill_id not in home]
+                    if not home and targets:
+                        # An unanchored rule is moved into the first chosen skill.
+                        store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id=targets[0]),
+                                          tenant_id=tenant_id)
+                        home, targets = {targets[0]}, targets[1:]
+                    made = [store.copy_rule(rule_id, copy_rule_id(rule_id, SkillRef(tenant_id, skill_id)),
+                                            tenant_id=tenant_id, skill_id=skill_id).id for skill_id in targets]
+                    link_copies(store, [rule_id, *made], cause=CopyCause.MANUAL, tenant_id=tenant_id)
+                    skill_ids = sorted(home | set(targets))
             if decision.action == "reject":
                 store.mark_compile_failed(txn.id, "rejected by local operator", fault=False)
             txn.workflow_state = "rejected" if decision.action == "reject" else "applied"

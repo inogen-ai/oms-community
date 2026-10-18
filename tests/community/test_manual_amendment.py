@@ -3,8 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from oms.domain.models import Edge
-from oms.domain.types import EdgeType
+from oms.domain.copies import copy_rule_id
+from oms.domain.identity import SkillRef
 from tests.community.test_todo_critic import (
     workspace, _import, _document, _part, _detail, _save, _seed_skill,
     INTRO, RULE, NEW_INTRO, NEW_RULE, ORIGIN,
@@ -96,21 +96,26 @@ def test_clearing_a_rule_removes_it_with_evidence_and_restorable_history(workspa
     assert NEW_INTRO in _detail(workspace, skill_id)["body"]
 
 
-def test_removing_a_shared_rule_requires_the_complete_reviewed_impact(workspace):
+def test_removing_a_rule_changes_only_its_own_skill_and_not_its_copy(workspace):
     skill_id = _import(workspace)
     _seed_skill(workspace, "another-skill")
     rule_id = _part(_document(workspace, skill_id), RULE)["source_id"]
-    workspace.services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id="another-skill"), tenant_id="acme")
+    workspace.services.store.copy_rule(rule_id, copy_rule_id(rule_id, SkillRef("acme", "another-skill")),
+                                       tenant_id="acme", skill_id="another-skill")
     document = _document(workspace, skill_id)
+    assert {row["id"] for row in _part(document, RULE)["affected_skills"]} == {skill_id}
     contribute(workspace)
     body = decision(skill_id, document, [(RULE, "")])
+    # The reviewed impact is the rule's one skill: naming its copy's skill as well is refused.
+    body["amendment"]["affected_skill_ids"].append("another-skill")
     assert apply(workspace, body).status_code == 409
     assert workspace.services.store.get_rule(rule_id).status.value == "active"
-    body["amendment"]["affected_skill_ids"].append("another-skill")
+    body["amendment"]["affected_skill_ids"].remove("another-skill")
     assert apply(workspace, body).status_code == 200
-    for affected in (skill_id, "another-skill"):
-        assert RULE not in _detail(workspace, affected)["body"]
-        assert "amend-correction" in workspace.services.store.latest_skill_version("acme", affected).detail
+    assert RULE not in _detail(workspace, skill_id)["body"]
+    assert "amend-correction" in workspace.services.store.latest_skill_version("acme", skill_id).detail
+    assert RULE in _detail(workspace, "another-skill")["body"]
+    assert workspace.services.store.latest_skill_version("acme", "another-skill") is None
 
 
 def test_an_invalid_empty_passage_cannot_partially_remove_a_rule(workspace):
@@ -123,24 +128,21 @@ def test_an_invalid_empty_passage_cannot_partially_remove_a_rule(workspace):
     assert len(workspace.client.get("/api/review").json()) == 1
 
 
-def test_shared_rule_requires_exact_reviewed_impact_and_captures_both_skills(workspace):
+def test_rewording_a_rule_changes_only_its_own_skill_and_not_its_copy(workspace):
     skill_id = _import(workspace)
     _seed_skill(workspace, "another-skill")
     rule_id = _part(_document(workspace, skill_id), RULE)["source_id"]
-    workspace.services.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id="another-skill"), tenant_id="acme")
+    workspace.services.store.copy_rule(rule_id, copy_rule_id(rule_id, SkillRef("acme", "another-skill")),
+                                       tenant_id="acme", skill_id="another-skill")
     document = _document(workspace, skill_id)
-    assert {row["id"] for row in _part(document, RULE)["affected_skills"]} == {skill_id, "another-skill"}
     contribute(workspace)
-    body = decision(skill_id, document, [(RULE, NEW_RULE)])
-    response = apply(workspace, body)
-    assert response.status_code == 409, response.text
-    assert workspace.services.store.get_rule(rule_id).body == RULE
-    body["amendment"]["affected_skill_ids"].append("another-skill")
-    response = apply(workspace, body)
+    response = apply(workspace, decision(skill_id, document, [(RULE, NEW_RULE)]))
     assert response.status_code == 200, response.text
-    for affected in (skill_id, "another-skill"):
-        assert NEW_RULE in _detail(workspace, affected)["body"]
-        assert "amend-correction" in workspace.services.store.latest_skill_version("acme", affected).detail
+    assert NEW_RULE in _detail(workspace, skill_id)["body"]
+    assert "amend-correction" in workspace.services.store.latest_skill_version("acme", skill_id).detail
+    assert RULE in _detail(workspace, "another-skill")["body"]
+    assert NEW_RULE not in _detail(workspace, "another-skill")["body"]
+    assert workspace.services.store.latest_skill_version("acme", "another-skill") is None
 
 
 @pytest.mark.parametrize("edits", [[(INTRO, NEW_INTRO)], [(RULE, "")]])
