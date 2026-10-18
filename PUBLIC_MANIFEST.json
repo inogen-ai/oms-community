@@ -122,7 +122,7 @@
     },
     "frontend/community/README.md": {
       "mode": 420,
-      "sha256": "69579196eb2df1b909349f351655268c79bb50d3ccd00833b2516b016a52e1a0"
+      "sha256": "94d3c7a005c33ce6533e8fdb63dec984921a2c3421cbf583d709eb1426fa87af"
     },
     "frontend/community/app/globals.css": {
       "mode": 420,
@@ -366,15 +366,15 @@
     },
     "frontend/community/next.config.ts": {
       "mode": 420,
-      "sha256": "8d7d41e941d7690b07c347ca4ed7e3a5e6ed14b7427e7bf1d57fecf2bf386a8b"
+      "sha256": "a27ec344cc457aad5173c1ca41388ac552dd0c75ed5d7615eee78867c0c0b482"
     },
     "frontend/community/package-lock.json": {
       "mode": 420,
-      "sha256": "9b182cf20b5dfbcb3867416ccbdf47199b48990786e16cd9aa4bccca3ca68acf"
+      "sha256": "4f2e309bfda7c2fb630d0033bf5911aaf4214b97ce1a39c1233259e75ba54ea8"
     },
     "frontend/community/package.json": {
       "mode": 420,
-      "sha256": "de7f30f11c8a0226c99c3abc9d35cb4567fd13c302b8e31559d8ce2678cb33ab"
+      "sha256": "cae2e64678e4cf01c62feec0615917616909e6f70d577bc37efca75a6b19e130"
     },
     "frontend/community/playwright.config.ts": {
       "mode": 420,
@@ -430,7 +430,7 @@
     },
     "frontend/packages/client/package.json": {
       "mode": 420,
-      "sha256": "d1ebb11306bd0ba01b96da226bc677dc369206c7f1a5e1a2942ac6ed2953428d"
+      "sha256": "d445a959b7bdcf70c5dacbcc22e77cff2e01eef3de3e8d6fc3abb699d79f5a1e"
     },
     "frontend/packages/client/src/index.d.ts": {
       "mode": 420,
@@ -486,7 +486,7 @@
     },
     "frontend/packages/ui-core/package.json": {
       "mode": 420,
-      "sha256": "e5f5d3f1afc4fddd69eb1a2a622fa0426b9606c59807df5933e9377722c04422"
+      "sha256": "32ddf4f88f95dfe3193666647cdcfc4a1c6ff70dbed36c384bde2cdf10fa498d"
     },
     "frontend/packages/ui-core/src/assets/GitHub_Invertocat_Black.svg": {
       "mode": 420,
@@ -742,7 +742,7 @@
     },
     "pyproject.toml": {
       "mode": 420,
-      "sha256": "7936e71d1e004afe79114ec68bfdc98c3720c5d76b8d99e5c6324f5e4b8f140b"
+      "sha256": "3cebda68aa18cbfc16e026d778fc3725c80a9e809a1effa01cff3ab71dddeb18"
     },
     "release/__init__.py": {
       "mode": 420,
@@ -1198,7 +1198,7 @@
     },
     "src/oms/schema/metadata.py": {
       "mode": 420,
-      "sha256": "712c3b87425d9faed54314849f40c698809bddecb8bbbef5d43bc150c34026d4"
+      "sha256": "956f763e6b4c8c76439b7b188030ab824ee2b359b25d1bb10b905798c727b768"
     },
     "src/oms/schema/migrations/rule_split.py": {
       "mode": 420,
@@ -1990,7 +1990,7 @@
     },
     "uv.lock": {
       "mode": 420,
-      "sha256": "80a860d5523981fd8b7e4904cb01b3142b1352716a739fb65ed5f786e2301fa2"
+      "sha256": "9f9d440c5315ae970810300f061d761b5611e832b33a1d61471f33ea54335d18"
     }
   },
   "schema_version": 1
