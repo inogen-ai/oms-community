@@ -20,7 +20,7 @@ These tests erase their database between cases.
 | --- | --- |
 | `tests/community/test_critic_api.py` | HTTP surface, workspace and browser request boundaries, import/capture/review/history/publication behaviour |
 | `tests/community/test_critic_workflow.py` | Atomic manual decisions, idempotent retries, concurrent conflicts, exact reinforcement, lineage, payload custody and safety holds |
-| `tests/community/test_manual_amendment.py` | Atomic rule/prose amendments, correction evidence, shared-rule impact, stale drafts, rollback and explicit section placement in memory and Neo4j |
+| `tests/community/test_manual_amendment.py` | Atomic rule/prose amendments, correction evidence, edits that leave another skill's copy unchanged, stale drafts, rollback and explicit section placement in memory and Neo4j |
 | `tests/community/test_critic_import_review.py` | Explicit three-way source review, preserved terminal audit, source retry behaviour, rule membership and constraint edit/retire/restore |
 | `tests/community/test_critic_catalogue.py` | A denied workspace is refused before its publication gate or content is read |
 | `tests/community/test_repository_views.py` | Narrow repository contracts and matching memory/Neo4j semantics for scoped reads, history and custody |

@@ -26,16 +26,27 @@ files under custody; importing them does not execute them.
 Correction capture sanitises the input and performs deterministic injection
 screening. The manual workflow then records an explicit create, reinforce,
 amend or reject decision. Amendments address existing rule or prose parts by
-anchor and checked document revision. Shared-rule edits require the exact set
-of affected skills. New rules can be placed in a selected rule section and
-position. A committed decision links its transaction,
-rule, selected skills and history version. Conflicting retries fail without
-partially applying another decision. Safety holds remain visible for review.
+anchor and checked document revision. An amendment names the skill it changes,
+and because a rule belongs to one skill, an edit never reaches another skill.
+New rules can be placed in a selected rule section and position. A committed
+decision links its transaction, rule, selected skills and history version.
+Conflicting retries fail without partially applying another decision. Safety
+holds remain visible for review.
 
 The graph interfaces expose the operations each service needs: ingestion,
 custody, catalogue, publication and history. The in-memory and Neo4j adapters
 implement those contracts. Neo4j stores edition ownership and schema metadata
 and runs migrations transactionally. The default workspace is `acme`.
+
+Every rule belongs to exactly one skill and is placed only in that skill's
+sections. When one decision fits several skills, each skill gets its own copy,
+and the copies are joined by an `EQUIVALENT_TO` edge whose kind is `copy`;
+nothing passes between them. Both stores refuse a write that would share a
+rule. Schema 3 is reached by a staged, resumable split that runs at start-up
+before anything writes: each shared rule becomes one copy per skill in its own
+transaction, and the published files do not change. `python -m
+oms.schema.split_rules --report` shows what the split would do and writes
+nothing. Back up the database before upgrading.
 
 Publication reads active rules through an explicit single-workspace policy,
 renders the portable tree and preserves owned reference and script bytes.

@@ -110,15 +110,14 @@ and **Previous match** navigate the rest without hiding surrounding text.
 You can also select text and choose **Replace selection with correction**.
 Clear a rule's text to remove it. The change preview labels it **Remove rule**;
 applying retires the rule while preserving its wording and evidence for History
-and restore. Shared rules still require confirmation of every affected skill.
-If Apply is unavailable, the reason appears beside the button.
+and restore. A rule belongs to one skill, so removing it never changes another
+skill. If Apply is unavailable, the reason appears beside the button.
 
 Change any passages that restate the old instruction, then choose **Preview
 changes** once for all your edits. The change preview shows removed and
-replacement text and every affected skill. Editing shared guidance requires
-confirming all listed skills. **Apply change and resolve correction** saves
-the edits, correction evidence and version history together. Publish when you
-are ready to update your agents.
+replacement text and the skill it changes. **Apply change and resolve
+correction** saves the edits, correction evidence and version history
+together. Publish when you are ready to update your agents.
 
 Drafts survive collapsing cards or switching corrections or modes while the
 inbox stays open, and remain available after a failed save. They are not saved
@@ -129,14 +128,17 @@ be compared and restored from the skill's **History** tab.
 
 In **Compare existing rules**, each match shows its skill, section and subheading,
 with only the matched rule highlighted by default. **Show full section** reveals
-the surrounding passage and other rules. Shared rules show their context in each skill. This
-uses the current saved skill text; unsaved edits remain in **Edit skill text**.
+the surrounding passage and other rules. A rule copied into other skills is a
+separate match in each skill. This uses the current saved skill text; unsaved
+edits remain in **Edit skill text**.
 
 For new guidance, choose **Add or confirm a rule**. A successfully matched skill
 hint keeps **Target skills** collapsed; use **Change target skills** to adjust
-it. Write the proposed rule, then use **Choose where to insert** and select
-**Insert here** between the existing rules. The default adds it at the end of
-the skill. Prose sections are amended through **Edit skill text**.
+it. If you select more than one target skill, each skill gets its own copy of
+the rule, so editing one copy later leaves the others as they are. Write the
+proposed rule, then use **Choose where to insert** and select **Insert here**
+between the existing rules. The default adds it at the end of the skill. Prose
+sections are amended through **Edit skill text**.
 
 Each suggested existing rule has a **Replace this rule** action. Review the
 before/after text, then choose **Replace rule and resolve correction** to
