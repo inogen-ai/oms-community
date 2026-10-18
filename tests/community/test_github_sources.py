@@ -105,6 +105,7 @@ def test_source_identity_upgrade_requires_explicit_maintenance_and_preserves_vis
     with pytest.raises(SchemaCompatibilityError, match="stopped"):
         manager.migrate_source_identity(old_writers_stopped=False)
     manager.migrate_source_identity(old_writers_stopped=True)
+    manager.split_rules(old_writers_stopped=True)
     store = Neo4jGraphStore(driver)
     store.ensure_schema()
     assert store.get_skill("expenses", tenant_id="acme").description == "Original custody"

@@ -25,14 +25,17 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from oms.activity.models import AdminAction, AdminEvent
+from oms.adapters.neo4j.activity import Neo4jAdminEventStore
 from oms.adapters.neo4j.review_queue import Neo4jReviewQueue
 from oms.adapters.neo4j.store import Neo4jGraphStore
 from oms.community.matching import exact_text
 from oms.domain.copies import CopyCause, RuleSlot, split_rule_id
 from oms.domain.identity import SkillRef
 from oms.domain.models import Edge, ReviewItem, Skill, Transaction
-from oms.domain.types import EdgeType, SignalType, Verdict
-from oms.schema.metadata import SchemaCompatibilityError
+from oms.domain.types import EdgeType, SignalType, SkillVersionCause, Verdict
+from oms.ports.graph_store import SectionMutabilityError
+from oms.schema.metadata import CORE_VERSION, RULE_SPLIT_STAGES, SCHEMA_VERSION, SchemaCompatibilityError
 from oms.skills.copies import link_copies
 
 if TYPE_CHECKING:
@@ -40,10 +43,10 @@ if TYPE_CHECKING:
 
     from oms.ports.graph_store import GraphStore
     from oms.ports.source_store import SourceRepository
+    from oms.skills.history import SkillHistory
 
 logger = logging.getLogger(__name__)
 
-RULE_SPLIT_STAGES = ("rule_split_fenced", "rule_splitting", "rule_split_verified")
 NO_LONGER_RAISED = "no_longer_raised"
 NO_LONGER_RAISED_REASON = "no longer raised"
 PENDING_CAPTURES = "rule_split_pending_captures"
@@ -268,6 +271,18 @@ def _slots(store: Neo4jGraphStore, tenant: str, rule_id: str, skill_id: str) -> 
     return tuple(RuleSlot(row["section"], row["ord"], row["grp"]) for row in rows)
 
 
+def _placements_without_skill(store: Neo4jGraphStore, tenant: str, rule_id: str) -> tuple[tuple[str, str], ...]:
+    """(section, skill) for every section placing the rule whose skill has no
+    Skill node. Only a hand-edited graph holds one, and no copy can go there,
+    so the split refuses the rule until the placement or the skill is fixed."""
+    with store._driver.session() as session:
+        rows = list(session.run(
+            "MATCH (p:Section {tenant_id:$tenant})-[:CONTAINS_RULE]->(:Rule {id:$rule, tenant_id:$tenant}) "
+            "WHERE p.skill_id IS NOT NULL AND NOT EXISTS { MATCH (:Skill {id:p.skill_id, tenant_id:$tenant}) } "
+            "RETURN p.id AS section, p.skill_id AS skill ORDER BY section", rule=rule_id, tenant=tenant))
+    return tuple((row["section"], row["skill"]) for row in rows)
+
+
 def _prefix_siblings(store: Neo4jGraphStore, tenant: str, rule_id: str, copy: CopyPlan) -> tuple[str, ...]:
     """The rules of the copy's skill whose ids sort between the rule's and the
     copy's. A copy sorts where its original did only when there are none
@@ -318,7 +333,10 @@ def plan_rule(store: Neo4jGraphStore, sources: SourceRepository, pending: Sequen
             copied.append(item.id)
         if "move" in treatment.values():
             moved.append(item.id)
-    warnings = (*(f"{skill} tracks this rule from a source but gets a copy"
+    warnings = (*(f"placed in section {section}, whose skill {skill} does not exist: the split refuses "
+                  "this rule until that placement is deleted or the skill is restored"
+                  for section, skill in _placements_without_skill(store, tenant, rule_id)),
+                *(f"{skill} tracks this rule from a source but gets a copy"
                   for skill in sorted(claimed - {keeper})),
                 *(f"in {copy.skill_id}, {sibling} sorts between this rule and its copy, so where the two tie "
                   "they change places in the published file"
@@ -528,8 +546,10 @@ def split_rule(tx: ManagedTransaction, plan: RulePlan, *, now: datetime) -> bool
 
     False when it is no longer shared (split by an earlier or a concurrent
     run), so a resumed or repeated run changes nothing. A rule that is still
-    shared while one of its copies exists, or whose skills, memberships or
-    places differ from the plan, is refused before anything is written."""
+    shared while one of its copies exists, that a section of a missing skill
+    places, or whose skills, memberships or places differ from the plan, is
+    refused before anything is written. One the store could not take out of
+    a copy's skill is refused after, and the transaction rolls it all back."""
     tenant, rule_id = plan.tenant_id, plan.rule_id
     if tx.run("MATCH (r:Rule {id:$id, tenant_id:$tenant}) SET r._split_lock = true REMOVE r._split_lock "
               "RETURN r.id AS id", id=rule_id, tenant=tenant).single() is None:
@@ -538,6 +558,12 @@ def split_rule(tx: ManagedTransaction, plan: RulePlan, *, now: datetime) -> bool
     if len(skills) <= 1:
         return False
     store, queue = _bound(tx)
+    orphans = _placements_without_skill(store, tenant, rule_id)
+    if orphans:
+        places = ", ".join(f"section {section} of skill {skill}" for section, skill in orphans)
+        raise SchemaCompatibilityError(f"rule {rule_id} in tenant {tenant} is placed in {places}, and no such "
+                                       "skill exists, so no copy can go there: delete that placement or "
+                                       "restore the skill")
     written = [copy.copy_id for copy in plan.copies if store.get_rule(copy.copy_id) is not None]
     if written:
         raise SchemaCompatibilityError(f"rule {rule_id} is still shared but copies of it exist: {', '.join(written)}")
@@ -555,6 +581,15 @@ def split_rule(tx: ManagedTransaction, plan: RulePlan, *, now: datetime) -> bool
         for slot in copy.slots:
             store.detach_rule(rule_id, slot.section_id, tenant_id=tenant)
         copies[copy.skill_id] = made.id
+    # The store skips a detach whose ends lack the `Entity` label. Committing
+    # then would leave a copy beside an original still in its skill, refused
+    # on every later run, so the whole rule rolls back instead (spec 10).
+    remaining, _ = _skills_of(tx, tenant, rule_id)
+    if set(remaining) != {plan.keeper}:
+        raise SchemaCompatibilityError(
+            f"rule {rule_id} in tenant {tenant} is still in {', '.join(sorted(set(remaining) - {plan.keeper}))} "
+            "after its copies were made, so it was not split: its BELONGS_TO edge could not be removed "
+            "(the rule or that skill has no Entity label); add the label")
     _move_relations(tx, tenant, rule_id, plan.keeper, copies)
     items = _treat_items(store, queue, tenant, rule_id, plan.keeper, copies)
     link_copies(store, [rule_id, *copies.values()], cause=CopyCause.SPLIT, tenant_id=tenant)
@@ -583,3 +618,185 @@ def close_divergence(tx: ManagedTransaction, tenant_id: str) -> int:
     if closed:
         _record(tx, tenant_id, affected=(), captures=(), copies=0, items=0, divergence=closed, rules=0)
     return closed
+
+
+# -- The stages (spec 8.1): fenced, splitting, verified, then ready -----------
+
+# What the split refuses a rule for: data it cannot split as it stands. Such
+# a rule is skipped and named; anything else (a stop, a lost database) stops
+# the run at once.
+_REFUSALS = (SchemaCompatibilityError, SectionMutabilityError)
+
+
+def _version(metadata: dict) -> int:
+    return metadata.get("schema_version", metadata.get("core_version", 0))
+
+
+def _metadata(runner) -> dict | None:
+    row = runner.run("MATCH (m:OMSMetadata {id:'core'}) RETURN properties(m) AS metadata").single()
+    return dict(row["metadata"]) if row else None
+
+
+def _advance(driver, expected: str, stage: str) -> None:
+    with driver.session() as session:
+        session.run("MATCH (m:OMSMetadata {id:'core'}) WHERE m.migration_state=$expected "
+                    "SET m.migration_state=$stage", expected=expected, stage=stage).consume()
+
+
+def _stage(driver) -> str | None:
+    with driver.session() as session:
+        return (_metadata(session) or {}).get("migration_state")
+
+
+def split_everything(driver, *, now: datetime | None = None) -> None:
+    """Close every tenant's divergence items and split every shared rule, one
+    write transaction each, then prove nothing is shared.
+
+    A rule the split refuses (a hand-edited graph) does not stop the others.
+    Every refusal is named in one error at the end, and the graph stays at
+    `rule_splitting`, so the next start continues once the data is repaired."""
+    now = now or datetime.now(timezone.utc)
+    refused: list[str] = []
+    for plan in plan_split(driver):
+        with driver.session() as session:
+            session.execute_write(lambda tx, tenant=plan.tenant_id: close_divergence(tx, tenant))
+        for rule in plan.rules:
+            try:
+                with driver.session() as session:
+                    session.execute_write(lambda tx, rule=rule: split_rule(tx, rule, now=now))
+            except _REFUSALS as exc:
+                reason = str(exc)
+                refused.append(reason if rule.rule_id in reason else f"rule {rule.rule_id}: {reason}")
+    if refused:
+        raise SchemaCompatibilityError(
+            f"the rule split cannot finish until {'this is' if len(refused) == 1 else 'these are'} repaired: "
+            f"{'; '.join(refused)}. Every other shared rule is split and the graph stays at stage "
+            "rule_splitting, so the next start continues the split")
+    with driver.session() as session:
+        left = [row["rule"] for row in session.run(_SHARED)]
+    if left:
+        raise SchemaCompatibilityError(f"rules are still shared after the split: {', '.join(left[:10])}; "
+                                       "the next start splits them")
+
+
+def _record_events(tx: ManagedTransaction) -> None:
+    """One `rules_split` event per tenant the split changed (spec 8.6), written
+    in the transaction that marks the graph ready, so exactly once."""
+    from oms.community.repository import _TransactionDriver
+    row = tx.run(f"MATCH (m:OMSMetadata {{id:'core'}}) RETURN m.{SPLIT_COUNTS} AS counts").single()
+    counts = json.loads(row["counts"]) if row is not None and row["counts"] else {}
+    events = Neo4jAdminEventStore(_TransactionDriver(tx))
+    at = datetime.now(timezone.utc)
+    for tenant, mine in sorted(counts.items()):
+        events.record_admin_event(AdminEvent(
+            id=f"rules-split-{tenant}", tenant_id=tenant, at=at, action=AdminAction.RULES_SPLIT,
+            subject_id=tenant, subject_kind="tenant",
+            after=json.dumps({"shared_rules": mine["shared_rules"], "skills_affected": len(mine["skills"]),
+                              "copies": mine["copies"], "held_items": mine["held_items"],
+                              "divergence_closed": mine["divergence_closed"]}, sort_keys=True)))
+
+
+def migrate(manager, *, old_writers_stopped: bool, edition: str, private_version: int | None) -> dict | None:
+    """Take a schema 2 graph to schema 3, resuming from any stage a stop left.
+
+    One read on a graph already at schema 3, on an empty graph (`initialise`
+    creates schema 3 there) and on a graph the source identity step has not
+    finished (it comes first, and start-up refuses such a graph as before)."""
+    if old_writers_stopped is not True:
+        raise SchemaCompatibilityError("incompatible writers must be stopped before maintenance")
+    if edition not in ("community", "enterprise"):
+        raise ValueError("unknown database edition")
+    if private_version is not None and (type(private_version) is not int or private_version < 1):
+        raise ValueError("private schema version must be a positive integer")
+    driver = manager.driver
+    with driver.session() as session:
+        metadata = _metadata(session)
+    if metadata is None:
+        return None
+    version, stage = _version(metadata), metadata.get("migration_state")
+    if version >= SCHEMA_VERSION and stage == "ready":
+        return metadata
+    if version < 2 or stage not in ("ready", *RULE_SPLIT_STAGES):
+        return metadata
+    manager._check(metadata, edition, SCHEMA_VERSION, private_version, maintenance=True)
+
+    def fence(tx: ManagedTransaction) -> dict:
+        _lock(tx)
+        current = _metadata(tx)
+        manager._check(current, edition, SCHEMA_VERSION, private_version, maintenance=True)
+        if _version(current) == 2 and current.get("migration_state") == "ready":
+            # Writers refuse from here on; a release older than this one also
+            # refuses the newer minimum.
+            tx.run("MATCH (m:OMSMetadata {id:'core'}) SET m.migration_state='rule_split_fenced', "
+                   "m.minimum_core_version=$minimum", minimum=CORE_VERSION).consume()
+        return _metadata(tx)
+
+    with driver.session() as session:
+        stage = session.execute_write(fence)["migration_state"]
+    if stage == "rule_split_fenced":
+        _advance(driver, "rule_split_fenced", "rule_splitting")
+        stage = _stage(driver)
+    if stage == "rule_splitting":
+        split_everything(driver)
+        _advance(driver, "rule_splitting", "rule_split_verified")
+        stage = _stage(driver)
+    if stage == "rule_split_verified":
+        shared_again: list[str] = []
+
+        def finish(tx: ManagedTransaction) -> dict:
+            _lock(tx)
+            current = _metadata(tx)
+            if current.get("migration_state") != "rule_split_verified":
+                return current
+            shared_again[:] = [row["rule"] for row in tx.run(_SHARED)]
+            if shared_again:
+                # Shared again since the check (a hand edit while stopped):
+                # back to splitting, where the next start splits it.
+                tx.run("MATCH (m:OMSMetadata {id:'core'}) SET m.migration_state='rule_splitting'").consume()
+                return _metadata(tx)
+            _record_events(tx)
+            tx.run(f"MATCH (m:OMSMetadata {{id:'core'}}) SET m.core_version=$version, m.schema_version=$version, "
+                   f"m.migration_state='ready', m.last_successful_migration=$last REMOVE m.{SPLIT_COUNTS}",
+                   version=SCHEMA_VERSION, last=f"core-{SCHEMA_VERSION}").consume()
+            return _metadata(tx)
+
+        with driver.session() as session:
+            metadata = session.execute_write(finish)
+        if shared_again:
+            raise SchemaCompatibilityError(
+                f"rules were shared again before the split finished: {', '.join(shared_again[:10])}; the graph "
+                "is back at stage rule_splitting, and the next start splits them")
+        return metadata
+    with driver.session() as session:
+        return _metadata(session)
+
+
+def pending_split_captures(driver) -> tuple[SkillRef, ...]:
+    """The skills that got a copy and still wait for their RULE_SPLIT version."""
+    with driver.session() as session:
+        row = session.run(f"MATCH (m:OMSMetadata {{id:'core'}}) RETURN m.{PENDING_CAPTURES} AS keys").single()
+    return tuple(SkillRef.from_storage_key(key) for key in (row["keys"] or [])) if row else ()
+
+
+def capture_pending_split_versions(driver, history: SkillHistory, *, tenant_id: str | None = None) -> int:
+    """Record a RULE_SPLIT version for each skill that got a copy, with the
+    edition's own publisher (plan D7). `SkillHistory` keeps it only when the
+    snapshot changed. A skill whose capture fails stays pending for the next
+    start, and the others go on; one that is done leaves the list."""
+    done = 0
+    for ref in pending_split_captures(driver):
+        if tenant_id is not None and ref.tenant_id != tenant_id:
+            continue
+        try:
+            history.capture_required(ref.skill_id, ref.tenant_id, cause=SkillVersionCause.RULE_SPLIT,
+                                     detail="rules shared with other skills became one copy per skill")
+            with driver.session() as session:
+                session.run(f"MATCH (m:OMSMetadata {{id:'core'}}) SET m.{PENDING_CAPTURES} = "
+                            f"[key IN coalesce(m.{PENDING_CAPTURES}, []) WHERE key <> $key]",
+                            key=ref.storage_key).consume()
+        except Exception:  # noqa: BLE001 - recorded later; never stops a start
+            logger.exception("rule split: could not record the version of %s in %s; the next start tries again",
+                             ref.skill_id, ref.tenant_id)
+            continue
+        done += 1
+    return done

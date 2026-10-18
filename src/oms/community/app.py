@@ -163,11 +163,21 @@ def build_community(settings: CoreSettings, driver, *, source_reader_factory: So
     from oms.adapters.neo4j.store import Neo4jGraphStore
     from oms.adapters.neo4j.review_queue import Neo4jReviewQueue
     from oms.adapters.neo4j.settings import Neo4jSettingsStore
+    from oms.schema.metadata import SchemaManager
+    from oms.schema.migrations.rule_split import capture_pending_split_versions
     settings.validate()
+    # One rule, one skill: a schema 2 graph is split before anything opens it
+    # for writing; on a split graph this is one read. Every Community process
+    # starts here, and an upgrade replaces the one API container, so no older
+    # writer is running.
+    SchemaManager(driver).split_rules(old_writers_stopped=True, edition="community")
     store = Neo4jGraphStore(driver)
     store.ensure_schema()  # ownership refusal precedes every other write
     queue = Neo4jReviewQueue(driver)
     services = _compose(store, queue, Neo4jWorkflowRepository(driver, store, queue),
                         Neo4jSettingsStore(driver), settings, source_reader_factory=source_reader_factory)
+    # The versions need this workspace's own publisher, so they come after
+    # composing; one that fails is retried at the next start.
+    capture_pending_split_versions(driver, services.history, tenant_id=settings.tenant_id)
     services.coordinator.reconcile(settings.tenant_id)
     return services

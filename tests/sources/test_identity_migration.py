@@ -22,7 +22,8 @@ def legacy(schema_driver):
                     "core_version:1,schema_version:1,private_version:0,minimum_core_version:'1.4.0'})").consume()
         session.run("CREATE (s:Skill:Entity {id:'expenses',tenant_id:'one',name:'expenses',description:'',domain:'finance'}),"
                     "(other:Skill:Entity {id:'travel',tenant_id:'one',name:'travel',description:'',domain:'finance'}),"
-                    "(r:Rule:Entity {id:'rule',tenant_id:'one',body:'Keep receipts'}),"
+                    "(r:Rule:Entity {id:'rule',tenant_id:'one',body:'Keep receipts',status:'active',"
+                    "corroboration_count:1,created_at:datetime()}),"
                     "(sec:Section:Entity {id:'section',tenant_id:'one',skill_id:'expenses'}),"
                     "(b:ContentBlock:Entity {id:'block',tenant_id:'one',body:'Retained prose'}),"
                     "(e:Example:Entity {id:'example',tenant_id:'one',parent_section_id:'section',body:'Example'}),"
@@ -67,8 +68,11 @@ def test_maintenance_migrates_keys_and_independent_file_occurrences(legacy):
     assert 'skill_id' not in names and 'artefact_id' not in names
     assert _metadata(legacy)['migration_state'] == 'ready'
     assert _metadata(legacy)['schema_version'] == 2
+    manager.split_rules(old_writers_stopped=True)
+    assert _metadata(legacy)['schema_version'] == 3
     before = _snapshot(legacy)
     manager.migrate_source_identity(old_writers_stopped=True)
+    manager.split_rules(old_writers_stopped=True)
     manager.initialise()
     assert _snapshot(legacy) == before
     with pytest.raises(SchemaCompatibilityError):
