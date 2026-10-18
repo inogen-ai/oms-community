@@ -152,7 +152,7 @@ def test_global_rule_relationships_reject_foreign_provenance(world):
         world.store.observe_rule_in("local-rule", "foreign-transaction", "source")
     with pytest.raises((ValueError, KeyError)):
         world.store.upsert_cross_skill_edge(EdgeType.RELATES_TO, "local-rule", "foreign-rule", 1.0)
-    assert world.store.cross_skill_neighbours("local-rule") == []
+    assert world.store.cross_skill_neighbours("local-rule", tenant_id="one") == []
 
 
 def test_rule_reads_and_input_objects_cannot_write_outside_mutation(world):

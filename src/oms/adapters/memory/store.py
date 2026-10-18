@@ -1,6 +1,8 @@
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from copy import deepcopy
+from oms.domain.copies import COPY_KIND, RuleSlot, copy_example_id, first_rule_id
 from oms.domain.identity import SkillRef
 from oms.domain.custody import effective_example_parent
 from oms.domain.relationships import EDGE_LABELS
@@ -13,7 +15,12 @@ from oms.domain.models import (
 )
 from oms.domain.types import (CompileStatus, ConstraintSource, ConstraintStatus, EdgeType,
                               BlockStatus, Mutability, SignalType, RuleStatus)
-from oms.ports.graph_store import TRANSACTION_CONTEXT_FIELDS, RuleContext, SectionMutabilityError
+from oms.ports.graph_store import (TRANSACTION_CONTEXT_FIELDS, RuleContext, RuleOwnershipError,
+                                   SectionMutabilityError)
+
+# The informational rule-to-rule edges `cross_skill_neighbours` reads, the
+# same three the Neo4j store reads.
+_CROSS_SKILL_TYPES = frozenset({EdgeType.EQUIVALENT_TO, EdgeType.RELATES_TO, EdgeType.CROSS_SKILL_DIVERGENCE})
 
 
 @dataclass(kw_only=True)
@@ -148,7 +155,8 @@ class InMemoryGraphStore:
         self.non_fault_failures: dict[str, bool] = {}              # txn_id -> settled, not a defect
         self.dismissed_failures: dict[str, str | None] = {}        # txn_id -> who acknowledged it
         self.compile_status: dict[str, CompileStatus] = {}         # txn_id -> out of pending, why
-        self.cross_edges: list[tuple[EdgeType, str, str, float, str | None]] = []
+        # (type, from, to, confidence, kind, cause)
+        self.cross_edges: list[tuple[EdgeType, str, str, float, str | None, str | None]] = []
         self.section_to_rules: dict[SkillRef, list[str]] = {}
         self.section_rule_placements: dict[SkillRef, dict[str, RulePlacement]] = {}   # section_id -> rule_id -> placement
         self.section_to_blocks: dict[SkillRef, list[str]] = {}
@@ -163,7 +171,15 @@ class InMemoryGraphStore:
         existing = self.rules.get(rule.id)
         if existing is not None and existing.tenant_id != rule.tenant_id:
             raise ValueError("Rule ID belongs to another tenant")
-        self.rules[rule.id] = deepcopy(rule)
+        stored = deepcopy(rule)
+        if existing is not None:
+            # Only the schema 3 split sets these, and the Neo4j store never
+            # writes them back, so an upsert that leaves them out keeps them.
+            if stored.split_from is None:
+                stored.split_from = existing.split_from
+            if stored.split_at is None:
+                stored.split_at = existing.split_at
+        self.rules[rule.id] = stored
 
     def create_rule_if_absent(self, rule: Rule) -> None:
         with self._workflow_mutex:
@@ -352,14 +368,15 @@ class InMemoryGraphStore:
 
     def rules_derived_from(self, transaction_ids: list[str]) -> dict[str, str]:
         wanted = set(transaction_ids)
-        out: dict[str, str] = {}
+        found: dict[str, set[str]] = {}
         for edge in self.edges:
             if edge.type is not EdgeType.DERIVED_FROM or edge.to_id not in wanted:
                 continue
             # Rules only: DERIVED_FROM also hangs off revised ContentBlocks.
             if edge.source_kind == "rules" and edge.from_id in self.rules:
-                out.setdefault(edge.to_id, edge.from_id)
-        return out
+                found.setdefault(edge.to_id, set()).add(edge.from_id)
+        # The first copy, not whichever edge happens to have been written first.
+        return {tid: min(ids, key=lambda rid: (rid != first_rule_id(tid), rid)) for tid, ids in found.items()}
 
     def transactions_for_tenant(self, tenant_id: str,
                                 since: datetime | None = None,
@@ -1019,7 +1036,7 @@ class InMemoryGraphStore:
 
     def upsert_cross_skill_edge(
         self, edge_type: EdgeType, from_rule_id: str, to_rule_id: str,
-        confidence: float, kind: str | None = None,
+        confidence: float, kind: str | None = None, cause: str | None = None,
     ) -> None:
         source = self.rules.get(from_rule_id)
         target = self.rules.get(to_rule_id)
@@ -1027,14 +1044,94 @@ class InMemoryGraphStore:
             raise KeyError(from_rule_id if source is None else to_rule_id)
         if source.tenant_id != target.tenant_id:
             raise ValueError("Rule relationship crosses tenant ownership")
-        for i, (et, frm, to, _conf, _k) in enumerate(self.cross_edges):
+        for i, (et, frm, to, _conf, old_kind, old_cause) in enumerate(self.cross_edges):
             if et is edge_type and frm == from_rule_id and to == to_rule_id:
-                self.cross_edges[i] = (edge_type, from_rule_id, to_rule_id, confidence, kind)
+                if old_kind == COPY_KIND:
+                    return  # a copy edge is written once
+                self.cross_edges[i] = (edge_type, from_rule_id, to_rule_id, confidence,
+                                       kind if kind is not None else old_kind,
+                                       cause if cause is not None else old_cause)
                 return
-        self.cross_edges.append((edge_type, from_rule_id, to_rule_id, confidence, kind))
+        self.cross_edges.append((edge_type, from_rule_id, to_rule_id, confidence, kind, cause))
 
-    def cross_skill_neighbours(self, rule_id: str) -> list[tuple[EdgeType, str, float]]:
-        return [(et, to, conf) for (et, frm, to, conf, _k) in self.cross_edges if frm == rule_id]
+    def cross_skill_neighbours(self, rule_id: str, *, tenant_id: str,
+                               kind: str | None = None) -> list[tuple[EdgeType, str, float]]:
+        rule = self.rules.get(rule_id)
+        if rule is None or rule.tenant_id != tenant_id:
+            return []
+        return sorted(((et, to, conf) for (et, frm, to, conf, k, _cause) in self.cross_edges
+                       if frm == rule_id and et in _CROSS_SKILL_TYPES and (kind is None or k == kind)
+                       and to in self.rules and self.rules[to].tenant_id == tenant_id),
+                      key=lambda row: (row[0].value, row[1]))
+
+    def copy_groups(self, rule_ids: list[str], *, tenant_id: str) -> dict[str, tuple[str, ...]]:
+        wanted = {rid for rid in rule_ids if rid in self.rules and self.rules[rid].tenant_id == tenant_id}
+        found: dict[str, set[str]] = {}
+        for (et, frm, to, _conf, kind, _cause) in self.cross_edges:
+            if (et is EdgeType.EQUIVALENT_TO and kind == COPY_KIND and frm in wanted
+                    and to in self.rules and self.rules[to].tenant_id == tenant_id):
+                found.setdefault(frm, set()).add(to)
+        return {rid: tuple(sorted(members)) for rid, members in found.items()}
+
+    def copy_rule(self, source_id: str, new_id: str, *, tenant_id: str, skill_id: str | None,
+                  slots: Sequence[RuleSlot] = (), status: RuleStatus | None = None,
+                  belongs_properties: Mapping[str, object] | None = None) -> Rule:
+        with self._workflow_mutex:
+            existing = self.rules.get(new_id)
+            if existing is not None:
+                if existing.tenant_id != tenant_id:
+                    raise ValueError("Rule ID belongs to another tenant")
+                return deepcopy(existing)
+            source = self.rules.get(source_id)
+            if source is None or source.tenant_id != tenant_id:
+                raise KeyError(source_id)
+            # Every check before the first write, so a refusal leaves nothing
+            # behind. The Neo4j store checks in the same order.
+            if skill_id is not None and SkillRef(tenant_id, skill_id) not in self.skills:
+                raise KeyError(skill_id)
+            homes = {skill_id} if skill_id is not None else set()
+            for slot in slots:
+                section = self.sections.get(SkillRef(tenant_id, slot.section_id))
+                if section is None:
+                    raise KeyError(slot.section_id)
+                if section.mutability is not Mutability.SYSTEM_AGGREGATED:
+                    raise SectionMutabilityError(
+                        f"section {slot.section_id} is {section.mutability.value}; cannot attach rule")
+                homes.add(section.skill_id)
+                if len(homes) > 1:
+                    raise RuleOwnershipError(f"copy {new_id} cannot be placed in {slot.section_id}: "
+                                             f"it would belong to {' and '.join(sorted(homes))}")
+            copy = replace(deepcopy(source), id=new_id,
+                           status=status if status is not None else source.status,
+                           split_from=None, split_at=None)
+            self.rules[new_id] = copy
+            if skill_id is not None:
+                self.attach_edge(Edge(EdgeType.BELONGS_TO, new_id, skill_id,
+                                      dict(belongs_properties or {})), tenant_id=tenant_id)
+            carried = [edge for edge in self.edges if edge.tenant_id == tenant_id
+                       and edge.source_kind == "rules" and edge.from_id == source_id
+                       and (edge.type in (EdgeType.TAGGED_WITH, EdgeType.DERIVED_FROM, EdgeType.OBSERVED_IN)
+                            or (edge.type is EdgeType.CONFLICTS_WITH and edge.target_kind == "constraints"))]
+            for edge in carried:
+                self._attach_typed_edge(Edge(edge.type, new_id, edge.to_id, deepcopy(edge.properties)),
+                                        tenant_id, edge.source_kind, edge.target_kind)
+            # This store keeps what `observe_rule_in` saw beside the rule
+            # rather than on an OBSERVED_IN edge; the copy has seen it too.
+            if source_id in self.observations:
+                self.observations[new_id] = set(self.observations[source_id])
+            for example in self.examples_for_rule(source_id, tenant_id=tenant_id):
+                self.upsert_example(replace(example, id=copy_example_id(example.id, new_id),
+                                            parent_rule_id=new_id), tenant_id=tenant_id)
+            for slot in slots:
+                self.attach_rule(copy, slot.section_id, order=slot.order, group=slot.group,
+                                 tenant_id=tenant_id)
+            return deepcopy(self.rules[new_id])
+
+    def rule_ids_derived_from(self, transaction_id: str, *, tenant_id: str) -> list[str]:
+        ids = {e.from_id for e in self.edges if e.type is EdgeType.DERIVED_FROM and e.tenant_id == tenant_id
+               and e.source_kind == "rules" and e.to_id == transaction_id}
+        first = first_rule_id(transaction_id)
+        return sorted(ids, key=lambda rid: (rid != first, rid))
 
     def _endpoint_matches(self, node_id: str, labels: tuple[str, ...], tenant_id: str):
         matches = []

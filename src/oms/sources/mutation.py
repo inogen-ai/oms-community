@@ -365,6 +365,9 @@ def _owned_by(tracker, value, *, rules=(), skills=()):
 _REACHES: dict[str, Callable[..., None]] = {
     "upsert_rule": lambda t, rule, **_: _owned_by(t, rule, rules=(rule.id,)),
     "create_rule_if_absent": lambda t, rule, **_: _owned_by(t, rule, rules=(rule.id,)),
+    "copy_rule": lambda t, source_id, new_id, *, tenant_id=None, skill_id=None, slots=(), **_: _in_tenant(
+        t, tenant_id) and (t.rules((source_id,)) or t.skills(tuple(s for s in (skill_id,) if s))
+                           or any(t.section(slot.section_id) for slot in slots)),
     "observe_rule_in": lambda t, rule_id, *args, **_: t.rules((rule_id,)),
     "upsert_transaction": _transaction,
     "upsert_skill": lambda t, skill, **_: _owned_by(t, skill, skills=(skill.id,)),
@@ -413,13 +416,13 @@ _UNTRACKED = frozenset({
 
 _READS = frozenset({
     "active_blocks_without_body", "active_constraints", "all_constraints", "artefacts_for_skill",
-    "blocks_for_section", "blocks_revised_for_rule", "content_owners", "cross_skill_neighbours",
+    "blocks_for_section", "blocks_revised_for_rule", "content_owners", "copy_groups", "cross_skill_neighbours",
     "examples_for_rule", "examples_for_section", "examples_for_skill", "failed_transactions",
     "find_duplicates", "find_related", "get_content_block", "get_example", "get_learning",
     "get_publication", "get_publish_block", "get_rule", "get_section", "get_skill", "get_skill_version",
     "get_transaction", "graph_neighbours", "graph_node", "latest_skill_version", "lineage",
     "pending_tenants", "pending_transactions", "publications_for_skill", "quarantined_payloads",
-    "recent_skill_changes", "rule_context", "rule_origins", "rule_placements_for_section",
+    "recent_skill_changes", "rule_context", "rule_ids_derived_from", "rule_origins", "rule_placements_for_section",
     "rules_by_tags", "rules_conflicting_with_constraints", "rules_derived_from", "rules_for_section",
     "rules_for_skill", "rules_for_tenant", "rules_page", "section_for_block", "sections_for_skill",
     "sections_with_multiple_active_blocks", "skill_versions", "skills_by_rule", "skills_by_tags",

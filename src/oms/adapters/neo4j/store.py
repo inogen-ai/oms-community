@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 
 from neo4j import Driver
@@ -7,6 +8,7 @@ from neo4j.graph import Node
 
 from oms.adapters.neo4j import schema
 from oms.adapters.neo4j.fulltext import fulltext_terms
+from oms.domain.copies import COPY_KIND, RuleSlot, copy_example_id, first_rule_id
 from oms.domain.identity import SkillRef
 from oms.domain.custody import effective_example_parent
 from oms.domain.relationships import EDGE_LABELS
@@ -23,7 +25,8 @@ from oms.domain.types import (
     SkillVersionCause,
 )
 from oms.domain.auth import Assurance
-from oms.ports.graph_store import TRANSACTION_CONTEXT_FIELDS, RuleContext, SectionMutabilityError
+from oms.ports.graph_store import (TRANSACTION_CONTEXT_FIELDS, RuleContext, RuleOwnershipError,
+                                   SectionMutabilityError)
 
 logger = logging.getLogger(__name__)
 
@@ -513,8 +516,12 @@ class Neo4jGraphStore:
                 # not exist.
                 "MATCH (r:Rule)-[:DERIVED_FROM]->(t:Transaction) "
                 "WHERE t.id IN $ids "
+                # The first copy first, then by id: collect keeps the order of
+                # the rows it is given, so [0] is the port's answer.
+                "WITH t, r ORDER BY (r.id = $firsts[t.id]) DESC, r.id "
                 "RETURN t.id AS tid, collect(r.id)[0] AS rid",
                 ids=list(transaction_ids),
+                firsts={tid: first_rule_id(tid) for tid in transaction_ids},
             )
             return {rec["tid"]: rec["rid"] for rec in recs}
 
@@ -1713,32 +1720,128 @@ class Neo4jGraphStore:
 
     def upsert_cross_skill_edge(
         self, edge_type: EdgeType, from_rule_id: str, to_rule_id: str,
-        confidence: float, kind: str | None = None,
+        confidence: float, kind: str | None = None, cause: str | None = None,
     ) -> None:
-        # Edge type can't be parameterised in Cypher; build the statement.
+        # Edge type can't be parameterised in Cypher; build the statement. A
+        # copy edge is written once: `kept` leaves one exactly as it is.
         cypher = (
-            f"MATCH (a:Rule {{id:$frm}}), (b:Rule {{id:$to}}) "
-            "WHERE a.tenant_id=b.tenant_id "
+            f"MATCH (a:Rule {{id:$frm}}), (b:Rule {{id:$to}}) WHERE a.tenant_id=b.tenant_id "
             f"MERGE (a)-[r:{edge_type.value}]->(b) "
-            f"SET r.confidence=$conf"
+            "WITH a, r, coalesce(r.kind, '') = $copy AS kept "
+            "SET r.confidence = CASE WHEN kept THEN r.confidence ELSE $conf END, "
+            "r.kind = CASE WHEN kept OR $kind IS NULL THEN r.kind ELSE $kind END, "
+            "r.cause = CASE WHEN kept OR $cause IS NULL THEN r.cause ELSE $cause END "
+            "RETURN a.id AS id"
         )
-        if kind is not None:
-            cypher += ", r.kind=$kind"
         with self._driver.session() as session:
-            row = session.run(cypher + " RETURN a.id AS id", frm=from_rule_id, to=to_rule_id,
-                              conf=confidence, kind=kind).single()
+            row = session.run(cypher, frm=from_rule_id, to=to_rule_id, conf=confidence,
+                              kind=kind, cause=cause, copy=COPY_KIND).single()
             if row is None:
                 raise ValueError("Cross-skill relationship requires existing same-tenant rules")
 
-    def cross_skill_neighbours(self, rule_id: str) -> list[tuple[EdgeType, str, float]]:
+    def cross_skill_neighbours(self, rule_id: str, *, tenant_id: str,
+                               kind: str | None = None) -> list[tuple[EdgeType, str, float]]:
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (r:Rule {id:$rid})-[rel]->(o:Rule) "
+                "MATCH (r:Rule {id:$rid, tenant_id:$tenant})-[rel]->(o:Rule {tenant_id:$tenant}) "
                 "WHERE type(rel) IN ['EQUIVALENT_TO', 'RELATES_TO', 'CROSS_SKILL_DIVERGENCE'] "
-                "RETURN type(rel) AS et, o.id AS to_id, rel.confidence AS conf",
-                rid=rule_id,
-            )
+                "AND ($kind IS NULL OR rel.kind = $kind) "
+                "RETURN type(rel) AS et, o.id AS to_id, rel.confidence AS conf ORDER BY et, to_id",
+                rid=rule_id, tenant=tenant_id, kind=kind)
             return [(EdgeType(r["et"]), r["to_id"], float(r["conf"] or 0.0)) for r in recs]
+
+    def copy_groups(self, rule_ids: list[str], *, tenant_id: str) -> dict[str, tuple[str, ...]]:
+        if not rule_ids:
+            return {}
+        with self._driver.session() as session:
+            recs = session.run(
+                "UNWIND $ids AS rid "
+                "MATCH (r:Rule {id:rid, tenant_id:$tenant})-[e:EQUIVALENT_TO]->(o:Rule {tenant_id:$tenant}) "
+                "WHERE e.kind = $copy RETURN rid, collect(DISTINCT o.id) AS members",
+                ids=sorted(set(rule_ids)), tenant=tenant_id, copy=COPY_KIND)
+            return {rec["rid"]: tuple(sorted(rec["members"])) for rec in recs}
+
+    def rule_ids_derived_from(self, transaction_id: str, *, tenant_id: str) -> list[str]:
+        with self._driver.session() as session:
+            recs = session.run(
+                "MATCH (r:Rule {tenant_id:$tenant})-[:DERIVED_FROM]->(:Transaction {id:$txn, tenant_id:$tenant}) "
+                "RETURN DISTINCT r.id AS id ORDER BY (id = $first) DESC, id",
+                txn=transaction_id, tenant=tenant_id, first=first_rule_id(transaction_id))
+            return [rec["id"] for rec in recs]
+
+    def copy_rule(self, source_id: str, new_id: str, *, tenant_id: str, skill_id: str | None,
+                  slots: Sequence[RuleSlot] = (), status: RuleStatus | None = None,
+                  belongs_properties: Mapping[str, object] | None = None) -> Rule:
+        def write(tx) -> None:
+            held = tx.run("MATCH (c:Rule {id:$id}) RETURN c.tenant_id AS tenant", id=new_id).single()
+            if held is not None:
+                if held["tenant"] != tenant_id:
+                    raise ValueError("Rule ID belongs to another tenant")
+                return
+            if tx.run("MATCH (o:Rule {id:$source, tenant_id:$tenant}) RETURN o.id AS id",
+                      source=source_id, tenant=tenant_id).single() is None:
+                raise KeyError(source_id)
+            # Every check before the first write, in the in-memory store's
+            # order, so both refuse the same copy with the same error.
+            if skill_id is not None and tx.run("MATCH (s:Skill {id:$skill, tenant_id:$tenant}) RETURN s.id AS id",
+                                               skill=skill_id, tenant=tenant_id).single() is None:
+                raise KeyError(skill_id)
+            homes = {skill_id} if skill_id is not None else set()
+            for slot in slots:
+                section = tx.run("MATCH (s:Section {id:$id, tenant_id:$tenant}) "
+                                 "RETURN s.skill_id AS skill, s.mutability AS mutability",
+                                 id=slot.section_id, tenant=tenant_id).single()
+                if section is None:
+                    raise KeyError(slot.section_id)
+                if section["mutability"] != Mutability.SYSTEM_AGGREGATED.value:
+                    raise SectionMutabilityError(
+                        f"section {slot.section_id} is {section['mutability']}; cannot attach rule")
+                homes.add(section["skill"])
+                if len(homes) > 1:
+                    raise RuleOwnershipError(f"copy {new_id} cannot be placed in {slot.section_id}: "
+                                             f"it would belong to {' and '.join(sorted(map(str, homes)))}")
+            # Named properties only: a copy never carries split_from or split_at.
+            tx.run("MATCH (o:Rule {id:$source, tenant_id:$tenant}) "
+                   "CREATE (c:Rule:Entity {id:$id}) "
+                   "SET c.body=o.body, c.tenant_id=o.tenant_id, c.status=coalesce($status, o.status), "
+                   "c.corroboration_count=o.corroboration_count, c.reference_only=o.reference_only, "
+                   "c.polarity=o.polarity, c.plane=o.plane, c.created_at=o.created_at, "
+                   "c.embedding=o.embedding",
+                   source=source_id, id=new_id, tenant=tenant_id,
+                   status=status.value if status is not None else None).consume()
+            for kind in ("TAGGED_WITH", "DERIVED_FROM", "OBSERVED_IN"):
+                tx.run(f"MATCH (o:Rule {{id:$source, tenant_id:$tenant}})-[e:{kind}]->(t) "
+                       "MATCH (c:Rule {id:$id, tenant_id:$tenant}) "
+                       f"MERGE (c)-[n:{kind}]->(t) SET n += properties(e)",
+                       source=source_id, id=new_id, tenant=tenant_id).consume()
+            tx.run("MATCH (o:Rule {id:$source, tenant_id:$tenant})-[e:CONFLICTS_WITH]->(k:Constraint {tenant_id:$tenant}) "
+                   "MATCH (c:Rule {id:$id, tenant_id:$tenant}) "
+                   "MERGE (c)-[n:CONFLICTS_WITH]->(k) SET n += properties(e)",
+                   source=source_id, id=new_id, tenant=tenant_id).consume()
+            if skill_id is not None:
+                tx.run("MATCH (c:Rule {id:$id, tenant_id:$tenant}), (s:Skill {id:$skill, tenant_id:$tenant}) "
+                       "MERGE (c)-[b:BELONGS_TO]->(s) SET b += $props",
+                       id=new_id, skill=skill_id, tenant=tenant_id,
+                       props=dict(belongs_properties or {})).consume()
+            examples = [dict(row["props"]) for row in tx.run(
+                "MATCH (e:Example {tenant_id:$tenant})-[:ILLUSTRATES]->(:Rule {id:$source, tenant_id:$tenant}) "
+                "RETURN properties(e) AS props", source=source_id, tenant=tenant_id)]
+            for props in examples:
+                example_id = copy_example_id(props["id"], new_id)
+                props.update(id=example_id, parent_rule_id=new_id,
+                             storage_key=SkillRef(tenant_id, example_id).storage_key)
+                tx.run("MATCH (c:Rule {id:$rule, tenant_id:$tenant}) "
+                       "CREATE (e:Example:Entity) SET e = $props "
+                       "MERGE (c)-[:HAS_EXAMPLE]->(e) MERGE (e)-[:ILLUSTRATES]->(c)",
+                       rule=new_id, tenant=tenant_id, props=props).consume()
+            for slot in slots:
+                tx.run("MATCH (s:Section {id:$sid, tenant_id:$tenant}), (c:Rule {id:$id, tenant_id:$tenant}) "
+                       "MERGE (s)-[r:CONTAINS_RULE]->(c) SET r.order = $order, r.group = $group",
+                       sid=slot.section_id, id=new_id, tenant=tenant_id,
+                       order=slot.order, group=slot.group).consume()
+        with self._driver.session() as session:
+            session.execute_write(write)
+        return self.get_rule(new_id)
 
 
 def _now() -> datetime:
