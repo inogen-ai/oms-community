@@ -39,7 +39,7 @@ export function ManualAmendment({ skills, suggestions = [], initialSkillId, draf
   for (const part of parts.filter(part => part.anchor in values)) {
     for (const skill of part.affected_skills ?? []) affected.set(skill.id, skill.name);
   }
-  const shared = affected.size > 1;
+  const several = affected.size > 1;
   const changedParts = parts.filter(part => part.anchor in values);
   const isRemoval = part => ["rule", "overflow-rule"].includes(part.kind) && !values[part.anchor].trim();
   const removals = changedParts.filter(isRemoval);
@@ -49,7 +49,7 @@ export function ManualAmendment({ skills, suggestions = [], initialSkillId, draf
   if (error) blockers.push(`The latest skill could not be checked: ${error} Retry loading the skill above.`);
   if (stale) blockers.push("The skill changed while you were editing. Keep a copy of your edits, then discard the draft and reload the latest version.");
   if (emptyPassages.length) blockers.push("A passage is empty. Enter replacement text or undo that passage's edit before applying. Entire rules can be removed by clearing their text.");
-  if (shared && !confirmed) blockers.push("Confirm the change to every listed skill using the checkbox above.");
+  if (several && !confirmed) blockers.push("Confirm the change to every listed skill using the checkbox above.");
   if (busy) blockers.push("Saving your changes…");
   const ready = dirty && !blockers.length;
   const skill = skills.find(skill => skill.id === skillId);
@@ -109,9 +109,9 @@ export function ManualAmendment({ skills, suggestions = [], initialSkillId, draf
             h(DiffLines, { lines: lineDiff(part.edit_text ?? "", isRemoval(part) ? "" : values[part.anchor]) }))),
           removals.length ? h("p", { className: "oms-manual-help" }, `${removals.length} ${removals.length === 1 ? "rule will" : "rules will"} be removed from the affected skills. The original wording and correction evidence stay in history, and the rules can be restored.`) : null,
           h("p", null, "Affected skills: ", [...affected.values()].join(", ")),
-          shared ? h("label", { className: "oms-manual-match" },
+          several ? h("label", { className: "oms-manual-match" },
             h("input", { type: "checkbox", checked: confirmed, disabled: busy, onChange: event => setConfirmed(event.target.checked) }),
-            "I confirm this shared guidance should change in every listed skill.") : null,
+            "I confirm this change should apply to every listed skill.") : null,
           h("p", { className: "oms-manual-help" }, "This saves every edit together and resolves the correction. Publish when you are ready to update your agents."),
           blockers.length ? h("div", { id: blockerId, role: "status", className: "oms-manual-help" }, ...blockers.map(message => h("p", { key: message }, message))) : null,
           h(Button, { disabled: !ready, "aria-describedby": blockers.length ? blockerId : undefined, onClick: () => void onDecision({ action: "amend", body: "", skill_ids: [skillId],

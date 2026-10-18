@@ -8,6 +8,7 @@ const CAUSES = {
   review_decision: "made a review decision", restore: "restored an earlier version",
   source_install: "installed a source package", source_update: "applied a source update",
   source_undo: "undid a source update",
+  rule_split: "split the rules shared with other skills into one copy per skill",
   created: "created this skill", unattributed: "changed outside the console",
 };
 const RULE_DETAILS = {

@@ -180,7 +180,7 @@ export function ManualReviewCard({ item, skills, onDecision, createSkillHref = "
                   h("p", null, "This replaces the rule in its current position."),
                   h("p", null, "Affected skills: ", affected.map(id => skills.find(skill => skill.id === id)?.name || id).join(", ")),
                   affected.length > 1 ? h("label", { className: "oms-manual-match" }, h("input", { type: "checkbox", checked: Boolean(currentDraft.confirm_shared_replacement), disabled: busy,
-                    onChange: event => updateDraft({ confirm_shared_replacement: event.target.checked }) }), "Replace this shared rule in every listed skill") : null,
+                    onChange: event => updateDraft({ confirm_shared_replacement: event.target.checked }) }), "Replace this rule in every listed skill") : null,
                   h("div", { className: "oms-manual-actions" },
                     h(Button, { disabled: !canReplace, onClick: () => void submit({ action: "amend", body: "", skill_ids: [replacement.skill_id], amendment: {
                       skill_id: replacement.skill_id, revision: replacement.document.revision,
