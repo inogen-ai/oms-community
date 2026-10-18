@@ -862,6 +862,57 @@ def test_an_active_member_takes_the_evidence_before_a_retired_one(world: World) 
         "rule-original": (retired.id, active.id)}
 
 
+def _reinforced_into_expenses(world: World) -> str:
+    """The rule is in audit, and a first reinforcement has put its copy into expenses. Returns the copy's id."""
+    for skill_id in ("audit", "expenses", "legal"):
+        world.skill(skill_id)
+    world.ingest("original")
+    world.decide("original", skill_ids=["audit"])
+    world.ingest("first")
+    world.decide("first", "reinforce", rule_id="rule-original", skill_ids=["expenses"])
+    return copy_rule_id("rule-original", SkillRef("acme", "expenses"))
+
+
+def test_reinforcing_into_a_skill_whose_copy_lost_its_skill_puts_the_copy_back_and_confirms_it(world: World) -> None:
+    copy_id = _reinforced_into_expenses(world)
+    # A source update takes the copy out of its skill and leaves the rule where it is.
+    world.store.detach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=copy_id, to_id="expenses"), tenant_id="acme")
+    assert world.store.skills_for_rule(copy_id, tenant_id="acme") == []
+    world.ingest("second")
+    result = world.decide("second", "reinforce", rule_id="rule-original", skill_ids=["expenses"])
+    assert (result.state, result.rule_id) == ("applied", "rule-original")
+    # The chosen skill holds its copy again, and the copy takes the evidence.
+    assert [rule.id for rule in world.store.rules_for_skill("expenses", tenant_id="acme")] == [copy_id]
+    assert [world.store.get_rule(rule_id).corroboration_count for rule_id in ("rule-original", copy_id)] == [3, 3]
+    assert {t.id for t in world.store.lineage(copy_id)} == {"original", "first", "second"}
+    assert world.store.rule_ids_derived_from("second", tenant_id="acme") == ["rule-original", copy_id]
+    assert world.store.copy_groups(["rule-original"], tenant_id="acme") == {"rule-original": (copy_id,)}
+    assert len(world.store.skill_versions("acme", "expenses")) == 2
+
+
+def test_reinforcing_into_a_skill_whose_copy_moved_to_another_skill_is_refused(world: World) -> None:
+    copy_id = _reinforced_into_expenses(world)
+    # A review moves the copy to legal: the same rule, in a new skill.
+    world.store.detach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=copy_id, to_id="expenses"), tenant_id="acme")
+    world.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=copy_id, to_id="legal"), tenant_id="acme")
+    world.ingest("second")
+    with pytest.raises(DecisionConflict) as refused:
+        world.decide("second", "reinforce", rule_id="rule-original", skill_ids=["expenses"])
+    # The refusal names the skill that cannot get a copy and the skill that holds it now.
+    assert "expenses" in str(refused.value) and "legal" in str(refused.value)
+    # Nothing is written, and the correction stays open.
+    assert world.store.get_rule("rule-original").corroboration_count == 2
+    assert world.store.get_rule(copy_id).corroboration_count == 2
+    assert world.store.rule_ids_derived_from("second", tenant_id="acme") == []
+    assert world.store.rules_for_skill("expenses", tenant_id="acme") == []
+    assert not world.queue.get("manual-second").resolved
+    assert world.store.get_transaction("second").workflow_state == "awaiting_manual_review"
+    # The skill that holds the copy takes the correction instead.
+    world.decide("second", "reinforce", rule_id="rule-original", skill_ids=["legal"])
+    assert [rule.id for rule in world.store.rules_for_skill("legal", tenant_id="acme")] == [copy_id]
+    assert world.store.get_rule(copy_id).corroboration_count == 3
+
+
 def test_one_reinforcement_confirms_the_copies_held_and_copies_into_the_other_skills(world: World) -> None:
     for skill_id in ("expenses", "audit", "legal"):
         world.skill(skill_id)

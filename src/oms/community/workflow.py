@@ -118,6 +118,13 @@ def _enqueue(store, queue, transaction, payloads):
     return DispositionResult(transaction.id, state)
 
 
+def _confirm(store: GraphStore, rule: Rule, *, transaction_id: str, tenant_id: str) -> None:
+    """Count one more correction for a rule, and record which one."""
+    rule.corroboration_count += 1
+    store.upsert_rule(rule)
+    store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule.id, to_id=transaction_id), tenant_id=tenant_id)
+
+
 def _reinforce(store: GraphStore, rule: Rule, chosen: list[str], *, transaction_id: str,
                tenant_id: str) -> list[str]:
     """Reinforce a rule for the chosen skills (one rule, one skill, spec 5.2).
@@ -128,11 +135,14 @@ def _reinforce(store: GraphStore, rule: Rule, chosen: list[str], *, transaction_
     several members, an active one comes first. Any other chosen skill gets a
     copy of the rule. A rule that belongs to no skill moves into the first
     chosen skill that holds no member of its group. Returns the skills that
-    changed, sorted."""
+    changed, sorted.
+
+    A copy keeps the id it was first given for its skill. When that copy has
+    lost its skill, the chosen skill takes it back and confirms it. When it
+    is in another skill now, the decision is refused and the caller's atomic
+    block writes nothing."""
     rule_id = rule.id
-    rule.corroboration_count += 1
-    store.upsert_rule(rule)
-    store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule_id, to_id=transaction_id), tenant_id=tenant_id)
+    _confirm(store, rule, transaction_id=transaction_id, tenant_id=tenant_id)
     home = {skill.id for skill in store.skills_for_rule(rule_id, tenant_id=tenant_id)}
     targets = [skill_id for skill_id in chosen if skill_id not in home]
     if not targets:
@@ -156,13 +166,21 @@ def _reinforce(store: GraphStore, rule: Rule, chosen: list[str], *, transaction_
         if holders:
             # The skill has the rule already, so it takes the evidence. An active member comes first.
             holder = min(holders, key=lambda candidate: (candidate.status is not RuleStatus.ACTIVE, candidate.id))
-            holder.corroboration_count += 1
-            store.upsert_rule(holder)
-            store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=holder.id, to_id=transaction_id),
-                              tenant_id=tenant_id)
+            _confirm(store, holder, transaction_id=transaction_id, tenant_id=tenant_id)
+            continue
+        # `copy_rule` returns a copy that exists already as it is, so ask where the copy is now.
+        copied = store.copy_rule(rule_id, copy_rule_id(rule_id, SkillRef(tenant_id, skill_id)),
+                                 tenant_id=tenant_id, skill_id=skill_id)
+        owners = sorted(skill.id for skill in store.skills_for_rule(copied.id, tenant_id=tenant_id))
+        if skill_id in owners:
+            made.append(copied.id)
+        elif owners:
+            raise DecisionConflict(f"the copy of this rule for {skill_id} is in {', '.join(owners)} now; "
+                                   f"choose {', '.join(owners)} to reinforce it there")
         else:
-            made.append(store.copy_rule(rule_id, copy_rule_id(rule_id, SkillRef(tenant_id, skill_id)),
-                                        tenant_id=tenant_id, skill_id=skill_id).id)
+            # The copy lost its skill (a source update took it out). The chosen skill takes it back.
+            store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=copied.id, to_id=skill_id), tenant_id=tenant_id)
+            _confirm(store, copied, transaction_id=transaction_id, tenant_id=tenant_id)
     if made:
         link_copies(store, [rule_id, *made], cause=CopyCause.MANUAL, tenant_id=tenant_id)
     return sorted(home | set(targets))
