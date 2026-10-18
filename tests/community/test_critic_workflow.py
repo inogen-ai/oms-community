@@ -23,7 +23,7 @@ from oms.community.workflow import (
     ManualReviewService,
 )
 from oms.domain.auth import INGEST_WRITE
-from oms.domain.copies import COPY_KIND, CopyCause, copy_rule_id, learning_copy_id
+from oms.domain.copies import COPY_KIND, CopyCause, copy_rule_id, first_rule_id, learning_copy_id
 from oms.domain.identity import SkillRef
 from oms.domain.models import Edge, Principal, ReviewItem, Rule, Section, Skill
 from oms.domain.types import (EdgeType, Mutability, Plane, RuleStatus, SectionKind, SignalType, SourceRuntime,
@@ -732,6 +732,59 @@ def test_creating_into_three_skills_joins_every_copy_to_every_other_as_manual(wo
     assert {_copy_cause(world.store, left, right) for left in members for right in members if left != right} == {"manual"}
 
 
+def _recording(name: str, original: Any, calls: list[str]) -> Any:
+    """A stand-in for a store method that notes each call and then runs the real method."""
+    def recorded(self: object, *args: object, **kwargs: object) -> object:
+        calls.append(name)
+        return original(self, *args, **kwargs)
+    return recorded
+
+
+@pytest.mark.parametrize("taken_for", ["audit", "expenses", "legal"])
+def test_a_decision_never_overwrites_a_rule_that_holds_the_id_of_one_of_its_copies(
+        world: World, monkeypatch: pytest.MonkeyPatch, taken_for: str) -> None:
+    for skill_id in ("audit", "expenses", "legal", "other"):
+        world.skill(skill_id)
+    # A rule of another correction already has the id that this correction's copy for one skill would get.
+    taken = first_rule_id("t1") if taken_for == "audit" else learning_copy_id("t1", SkillRef("acme", taken_for))
+    world.store.upsert_rule(Rule(id=taken, body="Original wording that must survive.", tenant_id="acme"))
+    world.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=taken, to_id="other"), tenant_id="acme")
+    world.ingest("t1")
+    writes: list[str] = []
+    store_class = type(world.store)
+    for name in ("upsert_rule", "attach_edge", "copy_rule"):
+        monkeypatch.setattr(store_class, name, _recording(name, getattr(store_class, name), writes))
+    with pytest.raises(DecisionConflict):
+        world.decide("t1", skill_ids=["audit", "expenses", "legal"])
+    # Every id is checked before the first write, so a refusal writes no rule and no edge at all.
+    assert writes == []
+    held = world.store.get_rule(taken)
+    assert (held.body, held.corroboration_count) == ("Original wording that must survive.", 1)
+    assert [s.id for s in world.store.skills_for_rule(taken, tenant_id="acme")] == ["other"]
+    assert world.store.rule_ids_derived_from("t1", tenant_id="acme") == []
+    assert not world.queue.get("manual-t1").resolved
+    assert world.store.get_transaction("t1").workflow_state == "awaiting_manual_review"
+
+
+def test_a_decision_refuses_two_copies_that_would_get_the_same_id(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    for skill_id in ("audit", "expenses", "legal"):
+        world.skill(skill_id)
+    # The id of a further copy keeps eight hex digits of a digest, so two skills can come out alike.
+    monkeypatch.setattr("oms.community.workflow.learning_copy_id",
+                        lambda transaction_id, skill: f"rule-{transaction_id}-aaaaaaaa")
+    world.ingest("t1")
+    writes: list[str] = []
+    store_class = type(world.store)
+    for name in ("upsert_rule", "attach_edge", "copy_rule"):
+        monkeypatch.setattr(store_class, name, _recording(name, getattr(store_class, name), writes))
+    with pytest.raises(DecisionConflict):
+        world.decide("t1", skill_ids=["audit", "expenses", "legal"])
+    # Nothing is written, so no rule ends up in two skills.
+    assert writes == []
+    assert world.store.get_rule("rule-t1") is None and world.store.get_rule("rule-t1-aaaaaaaa") is None
+    assert not world.queue.get("manual-t1").resolved
+
+
 def test_the_copy_a_reinforcement_makes_joins_the_whole_group_and_leaves_the_old_pair_as_it_was(world: World) -> None:
     for skill_id in ("expenses", "audit", "legal"):
         world.skill(skill_id)
@@ -898,8 +951,10 @@ def test_reinforcing_into_a_skill_whose_copy_moved_to_another_skill_is_refused(w
     world.ingest("second")
     with pytest.raises(DecisionConflict) as refused:
         world.decide("second", "reinforce", rule_id="rule-original", skill_ids=["expenses"])
-    # The refusal names the skill that cannot get a copy and the skill that holds it now.
+    # The refusal names the skill that cannot get a copy and the skill that holds it now. Legal is not chosen,
+    # so the advice is to choose it.
     assert "expenses" in str(refused.value) and "legal" in str(refused.value)
+    assert "choose legal" in str(refused.value)
     # Nothing is written, and the correction stays open.
     assert world.store.get_rule("rule-original").corroboration_count == 2
     assert world.store.get_rule(copy_id).corroboration_count == 2
@@ -910,6 +965,22 @@ def test_reinforcing_into_a_skill_whose_copy_moved_to_another_skill_is_refused(w
     # The skill that holds the copy takes the correction instead.
     world.decide("second", "reinforce", rule_id="rule-original", skill_ids=["legal"])
     assert [rule.id for rule in world.store.rules_for_skill("legal", tenant_id="acme")] == [copy_id]
+    assert world.store.get_rule(copy_id).corroboration_count == 3
+
+
+def test_the_refusal_for_a_moved_copy_says_to_leave_the_skill_out_when_the_holder_is_chosen(world: World) -> None:
+    copy_id = _reinforced_into_expenses(world)
+    world.store.detach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=copy_id, to_id="expenses"), tenant_id="acme")
+    world.store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=copy_id, to_id="legal"), tenant_id="acme")
+    world.ingest("second")
+    with pytest.raises(DecisionConflict) as refused:
+        world.decide("second", "reinforce", rule_id="rule-original", skill_ids=["expenses", "legal"])
+    # Legal is chosen already, so the advice is to leave expenses out of the choice.
+    assert "expenses" in str(refused.value) and "legal" in str(refused.value)
+    assert "leave expenses out" in str(refused.value) and "choose" not in str(refused.value)
+    assert world.store.get_rule("rule-original").corroboration_count == 2
+    # Without expenses the decision confirms the copy where it is.
+    world.decide("second", "reinforce", rule_id="rule-original", skill_ids=["legal"])
     assert world.store.get_rule(copy_id).corroboration_count == 3
 
 

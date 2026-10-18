@@ -175,8 +175,10 @@ def _reinforce(store: GraphStore, rule: Rule, chosen: list[str], *, transaction_
         if skill_id in owners:
             made.append(copied.id)
         elif owners:
-            raise DecisionConflict(f"the copy of this rule for {skill_id} is in {', '.join(owners)} now; "
-                                   f"choose {', '.join(owners)} to reinforce it there")
+            # A holding skill that is chosen already confirms the copy, so the way out is to leave this skill out.
+            advice = (f"leave {skill_id} out of the target skills" if set(owners) & set(chosen)
+                      else f"choose {', '.join(owners)} to reinforce it there")
+            raise DecisionConflict(f"the copy of this rule for {skill_id} is in {', '.join(owners)} now; {advice}")
         else:
             # The copy lost its skill (a source update took it out). The chosen skill takes it back.
             store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=copied.id, to_id=skill_id), tenant_id=tenant_id)
@@ -408,7 +410,13 @@ class ManualReviewService:
                         if placement.section_id not in {section["id"] for section in insertion_sections(store, placement.skill_id, tenant_id=tenant_id)}:
                             raise ManualDecisionError("Choose a rule section in the selected skill.")
                     rule_id = first_rule_id(txn.id)
-                    if store.get_rule(rule_id) is not None:
+                    # One id for each chosen skill. All are checked before the first write, so a rule
+                    # that holds one of them is never overwritten, two copies never share an id, and a
+                    # refusal writes nothing.
+                    copy_ids = {skill_id: rule_id if index == 0 else learning_copy_id(txn.id, SkillRef(tenant_id, skill_id))
+                                for index, skill_id in enumerate(skill_ids)}
+                    if (len(set(copy_ids.values())) < len(copy_ids)
+                            or any(store.get_rule(copy_id) is not None for copy_id in copy_ids.values())):
                         raise DecisionConflict("the correction already has a rule")
                     rule = None
                 else:
@@ -428,8 +436,7 @@ class ManualReviewService:
                     # each placed only in its own skill.
                     placements = {placement.skill_id: placement for placement in decision.placements}
                     made = []
-                    for index, skill_id in enumerate(skill_ids):
-                        copy_id = rule_id if index == 0 else learning_copy_id(txn.id, SkillRef(tenant_id, skill_id))
+                    for skill_id, copy_id in copy_ids.items():
                         copy = Rule(id=copy_id, body=body, tenant_id=tenant_id)
                         store.upsert_rule(copy)
                         store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=copy_id, to_id=txn.id), tenant_id=tenant_id)
