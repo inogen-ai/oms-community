@@ -12,6 +12,7 @@ class AdminAction(str, Enum):
     PUBLISH_RUN = 'publish_run'
     SETTINGS_CHANGED = 'settings_changed'
     SANITISATION_QUARANTINED = 'sanitisation_quarantined'
+    RULES_SPLIT = 'rules_split'
 
 
 @dataclass(frozen=True)

@@ -66,6 +66,7 @@ class Neo4jGraphStore:
                       "ON CREATE SET n.tenant_id=$tenant_id WITH n "
                       "WHERE n.tenant_id=$tenant_id SET")
         with self._driver.session() as session:
+            # SETs named properties only, so split_from and split_at survive every upsert.
             row = session.run(
                 "MERGE (n:Rule {id: $id}) "
                 f"{assignment} n:Entity, n.body=$body, n.tenant_id=$tenant_id, n.status=$status, "
@@ -84,17 +85,7 @@ class Neo4jGraphStore:
     def get_rule(self, rule_id: str) -> Rule | None:
         with self._driver.session() as session:
             rec = session.run("MATCH (n:Rule {id:$id}) RETURN n", id=rule_id).single()
-        if rec is None:
-            return None
-        n = rec["n"]
-        return Rule(
-            id=n["id"], body=n["body"], tenant_id=n["tenant_id"],
-            status=RuleStatus(n["status"]), corroboration_count=n["corroboration_count"],
-            reference_only=n.get("reference_only", False),
-            plane=Plane(n.get("plane", Plane.DATA.value)),
-            polarity=Polarity(n.get("polarity", "prescribe")),
-            created_at=n["created_at"].to_native(),
-        )
+        return self._rule_from_node(rec["n"]) if rec is not None else None
 
     def upsert_transaction(self, transaction: Transaction) -> None:
         with self._driver.session() as session:
@@ -1052,6 +1043,7 @@ class Neo4jGraphStore:
             return [self._rule_from_node(r["n"]) for r in recs]
 
     def _rule_from_node(self, n) -> Rule:
+        split_at = n.get("split_at")
         return Rule(
             id=n["id"], body=n["body"], tenant_id=n["tenant_id"],
             status=RuleStatus(n["status"]), corroboration_count=n["corroboration_count"],
@@ -1059,6 +1051,8 @@ class Neo4jGraphStore:
             plane=Plane(n.get("plane", Plane.DATA.value)),
             polarity=Polarity(n.get("polarity", "prescribe")),
             created_at=n["created_at"].to_native(),
+            split_from=n.get("split_from"),
+            split_at=split_at.to_native() if split_at is not None else None,
         )
 
 

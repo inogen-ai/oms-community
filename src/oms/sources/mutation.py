@@ -30,14 +30,17 @@ def _content(value):
     # Creation timestamps and embeddings are left out of the digest: neither
     # says anything about what the skill tells an agent, and both can differ
     # between two reads of the same content, which would make an unchanged
-    # skill look changed and refuse every guarded write against it.
+    # skill look changed and refuse every guarded write against it. A copy's
+    # split_from and split_at say where it came from and when, which is no more
+    # content than a creation time is, and json.dumps below cannot encode a
+    # datetime.
     if is_dataclass(value):
         return _content(asdict(value))
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, dict):
         return {key: _content(item) for key, item in sorted(value.items())
-                if key not in {"created_at", "embedding"}}
+                if key not in {"created_at", "embedding", "split_from", "split_at"}}
     if isinstance(value, (set, frozenset)):
         return sorted(_content(item) for item in value)
     if isinstance(value, (tuple, list)):

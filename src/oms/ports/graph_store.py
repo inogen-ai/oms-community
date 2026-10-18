@@ -15,6 +15,15 @@ class SectionMutabilityError(Exception):
     """Raised when an op targets a section whose mutability doesn't permit it."""
 
 
+class RuleOwnershipError(Exception):
+    """A write would give a rule a second skill, or place it in a section of a
+    skill it does not belong to. One rule, one skill: the write is refused and
+    nothing of it is stored.
+
+    Not a ValueError on purpose: a handler that turns ValueError into a
+    message for the person must not turn a broken writer into advice."""
+
+
 #: The transaction fields `clear_transaction_context` removes: the snippet of
 #: the contribution and the session context, all of them the contributor's
 #: agent's own words. Named once so both adapters clear the same set.

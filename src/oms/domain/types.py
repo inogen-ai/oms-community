@@ -118,6 +118,7 @@ class SkillVersionCause(str, Enum):
     SOURCE_INSTALL = "source_install"
     SOURCE_UPDATE = "source_update"
     SOURCE_UNDO = "source_undo"
+    RULE_SPLIT = "rule_split"
 
 
 class EdgeType(str, Enum):

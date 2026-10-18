@@ -206,8 +206,12 @@ def undo(service, context, request: UndoRequest, *, idempotency_key):
 
 def record(value):
     # Embeddings and creation timestamps are not content: a vector refresh or
-    # a re-read must not make a unit look changed and block its undo.
-    return TypeAdapter(type(value)).dump_python(value, mode="json", exclude={"embedding", "created_at"})
+    # a re-read must not make a unit look changed and block its undo. A rule's
+    # split_from and split_at are left out for the same reason, and because a
+    # receipt written before they existed holds neither key, so it would
+    # otherwise stop matching the rule it describes.
+    return TypeAdapter(type(value)).dump_python(
+        value, mode="json", exclude={"embedding", "created_at", "split_from", "split_at"})
 
 
 def capture_units(graph, local: LocalState, *, policy_version: str) -> dict[str, Evidence]:
