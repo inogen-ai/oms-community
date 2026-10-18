@@ -18,6 +18,7 @@ from oms.ports.contribution_policy import (
     POLICY_UNAVAILABLE, POLICY_UNAVAILABLE_MESSAGE,
     ContributionPolicyUnavailable, ContributionRefused,
 )
+from oms.ports.graph_store import RuleOwnershipError
 from oms.skills.service import InvalidSkillEdit, SkillExists, SkillNotFound
 from oms.skills.upload import UploadRefused
 from oms.web.capabilities import capabilities_for
@@ -114,7 +115,9 @@ def create_app(services, settings=None, *, route_bundles=None, advertised_capabi
                        expose_headers=["MCP-Session-Id", "Retry-After", "Content-Disposition"])
 
     async def invalid(request, exc):
-        status = 409 if isinstance(exc, (DecisionConflict, SkillExists)) else 422
+        # A rule the request would put in a second skill is refused by the
+        # store, and its message names the skills; the request wrote nothing.
+        status = 409 if isinstance(exc, (DecisionConflict, SkillExists, RuleOwnershipError)) else 422
         if isinstance(exc, (SkillNotFound,)):
             status = 404
         if isinstance(exc, (TenantMismatchError, UnauthorisedError)):
@@ -122,7 +125,7 @@ def create_app(services, settings=None, *, route_bundles=None, advertised_capabi
         return JSONResponse({"detail": str(exc)}, status)
     for exception in (ValueError, ManualDecisionError, DecisionConflict, SkillExists,
                       SkillNotFound, InvalidSkillEdit, UploadRefused, SanitisationError,
-                      TenantMismatchError, UnauthorisedError):
+                      TenantMismatchError, UnauthorisedError, RuleOwnershipError):
         app.add_exception_handler(exception, invalid)
 
     async def policy_outcome(request: Request, exc: Exception) -> JSONResponse:
