@@ -146,6 +146,28 @@ def test_a_source_claim_keeps_the_rule_and_a_claim_that_loses_is_a_warning(schem
     assert "    warning: blog tracks this rule from a source but gets a copy" in format_report(plans).splitlines()
 
 
+def test_a_rule_whose_id_sorts_between_a_shared_rule_and_its_copy_is_a_warning(schema_driver):
+    # Plan D1: a copy sorts where its original did unless the copy's skill
+    # holds a rule whose id extends the original's and sorts below the copy's.
+    store = split_world.build(schema_driver)
+    for rule_id, skill_id in (("rule-t-hint-abc", "blog"), ("rule-t-hint-abd", "press"),
+                              ("rule-t-hint-zzz", "email"), ("rule-t-hint-abe", None)):
+        store.upsert_rule(Rule(id=rule_id, body=f"The {rule_id} rule.", tenant_id="acme"))
+        if skill_id is not None:
+            store.attach_edge(Edge(EdgeType.BELONGS_TO, rule_id, skill_id), tenant_id="acme")
+    store.attach_rule(store.get_rule("rule-t-hint-abe"), "email-rules", order=9, tenant_id="acme")
+    plans = plan_split(schema_driver)
+    # press keeps the rule, so its sibling there sorts as before; email's
+    # sibling past the copy's suffix sorts as before too.
+    assert _by_rule(plans)["rule-t-hint"].warnings == (
+        "in blog, rule-t-hint-abc sorts between this rule and its copy, so where the two tie "
+        "they change places in the published file",
+        "in email, rule-t-hint-abe sorts between this rule and its copy, so where the two tie "
+        "they change places in the published file")
+    assert ("    warning: in blog, rule-t-hint-abc sorts between this rule and its copy, so where the two tie "
+            "they change places in the published file") in format_report(plans).splitlines()
+
+
 def test_another_tenants_item_naming_the_rule_is_not_counted(schema_driver):
     split_world.build(schema_driver)
     Neo4jReviewQueue(schema_driver).enqueue(ReviewItem(

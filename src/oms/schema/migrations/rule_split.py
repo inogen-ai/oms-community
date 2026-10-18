@@ -17,21 +17,27 @@ continues. A copy carries its original's text, places, order and id prefix
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from oms.adapters.neo4j.review_queue import Neo4jReviewQueue
 from oms.adapters.neo4j.store import Neo4jGraphStore
 from oms.community.matching import exact_text
-from oms.domain.copies import RuleSlot, split_rule_id
+from oms.domain.copies import CopyCause, RuleSlot, split_rule_id
 from oms.domain.identity import SkillRef
-from oms.domain.models import ReviewItem, Skill, Transaction
-from oms.domain.types import SignalType
+from oms.domain.models import Edge, ReviewItem, Skill, Transaction
+from oms.domain.types import EdgeType, SignalType, Verdict
+from oms.schema.metadata import SchemaCompatibilityError
+from oms.skills.copies import link_copies
 
 if TYPE_CHECKING:
+    from neo4j import ManagedTransaction
+
     from oms.ports.graph_store import GraphStore
     from oms.ports.source_store import SourceRepository
 
@@ -262,6 +268,21 @@ def _slots(store: Neo4jGraphStore, tenant: str, rule_id: str, skill_id: str) -> 
     return tuple(RuleSlot(row["section"], row["ord"], row["grp"]) for row in rows)
 
 
+def _prefix_siblings(store: Neo4jGraphStore, tenant: str, rule_id: str, copy: CopyPlan) -> tuple[str, ...]:
+    """The rules of the copy's skill whose ids sort between the rule's and the
+    copy's. A copy sorts where its original did only when there are none
+    (`oms.domain.copies`): where one of them ties with the copy, on count or
+    on placement order, the two change places in the skill's file."""
+    with store._driver.session() as session:
+        rows = list(session.run(
+            "MATCH (y:Rule {tenant_id:$tenant}) WHERE y.id STARTS WITH $rule AND y.id <> $rule "
+            "AND (EXISTS { MATCH (y)-[:BELONGS_TO]->(:Skill {id:$skill, tenant_id:$tenant}) } "
+            "OR EXISTS { MATCH (:Section {skill_id:$skill, tenant_id:$tenant})-[:CONTAINS_RULE]->(y) }) "
+            "RETURN y.id AS id", rule=rule_id, skill=copy.skill_id, tenant=tenant))
+    # Compared here, as the renderer's own sort compares them.
+    return tuple(sorted(row["id"] for row in rows if rule_id < row["id"] < copy.copy_id))
+
+
 def plan_rule(store: Neo4jGraphStore, sources: SourceRepository, pending: Sequence[ReviewItem],
               row: dict) -> RulePlan:
     tenant, rule_id = row["tenant"], row["rule"]
@@ -299,6 +320,9 @@ def plan_rule(store: Neo4jGraphStore, sources: SourceRepository, pending: Sequen
             moved.append(item.id)
     warnings = (*(f"{skill} tracks this rule from a source but gets a copy"
                   for skill in sorted(claimed - {keeper})),
+                *(f"in {copy.skill_id}, {sibling} sorts between this rule and its copy, so where the two tie "
+                  "they change places in the published file"
+                  for copy in copies for sibling in _prefix_siblings(store, tenant, rule_id, copy)),
                 *(f"open item {item.id} ({item.kind}) stays with the original in {keeper}"
                   for item in sorted(kept, key=lambda item: item.id)))
     return RulePlan(tenant_id=tenant, rule_id=rule_id, status=row["status"], keeper=keeper,
@@ -346,3 +370,216 @@ def format_report(plans: Sequence[TenantPlan]) -> str:
                          f"copies for {', '.join(copy.skill_id for copy in rule.copies)}")
             lines.extend(f"    warning: {warning}" for warning in rule.warnings)
     return "\n".join(lines) + "\n"
+
+
+def _bound(tx: ManagedTransaction) -> tuple[Neo4jGraphStore, Neo4jReviewQueue]:
+    from oms.community.repository import _TransactionDriver
+    driver = _TransactionDriver(tx)
+    return Neo4jGraphStore(driver), Neo4jReviewQueue(driver)
+
+
+def _skills_of(tx: ManagedTransaction, tenant: str, rule_id: str) -> tuple[list[str], frozenset[str]]:
+    """The rule's skills (its BELONGS_TO skills, then the skills whose
+    sections place it), and its BELONGS_TO skills alone."""
+    row = tx.run(
+        "MATCH (r:Rule {id:$rule, tenant_id:$tenant}) "
+        "OPTIONAL MATCH (r)-[:BELONGS_TO]->(s:Skill {tenant_id:$tenant}) "
+        "WITH r, collect(DISTINCT s.id) AS owned "
+        "OPTIONAL MATCH (p:Section {tenant_id:$tenant})-[:CONTAINS_RULE]->(r) "
+        # Neo4j 5 refuses an aggregate beside a variable it does not group on,
+        # so `owned` is carried as a grouping key first.
+        "WITH owned, collect(DISTINCT p.skill_id) AS placed "
+        "RETURN owned, owned + [x IN placed WHERE NOT x IN owned] AS skills",
+        rule=rule_id, tenant=tenant).single()
+    return (list(row["skills"]), frozenset(row["owned"])) if row is not None else ([], frozenset())
+
+
+def _as_planned(store: Neo4jGraphStore, plan: RulePlan, skills: Sequence[str], owned: frozenset[str]) -> bool:
+    """Whether the graph still holds what the plan read: the same skills and,
+    in each copy's skill, the same membership and the same places. A plan
+    that missed a membership or a place would leave the original in that
+    skill beside its copy, still shared, and every later split would refuse
+    it; one that missed a change would give the copy what the original no
+    longer had."""
+    if set(skills) != {plan.keeper, *(copy.skill_id for copy in plan.copies)}:
+        return False
+    for copy in plan.copies:
+        if (copy.skill_id in owned) is not copy.belongs:
+            return False
+        if copy.belongs and _membership(store, plan.tenant_id, plan.rule_id, copy.skill_id) != copy.belongs_properties:
+            return False
+        if _slots(store, plan.tenant_id, plan.rule_id, copy.skill_id) != copy.slots:
+            return False
+    return True
+
+
+# Rule-to-rule edges that follow the skill their other end is in (plan "Edge
+# treatment"). An incoming SUPERSEDES is the exception: it is copied to every
+# copy, so no member of a superseded rule comes back into force (D3).
+_FOLLOW = ("CONFLICTS_WITH", "RELATED_TO", "DUPLICATE_OF", "SUPERSEDES")
+
+
+def _move_relations(tx: ManagedTransaction, tenant: str, rule_id: str, keeper: str, copies: dict[str, str]) -> None:
+    members = [rule_id, *copies.values()]
+    for kind in _FOLLOW:
+        for outgoing in (True, False):
+            pattern = (f"(o:Rule {{id:$rule, tenant_id:$tenant}})-[e:{kind}]->(x:Rule {{tenant_id:$tenant}})"
+                       if outgoing else
+                       f"(x:Rule {{tenant_id:$tenant}})-[e:{kind}]->(o:Rule {{id:$rule, tenant_id:$tenant}})")
+            rows = list(tx.run(
+                f"MATCH {pattern} WHERE NOT x.id IN $members "
+                "OPTIONAL MATCH (x)-[:BELONGS_TO]->(xs:Skill {tenant_id:$tenant}) "
+                "WITH e, x, collect(DISTINCT xs.id) AS owned "
+                "OPTIONAL MATCH (p:Section {tenant_id:$tenant})-[:CONTAINS_RULE]->(x) "
+                "WITH e, x, owned, collect(DISTINCT p.skill_id) AS placed "
+                "RETURN elementId(e) AS edge, x.id AS other, properties(e) AS props, "
+                "owned + placed AS skills",
+                rule=rule_id, tenant=tenant, members=members))
+            for row in rows:
+                theirs = set(row["skills"])
+                if kind == "SUPERSEDES" and not outgoing:
+                    targets, remove = list(copies.values()), False
+                else:
+                    targets = [copy_id for skill, copy_id in copies.items() if skill in theirs]
+                    remove = bool(targets) and keeper not in theirs
+                for copy_id in targets:
+                    merge = f"MERGE (c)-[n:{kind}]->(x) " if outgoing else f"MERGE (x)-[n:{kind}]->(c) "
+                    tx.run("MATCH (c:Rule {id:$copy, tenant_id:$tenant}), (x:Rule {id:$other, tenant_id:$tenant}) "
+                           + merge + "SET n += $props",
+                           copy=copy_id, other=row["other"], tenant=tenant, props=dict(row["props"])).consume()
+                if remove:
+                    tx.run("MATCH ()-[e]->() WHERE elementId(e) = $edge DELETE e", edge=row["edge"]).consume()
+
+
+def _item_copy_id(item_id: str, rule_id: str, copy_id: str) -> str:
+    if rule_id in item_id:
+        return item_id.replace(rule_id, copy_id, 1)
+    digest = hashlib.sha256("\x1f".join((item_id, copy_id)).encode("utf-8")).hexdigest()[:12]
+    return f"{item_id}-split-{digest}"
+
+
+def _repoint(item: ReviewItem, rule_id: str, copy_id: str) -> ReviewItem:
+    other = item.other_id
+    if other == rule_id:
+        other = copy_id
+    elif other == f"rule:{rule_id}":
+        other = f"rule:{copy_id}"
+    return replace(item, subject_id=copy_id if item.subject_id == rule_id else item.subject_id,
+                   other_id=other, rule_id=copy_id if item.rule_id == rule_id else item.rule_id)
+
+
+def _treat_items(store: Neo4jGraphStore, queue: Neo4jReviewQueue, tenant: str, rule_id: str, keeper: str,
+                 copies: dict[str, str]) -> int:
+    resolvers = _Resolvers(store, tenant)
+    touched = 0
+    # In id order: where two items would give a copy one new id, the same one
+    # is written on every run.
+    for item in sorted(queue.pending(tenant), key=lambda item: item.id):
+        if not _names(item, rule_id):
+            continue
+        treatment = item_treatment(item, rule_id=rule_id, keeper=keeper, copy_skills=frozenset(copies),
+                                   **resolvers.callables())
+        for skill, action in sorted(treatment.items()):
+            copy_id = copies[skill]
+            if action == "copy":
+                queue.enqueue_once(replace(_repoint(item, rule_id, copy_id),
+                                           id=_item_copy_id(item.id, rule_id, copy_id)))
+            elif action == "pending":
+                queue.enqueue_once(ReviewItem(
+                    id=f"review-pending-{copy_id}", kind="pending_rule", subject_id=copy_id, other_id=None,
+                    verdict=Verdict.AMBIGUOUS,
+                    reason=f"Split from {rule_id}: this skill's copy waits for its own decision.",
+                    tenant_id=tenant, priority=item.priority, group_id=item.group_id,
+                    transaction_id=item.transaction_id, created_at=item.created_at))
+            elif action == "move":
+                queue.enqueue(_repoint(item, rule_id, copy_id))
+        touched += bool(treatment)
+    return touched
+
+
+def _lock(tx: ManagedTransaction) -> None:
+    """Take the metadata node's write lock before reading what will be written back."""
+    tx.run("MERGE (m:OMSMetadata {id:'core'}) SET m._migration_lock=true REMOVE m._migration_lock").consume()
+
+
+def _record(tx: ManagedTransaction, tenant: str, *, affected: Sequence[str], captures: Sequence[str], copies: int,
+            items: int, divergence: int = 0, rules: int = 1) -> None:
+    # Locked first: two splitters running at once must not lose each other's counts.
+    _lock(tx)
+    row = tx.run(f"MATCH (m:OMSMetadata {{id:'core'}}) RETURN m.{SPLIT_COUNTS} AS counts, "
+                 f"m.{PENDING_CAPTURES} AS pending").single()
+    counts = json.loads(row["counts"]) if row is not None and row["counts"] else {}
+    mine = counts.setdefault(tenant, {"shared_rules": 0, "copies": 0, "held_items": 0,
+                                      "divergence_closed": 0, "skills": []})
+    mine["shared_rules"] += rules
+    mine["copies"] += copies
+    mine["held_items"] += items
+    mine["divergence_closed"] += divergence
+    mine["skills"] = sorted(set(mine["skills"]) | set(affected))
+    # Sorted, so the list does not depend on the order rules were split in.
+    known = set(row["pending"] or []) if row is not None else set()
+    pending = sorted(known | {SkillRef(tenant, skill).storage_key for skill in captures})
+    tx.run(f"MATCH (m:OMSMetadata {{id:'core'}}) SET m.{SPLIT_COUNTS} = $counts, m.{PENDING_CAPTURES} = $pending",
+           counts=json.dumps(counts, sort_keys=True), pending=pending).consume()
+
+
+def split_rule(tx: ManagedTransaction, plan: RulePlan, *, now: datetime) -> bool:
+    """Split one shared rule in the caller's write transaction (spec 8.4, 8.5).
+
+    False when it is no longer shared (split by an earlier or a concurrent
+    run), so a resumed or repeated run changes nothing. A rule that is still
+    shared while one of its copies exists, or whose skills, memberships or
+    places differ from the plan, is refused before anything is written."""
+    tenant, rule_id = plan.tenant_id, plan.rule_id
+    if tx.run("MATCH (r:Rule {id:$id, tenant_id:$tenant}) SET r._split_lock = true REMOVE r._split_lock "
+              "RETURN r.id AS id", id=rule_id, tenant=tenant).single() is None:
+        return False
+    skills, owned = _skills_of(tx, tenant, rule_id)
+    if len(skills) <= 1:
+        return False
+    store, queue = _bound(tx)
+    written = [copy.copy_id for copy in plan.copies if store.get_rule(copy.copy_id) is not None]
+    if written:
+        raise SchemaCompatibilityError(f"rule {rule_id} is still shared but copies of it exist: {', '.join(written)}")
+    if not _as_planned(store, plan, skills, owned):
+        raise SchemaCompatibilityError(f"rule {rule_id} changed after the split was planned; run the split again")
+    copies: dict[str, str] = {}
+    for copy in plan.copies:
+        made = store.copy_rule(rule_id, copy.copy_id, tenant_id=tenant,
+                               skill_id=copy.skill_id if copy.belongs else None, slots=copy.slots,
+                               belongs_properties=copy.belongs_properties)
+        tx.run("MATCH (c:Rule {id:$id, tenant_id:$tenant}) SET c.split_from = $original, c.split_at = $now",
+               id=made.id, tenant=tenant, original=rule_id, now=now).consume()
+        if copy.belongs:
+            store.detach_edge(Edge(EdgeType.BELONGS_TO, rule_id, copy.skill_id), tenant_id=tenant)
+        for slot in copy.slots:
+            store.detach_rule(rule_id, slot.section_id, tenant_id=tenant)
+        copies[copy.skill_id] = made.id
+    _move_relations(tx, tenant, rule_id, plan.keeper, copies)
+    items = _treat_items(store, queue, tenant, rule_id, plan.keeper, copies)
+    link_copies(store, [rule_id, *copies.values()], cause=CopyCause.SPLIT, tenant_id=tenant)
+    _record(tx, tenant, affected=[plan.keeper, *copies], captures=list(copies), copies=len(copies), items=items)
+    logger.info("rule split: %s kept by %s; copies %s", rule_id, plan.keeper, ", ".join(copies.values()))
+    return True
+
+
+def close_divergence(tx: ManagedTransaction, tenant_id: str) -> int:
+    """Close the tenant's open divergence items (spec 2, decision 6): OMS no
+    longer raises them. The edges stay. One statement per item, which locks
+    the item first and changes it only while it is open, so two splitters
+    running at once close each item once and count it once."""
+    closed = 0
+    ids = [row["id"] for row in tx.run(
+        "MATCH (n:ReviewItem {tenant_id:$tenant, kind:'cross_skill_divergence', resolved:false}) "
+        "RETURN n.id AS id ORDER BY id", tenant=tenant_id)]
+    for item_id in ids:
+        row = tx.run("MATCH (n:ReviewItem {id:$id, tenant_id:$tenant}) "
+                     "SET n._claim = true REMOVE n._claim WITH n WHERE n.resolved = false "
+                     "SET n.reason=$reason, n.resolved=true, n.resolution=$resolution, "
+                     "n.decided_by=null, n.decided_at=$now RETURN n.id AS id",
+                     id=item_id, tenant=tenant_id, reason=NO_LONGER_RAISED_REASON,
+                     resolution=NO_LONGER_RAISED, now=datetime.now(timezone.utc)).single()
+        closed += row is not None
+    if closed:
+        _record(tx, tenant_id, affected=(), captures=(), copies=0, items=0, divergence=closed, rules=0)
+    return closed

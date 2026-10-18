@@ -24,6 +24,7 @@ Built through the core Neo4j store, with the shared parts written directly
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from oms.adapters.neo4j.review_queue import Neo4jReviewQueue
@@ -50,6 +51,27 @@ def mark_schema_2(driver) -> None:
         session.run("MATCH (m:OMSMetadata {id:'core'}) SET m.core_version=2, m.schema_version=2, "
                     "m.migration_state='ready', m.last_successful_migration='core-2', "
                     "m.minimum_core_version='1.5.0'").consume()
+
+
+# The times a run stamps, and the creation times two separate builds of the
+# world cannot share. Copies' own `created_at` is compared in the apply tests.
+_VOLATILE = frozenset({"split_at", "at", "decided_at", "created_at"})
+
+
+def normalised(driver) -> tuple:
+    """The graph as comparable data: nodes by labels and properties, edges by
+    type and end ids, without the times a run stamps."""
+    with driver.session() as session:
+        nodes = sorted((tuple(sorted(row["labels"])),
+                        json.dumps({k: v for k, v in row["props"].items() if k not in _VOLATILE},
+                                   sort_keys=True, default=str))
+                       for row in session.run("MATCH (n) RETURN labels(n) AS labels, properties(n) AS props"))
+        edges = sorted((row["type"], str(row["start"]), str(row["end"]),
+                        json.dumps(row["props"], sort_keys=True, default=str))
+                       for row in session.run(
+                           "MATCH (a)-[r]->(b) RETURN type(r) AS type, coalesce(a.storage_key, a.id) AS start, "
+                           "coalesce(b.storage_key, b.id) AS end, properties(r) AS props"))
+    return tuple(nodes), tuple(edges)
 
 
 def _skill(store, skill_id, *, tenant=TENANT, name=None, import_source_ref=None):
