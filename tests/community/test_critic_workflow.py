@@ -23,7 +23,7 @@ from oms.community.workflow import (
     ManualReviewService,
 )
 from oms.domain.auth import INGEST_WRITE
-from oms.domain.copies import COPY_KIND, copy_rule_id, learning_copy_id
+from oms.domain.copies import COPY_KIND, CopyCause, copy_rule_id, learning_copy_id
 from oms.domain.identity import SkillRef
 from oms.domain.models import Edge, Principal, ReviewItem, Rule, Section, Skill
 from oms.domain.types import (EdgeType, Mutability, Plane, RuleStatus, SectionKind, SignalType, SourceRuntime,
@@ -36,6 +36,7 @@ from oms.ports.workflow import DispositionResult, effective_state
 from oms.publish.parts import document_revision
 from oms.publish.publisher import Publisher
 from oms.security.injection import DeterministicScreen
+from oms.skills.copies import link_copies
 from oms.skills.history import SkillHistory
 
 
@@ -731,28 +732,32 @@ def test_creating_into_three_skills_joins_every_copy_to_every_other_as_manual(wo
     assert {_copy_cause(world.store, left, right) for left in members for right in members if left != right} == {"manual"}
 
 
-def test_the_copy_a_reinforcement_makes_joins_the_whole_group_as_manual(world: World) -> None:
+def test_the_copy_a_reinforcement_makes_joins_the_whole_group_and_leaves_the_old_pair_as_it_was(world: World) -> None:
     for skill_id in ("expenses", "audit", "legal"):
         world.skill(skill_id)
     world.ingest("original")
-    world.decide("original", skill_ids=["audit", "legal"])
+    world.decide("original", skill_ids=["audit"])
+    # An earlier writer joined the rule to a copy in legal, with another cause.
+    legal = copy_rule_id("rule-original", SkillRef("acme", "legal"))
+    world.store.copy_rule("rule-original", legal, tenant_id="acme", skill_id="legal")
+    link_copies(world.store, ["rule-original", legal], cause=CopyCause.LEARNING, tenant_id="acme")
     world.ingest("again")
     result = world.decide("again", "reinforce", rule_id="rule-original", skill_ids=["expenses"])
     # The decision reports the rule it confirmed, not the copy it made.
     assert result.rule_id == "rule-original"
     assert world.store.get_transaction("again").workflow_rule_id == "rule-original"
-    legal = learning_copy_id("original", SkillRef("acme", "legal"))
     expenses = copy_rule_id("rule-original", SkillRef("acme", "expenses"))
     for rule_id, others in (("rule-original", (expenses, legal)), (legal, ("rule-original", expenses)),
                             (expenses, ("rule-original", legal))):
         assert world.store.copy_groups([rule_id], tenant_id="acme") == {rule_id: tuple(sorted(others))}
-    assert _copy_cause(world.store, expenses, legal) == "manual"
-    assert _copy_cause(world.store, legal, expenses) == "manual"
-    # The pair the learning made together keeps the cause it was written with.
-    assert _copy_cause(world.store, "rule-original", legal) == "manual"
+    # The new pairs are manual. The old pair keeps the cause it was written with.
+    new_pairs = [(expenses, legal), (legal, expenses), (expenses, "rule-original"), ("rule-original", expenses)]
+    assert {_copy_cause(world.store, left, right) for left, right in new_pairs} == {"manual"}
+    assert {_copy_cause(world.store, "rule-original", legal), _copy_cause(world.store, legal, "rule-original")} == {
+        "learning"}
 
 
-def test_reinforcing_twice_into_the_same_other_skill_keeps_one_copy_there(world: World) -> None:
+def test_reinforcing_twice_into_the_same_other_skill_confirms_its_copy_the_second_time(world: World) -> None:
     world.skill("expenses")
     world.skill("audit")
     world.ingest("original")
@@ -760,9 +765,143 @@ def test_reinforcing_twice_into_the_same_other_skill_keeps_one_copy_there(world:
     for transaction_id in ("first", "second"):
         world.ingest(transaction_id)
         world.decide(transaction_id, "reinforce", rule_id="rule-original", skill_ids=["expenses"])
-    assert [rule.id for rule in world.store.rules_for_skill("expenses", tenant_id="acme")] == [
-        copy_rule_id("rule-original", SkillRef("acme", "expenses"))]
+    copy_id = copy_rule_id("rule-original", SkillRef("acme", "expenses"))
+    assert [rule.id for rule in world.store.rules_for_skill("expenses", tenant_id="acme")] == [copy_id]
     assert world.store.get_rule("rule-original").corroboration_count == 3
+    # The skill the second reinforcement named counts it too, and the lineage of its copy says so.
+    assert world.store.get_rule(copy_id).corroboration_count == 3
+    assert {t.id for t in world.store.lineage(copy_id)} == {"original", "first", "second"}
+    assert world.store.rule_ids_derived_from("second", tenant_id="acme") == ["rule-original", copy_id]
+
+
+def test_reinforcing_into_a_skill_that_holds_a_copy_confirms_that_copy(world: World) -> None:
+    world.skill("expenses")
+    world.skill("audit")
+    world.ingest("two-skills")
+    world.decide("two-skills", skill_ids=["expenses", "audit"])
+    held = learning_copy_id("two-skills", SkillRef("acme", "expenses"))
+    world.ingest("again")
+    result = world.decide("again", "reinforce", rule_id="rule-two-skills", skill_ids=["audit", "expenses"])
+    assert result.rule_id == "rule-two-skills"
+    # Each skill keeps the one rule it has. No skill gets a second copy.
+    assert [rule.id for rule in world.store.rules_for_skill("audit", tenant_id="acme")] == ["rule-two-skills"]
+    assert [rule.id for rule in world.store.rules_for_skill("expenses", tenant_id="acme")] == [held]
+    assert world.store.copy_groups(["rule-two-skills"], tenant_id="acme") == {"rule-two-skills": (held,)}
+    # Both rules take the evidence, in the count and in the lineage.
+    assert [world.store.get_rule(rule_id).corroboration_count for rule_id in ("rule-two-skills", held)] == [2, 2]
+    assert [{t.id for t in world.store.lineage(rule_id)} for rule_id in ("rule-two-skills", held)] == [
+        {"two-skills", "again"}, {"two-skills", "again"}]
+    # Both skills changed, so each is versioned again.
+    assert [len(world.store.skill_versions("acme", skill_id)) for skill_id in ("audit", "expenses")] == [2, 2]
+
+
+def test_reinforcing_a_copy_into_the_skill_of_its_original_confirms_the_original(world: World) -> None:
+    world.skill("expenses")
+    world.skill("audit")
+    world.ingest("two-skills")
+    world.decide("two-skills", skill_ids=["expenses", "audit"])
+    held = learning_copy_id("two-skills", SkillRef("acme", "expenses"))
+    world.ingest("again")
+    result = world.decide("again", "reinforce", rule_id=held, skill_ids=["audit"])
+    assert result.rule_id == held
+    assert [rule.id for rule in world.store.rules_for_skill("audit", tenant_id="acme")] == ["rule-two-skills"]
+    assert [rule.id for rule in world.store.rules_for_skill("expenses", tenant_id="acme")] == [held]
+    assert [world.store.get_rule(rule_id).corroboration_count for rule_id in ("rule-two-skills", held)] == [2, 2]
+    assert {t.id for t in world.store.lineage("rule-two-skills")} == {"two-skills", "again"}
+
+
+def test_a_copy_a_skill_holds_is_confirmed_whatever_its_wording_is_now(world: World) -> None:
+    world.skill("expenses")
+    world.skill("audit")
+    world.ingest("original")
+    world.decide("original", skill_ids=["audit", "expenses"])
+    held = learning_copy_id("original", SkillRef("acme", "expenses"))
+    reworded = world.store.get_rule(held)
+    reworded.body = "Keep every receipt for an expense claim."
+    world.store.upsert_rule(reworded)
+    world.ingest("again")
+    world.decide("again", "reinforce", rule_id="rule-original", skill_ids=["audit", "expenses"])
+    assert [rule.id for rule in world.store.rules_for_skill("expenses", tenant_id="acme")] == [held]
+    assert world.store.get_rule(held).body == "Keep every receipt for an expense claim."
+    assert world.store.get_rule(held).corroboration_count == 2
+
+
+def test_a_retracted_copy_a_skill_holds_takes_the_evidence_and_stays_retracted(world: World) -> None:
+    world.skill("expenses")
+    world.skill("audit")
+    world.ingest("original")
+    world.decide("original", skill_ids=["audit", "expenses"])
+    held = learning_copy_id("original", SkillRef("acme", "expenses"))
+    retracted = world.store.get_rule(held)
+    retracted.status = RuleStatus.RETIRED
+    world.store.upsert_rule(retracted)
+    world.ingest("again")
+    world.decide("again", "reinforce", rule_id="rule-original", skill_ids=["audit", "expenses"])
+    # The retraction stands. The skill gets no new copy, and the copy it holds counts the evidence.
+    assert [rule.id for rule in world.store.rules_for_skill("expenses", tenant_id="acme")] == [held]
+    assert world.store.get_rule(held).status is RuleStatus.RETIRED
+    assert world.store.get_rule(held).corroboration_count == 2
+
+
+def test_an_active_member_takes_the_evidence_before_a_retired_one(world: World) -> None:
+    world.skill("expenses")
+    world.skill("audit")
+    world.ingest("original")
+    world.decide("original", skill_ids=["audit"])
+    # The skill holds two members of the group: a retired one whose id sorts first, and an active one.
+    retired = world.store.copy_rule("rule-original", "rule-original-copy-0001", tenant_id="acme",
+                                    skill_id="expenses", status=RuleStatus.RETIRED)
+    active = world.store.copy_rule("rule-original", "rule-original-copy-0002", tenant_id="acme",
+                                   skill_id="expenses")
+    link_copies(world.store, ["rule-original", retired.id, active.id], cause=CopyCause.REVIEW, tenant_id="acme")
+    world.ingest("again")
+    world.decide("again", "reinforce", rule_id="rule-original", skill_ids=["expenses"])
+    assert world.store.get_rule(active.id).corroboration_count == 2
+    assert world.store.get_rule(retired.id).corroboration_count == 1
+    assert world.store.copy_groups(["rule-original"], tenant_id="acme") == {
+        "rule-original": (retired.id, active.id)}
+
+
+def test_one_reinforcement_confirms_the_copies_held_and_copies_into_the_other_skills(world: World) -> None:
+    for skill_id in ("expenses", "audit", "legal"):
+        world.skill(skill_id)
+    world.ingest("original")
+    world.decide("original", skill_ids=["audit", "expenses"])
+    held = learning_copy_id("original", SkillRef("acme", "expenses"))
+    world.ingest("again")
+    world.decide("again", "reinforce", rule_id="rule-original", skill_ids=["audit", "expenses", "legal"])
+    made = copy_rule_id("rule-original", SkillRef("acme", "legal"))
+    assert {skill_id: [rule.id for rule in world.store.rules_for_skill(skill_id, tenant_id="acme")]
+            for skill_id in ("audit", "expenses", "legal")} == {
+        "audit": ["rule-original"], "expenses": [held], "legal": [made]}
+    assert [world.store.get_rule(rule_id).corroboration_count for rule_id in ("rule-original", held, made)] == [
+        2, 2, 2]
+    members = ["rule-original", held, made]
+    assert world.store.copy_groups(members, tenant_id="acme") == {
+        rule_id: tuple(sorted(set(members) - {rule_id})) for rule_id in members}
+    assert {_copy_cause(world.store, left, right) for left in members for right in members if left != right} == {
+        "manual"}
+
+
+@pytest.mark.parametrize("chosen", [["audit"], ["audit", "expenses"]])
+def test_a_reinforcement_that_makes_no_copy_writes_no_copy_edge(world: World, monkeypatch: pytest.MonkeyPatch,
+                                                                chosen: list[str]) -> None:
+    for skill_id in ("expenses", "audit", "legal"):
+        world.skill(skill_id)
+    world.ingest("original")
+    world.decide("original", skill_ids=["audit", "expenses", "legal"])
+    writes: list[tuple[object, ...]] = []
+    store_class = type(world.store)
+    write = store_class.upsert_cross_skill_edge
+
+    def counted(self: object, *args: object, **kwargs: object) -> None:
+        writes.append(args)
+        write(self, *args, **kwargs)
+
+    monkeypatch.setattr(store_class, "upsert_cross_skill_edge", counted)
+    world.ingest("again")
+    world.decide("again", "reinforce", rule_id="rule-original", skill_ids=chosen)
+    assert writes == []
 
 
 @pytest.mark.parametrize("chosen,copied_to", [(["audit"], []), (["expenses", "audit"], ["expenses"])])
@@ -779,6 +918,24 @@ def test_reinforcing_a_rule_in_no_skill_moves_it_into_the_first_chosen_skill(wor
         assert [s.id for s in world.store.skills_for_rule(copy_id, tenant_id="acme")] == [skill_id]
         assert world.store.get_rule(copy_id).corroboration_count == 2
     assert world.store.copy_groups(["loose"], tenant_id="acme") == ({"loose": tuple(copies)} if copies else {})
+
+
+@pytest.mark.parametrize("chosen,home", [(["audit", "expenses"], ["expenses"]), (["audit"], [])])
+def test_a_rule_in_no_skill_does_not_move_into_a_skill_that_holds_its_copy(world: World, chosen: list[str],
+                                                                           home: list[str]) -> None:
+    world.skill("expenses")
+    world.skill("audit")
+    world.store.upsert_rule(Rule(id="loose", body="Keep receipts for expense claims.", tenant_id="acme"))
+    held = copy_rule_id("loose", SkillRef("acme", "audit"))
+    world.store.copy_rule("loose", held, tenant_id="acme", skill_id="audit")
+    link_copies(world.store, ["loose", held], cause=CopyCause.REVIEW, tenant_id="acme")
+    world.ingest("settling")
+    world.decide("settling", "reinforce", rule_id="loose", skill_ids=chosen)
+    # It moves into the first chosen skill that holds no copy of it, or stays where it is.
+    assert [s.id for s in world.store.skills_for_rule("loose", tenant_id="acme")] == home
+    assert [rule.id for rule in world.store.rules_for_skill("audit", tenant_id="acme")] == [held]
+    assert [world.store.get_rule(rule_id).corroboration_count for rule_id in ("loose", held)] == [2, 2]
+    assert world.store.copy_groups(["loose"], tenant_id="acme") == {"loose": (held,)}
 
 
 def _rules_section(world: World, skill_id: str) -> str:

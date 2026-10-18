@@ -14,10 +14,11 @@ from oms.domain.models import Edge, ReviewItem, Rule
 from oms.domain.types import EdgeType, Plane, RuleStatus, SignalType, SkillVersionCause, Verdict
 from oms.ports.workflow import DispositionResult, TERMINAL_STATES, effective_state
 from oms.ports.custody import RetentionDisabled
+from oms.ports.graph_store import GraphStore
 from oms.publish.publisher import Publisher
 from oms.publish.parts import document_revision
 from oms.security.injection import DeterministicScreen
-from oms.skills.copies import link_copies
+from oms.skills.copies import copy_group, link_copies
 from oms.skills.history import SkillHistory
 from oms.skills.service import SkillAdminService
 
@@ -115,6 +116,56 @@ def _enqueue(store, queue, transaction, payloads):
     transaction.workflow_state = state
     store.upsert_transaction(transaction)
     return DispositionResult(transaction.id, state)
+
+
+def _reinforce(store: GraphStore, rule: Rule, chosen: list[str], *, transaction_id: str,
+               tenant_id: str) -> list[str]:
+    """Reinforce a rule for the chosen skills (one rule, one skill, spec 5.2).
+
+    The rule is confirmed in its own skill. A chosen skill that already holds
+    a member of the rule's copy group confirms that member, whatever its
+    wording or status is now, and never gets a second copy. When a skill holds
+    several members, an active one comes first. Any other chosen skill gets a
+    copy of the rule. A rule that belongs to no skill moves into the first
+    chosen skill that holds no member of its group. Returns the skills that
+    changed, sorted."""
+    rule_id = rule.id
+    rule.corroboration_count += 1
+    store.upsert_rule(rule)
+    store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule_id, to_id=transaction_id), tenant_id=tenant_id)
+    home = {skill.id for skill in store.skills_for_rule(rule_id, tenant_id=tenant_id)}
+    targets = [skill_id for skill_id in chosen if skill_id not in home]
+    if not targets:
+        return sorted(home)
+    # The members of the rule's group, listed under the skill each belongs to.
+    held: dict[str, list[str]] = {}
+    members = [member for member in copy_group(store, rule_id, tenant_id=tenant_id) if member != rule_id]
+    for member, skills in store.skills_by_rule(members, tenant_id=tenant_id).items():
+        for skill in skills:
+            held.setdefault(skill.id, []).append(member)
+    if not home:
+        # A rule in no skill gets a home, but never beside a copy of itself.
+        mover = next((skill_id for skill_id in targets if skill_id not in held), None)
+        if mover is not None:
+            store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id=mover), tenant_id=tenant_id)
+            home = {mover}
+            targets.remove(mover)
+    made = []
+    for skill_id in targets:
+        holders = [found for member in held.get(skill_id, []) if (found := store.get_rule(member)) is not None]
+        if holders:
+            # The skill has the rule already, so it takes the evidence. An active member comes first.
+            holder = min(holders, key=lambda candidate: (candidate.status is not RuleStatus.ACTIVE, candidate.id))
+            holder.corroboration_count += 1
+            store.upsert_rule(holder)
+            store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=holder.id, to_id=transaction_id),
+                              tenant_id=tenant_id)
+        else:
+            made.append(store.copy_rule(rule_id, copy_rule_id(rule_id, SkillRef(tenant_id, skill_id)),
+                                        tenant_id=tenant_id, skill_id=skill_id).id)
+    if made:
+        link_copies(store, [rule_id, *made], cause=CopyCause.MANUAL, tenant_id=tenant_id)
+    return sorted(home | set(targets))
 
 
 class ManualReviewDisposition:
@@ -370,21 +421,7 @@ class ManualReviewService:
                         made.append(copy_id)
                     link_copies(store, made, cause=CopyCause.MANUAL, tenant_id=tenant_id)
                 else:
-                    # Confirmed in its own skill; every other chosen skill gets a copy.
-                    rule.corroboration_count += 1
-                    store.upsert_rule(rule)
-                    store.attach_edge(Edge(type=EdgeType.DERIVED_FROM, from_id=rule_id, to_id=txn.id), tenant_id=tenant_id)
-                    home = {s.id for s in store.skills_for_rule(rule_id, tenant_id=tenant_id)}
-                    targets = [skill_id for skill_id in skill_ids if skill_id not in home]
-                    if not home and targets:
-                        # An unanchored rule is moved into the first chosen skill.
-                        store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=rule_id, to_id=targets[0]),
-                                          tenant_id=tenant_id)
-                        home, targets = {targets[0]}, targets[1:]
-                    made = [store.copy_rule(rule_id, copy_rule_id(rule_id, SkillRef(tenant_id, skill_id)),
-                                            tenant_id=tenant_id, skill_id=skill_id).id for skill_id in targets]
-                    link_copies(store, [rule_id, *made], cause=CopyCause.MANUAL, tenant_id=tenant_id)
-                    skill_ids = sorted(home | set(targets))
+                    skill_ids = _reinforce(store, rule, skill_ids, transaction_id=txn.id, tenant_id=tenant_id)
             if decision.action == "reject":
                 store.mark_compile_failed(txn.id, "rejected by local operator", fault=False)
             txn.workflow_state = "rejected" if decision.action == "reject" else "applied"
