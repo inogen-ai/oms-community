@@ -160,6 +160,9 @@ def test_the_split_versions_are_recorded_once_with_their_cause(schema_driver):
     changed = {(tenant, skill.id) for tenant in ("acme", "beta") for skill in store.skills_for_tenant(tenant)
                if store.latest_skill_version(tenant, skill.id).cause is SkillVersionCause.RULE_SPLIT}
     assert changed == {("acme", "blog"), ("acme", "email"), ("acme", "press"), ("beta", "email")}
+    # In the words the skill's history label uses for the same event.
+    assert {store.latest_skill_version(tenant, skill).detail for tenant, skill in changed} == {
+        "the rules shared between skills were split into one copy per skill"}
     assert rule_split.pending_split_captures(schema_driver) == ()
     assert rule_split.capture_pending_split_versions(schema_driver, history) == 0
 

@@ -807,7 +807,7 @@ def capture_pending_split_versions(driver, history: SkillHistory, *, tenant_id: 
             continue
         try:
             history.capture_required(ref.skill_id, ref.tenant_id, cause=SkillVersionCause.RULE_SPLIT,
-                                     detail="rules shared with other skills became one copy per skill")
+                                     detail="the rules shared between skills were split into one copy per skill")
             with driver.session() as session:
                 session.run(f"MATCH (m:OMSMetadata {{id:'core'}}) SET m.{PENDING_CAPTURES} = "
                             f"[key IN coalesce(m.{PENDING_CAPTURES}, []) WHERE key <> $key]",

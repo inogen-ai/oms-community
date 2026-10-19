@@ -874,6 +874,10 @@ test("preview bounds also enforce byte limits for multibyte source text", () => 
   assert.ok(!result.text.includes("�"));
 });
 
+test("history names the rule split in the words every screen uses for it", () => {
+  assert.equal(historySentence({ cause: "rule_split" }), "Split the rules shared between skills into one copy per skill");
+});
+
 test("history distinguishes source evidence from ordinary document restoration", () => {
   assert.equal(historySentence({ cause: "source_update" }), "Applied a source update");
   assert.equal(historySentence({ cause: "restore" }), "Restored an earlier version");
