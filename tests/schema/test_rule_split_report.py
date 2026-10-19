@@ -1,5 +1,6 @@
 """The split plan and the report-only command (spec 8.6): read-only, per tenant."""
 import pytest
+from neo4j import Driver
 
 from oms.adapters.neo4j.review_queue import Neo4jReviewQueue
 from oms.domain.copies import split_rule_id
@@ -97,7 +98,8 @@ def test_the_command_prints_the_report(schema_driver, monkeypatch, capsys):
     assert "Tenant beta: 1 shared rule" in capsys.readouterr().out
 
 
-def test_the_command_stops_with_the_named_refusal_of_a_rule_it_cannot_plan(schema_driver, monkeypatch, capsys):
+def test_the_command_stops_with_the_named_refusal_of_a_rule_it_cannot_plan(
+        schema_driver: Driver, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     from oms.schema import split_rules
     split_world.build(schema_driver)
     with schema_driver.session() as session:

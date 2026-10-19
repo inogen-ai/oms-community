@@ -38,7 +38,7 @@ def test_otherwise_the_lowest_storage_key_keeps_it():
                          source_claimed=frozenset({"press", "email"})) == ("blog", "lowest_key")
 
 
-def test_with_no_skill_to_keep_it_the_choice_is_refused_by_name():
+def test_with_no_skill_to_keep_it_the_choice_is_refused_by_name() -> None:
     # A damaged graph: none of a shared rule's skills has a Skill node, so
     # there is nothing to choose from. A named refusal, never an IndexError.
     with pytest.raises(SchemaCompatibilityError, match="none of its skills exists"):

@@ -3,6 +3,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from neo4j import Driver
 
 from oms.domain.types import SkillVersionCause
 from oms.schema import metadata as schema_metadata
@@ -228,7 +229,7 @@ def test_a_rule_the_split_refuses_is_named_with_its_repair_and_the_next_start_fi
     assert split_world.normalised(schema_driver) == expected
 
 
-def _place_only_in_deleted_skills(driver, rule_id: str) -> None:
+def _place_only_in_deleted_skills(driver: Driver, rule_id: str) -> None:
     """A hand-edited graph: a rule in no skill that sections of two deleted
     skills still place, so none of its skills has a Skill node."""
     with driver.session() as session:
@@ -240,7 +241,8 @@ def _place_only_in_deleted_skills(driver, rule_id: str) -> None:
                     "CREATE (s)-[:CONTAINS_RULE {order:1}]->(r)", rule=rule_id).consume()
 
 
-def test_a_shared_rule_none_of_whose_skills_exists_is_refused_by_name_and_the_next_start_finishes(schema_driver):
+def test_a_shared_rule_none_of_whose_skills_exists_is_refused_by_name_and_the_next_start_finishes(
+        schema_driver: Driver) -> None:
     expected = _expected(schema_driver)
     split_world.build(schema_driver)
     _place_only_in_deleted_skills(schema_driver, "rule-lost")
