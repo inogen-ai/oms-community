@@ -128,7 +128,13 @@ class _ReadOnlyDriver:
 
 def choose_keeper(skills: Sequence[Skill], *, hint: str | None, import_source_ref: str | None,
                   source_claimed: frozenset[str]) -> tuple[str, str]:
-    """(skill id, reason): the skill that keeps a shared rule's id (spec 8.3, plan D2)."""
+    """(skill id, reason): the skill that keeps a shared rule's id (spec 8.3, plan D2).
+
+    Refused when there is no skill to choose: none of the rule's skills
+    exists (a damaged graph). `plan_rule` names the rule and its repair
+    before this is reached."""
+    if not skills:
+        raise SchemaCompatibilityError("none of its skills exists, so no skill can keep this rule")
     ordered = sorted(skills, key=lambda skill: SkillRef(skill.tenant_id, skill.id).storage_key)
     if hint:
         wanted = exact_text(hint)
@@ -303,6 +309,16 @@ def plan_rule(store: Neo4jGraphStore, sources: SourceRepository, pending: Sequen
     tenant, rule_id = row["tenant"], row["rule"]
     skills = [skill for skill in (store.get_skill(skill_id, tenant_id=tenant) for skill_id in row["skills"])
               if skill is not None]
+    if not skills:
+        # Only sections of deleted skills place it, so no skill can keep it
+        # and no copy can go anywhere. Planning stops here, before the split
+        # writes anything, and names the rule and its repair.
+        places = ", ".join(f"section {section} of skill {skill}"
+                           for section, skill in _placements_without_skill(store, tenant, rule_id))
+        raise SchemaCompatibilityError(
+            f"rule {rule_id} in tenant {tenant} is placed in {places or 'sections of skills that do not exist'}, "
+            "and none of those skills exists, so the split cannot choose a skill to keep it: delete those "
+            "placements or restore one of those skills")
     first = _earliest(store.lineage(rule_id), tenant)
     claimed = frozenset(skill.id for skill in skills if any(
         rule_id in claim.entity_ids for claim in sources.ownership_for_skill(SkillRef(tenant, skill.id))))
@@ -654,7 +670,9 @@ def split_everything(driver, *, now: datetime | None = None) -> None:
 
     A rule the split refuses (a hand-edited graph) does not stop the others.
     Every refusal is named in one error at the end, and the graph stays at
-    `rule_splitting`, so the next start continues once the data is repaired."""
+    `rule_splitting`, so the next start continues once the data is repaired.
+    A shared rule none of whose skills exists cannot be planned at all, so
+    planning stops with its named refusal before anything is written."""
     now = now or datetime.now(timezone.utc)
     refused: list[str] = []
     for plan in plan_split(driver):

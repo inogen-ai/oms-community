@@ -1,8 +1,11 @@
 """Which skill keeps a shared rule's id, and what happens to each open item (spec 8.3, 8.5; plan D2, D4)."""
 from datetime import datetime, timezone
 
+import pytest
+
 from oms.domain.models import ReviewItem, Skill, Transaction
 from oms.domain.types import SignalType, SourceRuntime, Verdict
+from oms.schema.metadata import SchemaCompatibilityError
 from oms.schema.migrations.rule_split import _earliest, _Resolvers, choose_keeper, item_treatment
 
 
@@ -33,6 +36,13 @@ def test_the_one_skill_a_source_tracks_it_in_keeps_it():
 def test_otherwise_the_lowest_storage_key_keeps_it():
     assert choose_keeper(SKILLS, hint=None, import_source_ref=None,
                          source_claimed=frozenset({"press", "email"})) == ("blog", "lowest_key")
+
+
+def test_with_no_skill_to_keep_it_the_choice_is_refused_by_name():
+    # A damaged graph: none of a shared rule's skills has a Skill node, so
+    # there is nothing to choose from. A named refusal, never an IndexError.
+    with pytest.raises(SchemaCompatibilityError, match="none of its skills exists"):
+        choose_keeper([], hint="press office", import_source_ref=None, source_claimed=frozenset())
 
 
 def _item(kind, **fields):

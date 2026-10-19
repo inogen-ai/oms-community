@@ -225,6 +225,40 @@ def test_a_rule_the_split_refuses_is_named_with_its_repair_and_the_next_start_fi
     assert split_world.normalised(schema_driver) == expected
 
 
+def _place_only_in_deleted_skills(driver, rule_id: str) -> None:
+    """A hand-edited graph: a rule in no skill that sections of two deleted
+    skills still place, so none of its skills has a Skill node."""
+    with driver.session() as session:
+        session.run("CREATE (r:Rule:Entity {id:$rule, tenant_id:'acme', body:'A rule of two lost skills.', "
+                    "status:'active', corroboration_count:1, created_at:datetime()}) "
+                    "WITH r UNWIND ['ghost-a', 'ghost-b'] AS skill "
+                    "CREATE (s:Section:Entity {id: skill + '-rules', skill_id: skill, tenant_id:'acme', "
+                    "kind:'rules', heading:'Rules', order:1, mutability:'system_aggregated'}) "
+                    "CREATE (s)-[:CONTAINS_RULE {order:1}]->(r)", rule=rule_id).consume()
+
+
+def test_a_shared_rule_none_of_whose_skills_exists_is_refused_by_name_and_the_next_start_finishes(schema_driver):
+    expected = _expected(schema_driver)
+    split_world.build(schema_driver)
+    _place_only_in_deleted_skills(schema_driver, "rule-lost")
+    with pytest.raises(SchemaCompatibilityError) as planned:
+        rule_split.plan_split(schema_driver)
+    with pytest.raises(SchemaCompatibilityError) as refused:
+        _split(schema_driver)
+    for message in (str(planned.value), str(refused.value)):
+        assert "rule rule-lost in tenant acme" in message
+        assert "section ghost-a-rules of skill ghost-a" in message and "section ghost-b-rules of skill ghost-b" in message
+        assert "delete those placements or restore one of those skills" in message
+    # Stopped before any rule was split, at a stage the next start resumes.
+    assert _metadata(schema_driver)["migration_state"] == "rule_splitting"
+    with schema_driver.session() as session:
+        assert session.run("MATCH (r:Rule) WHERE r.split_from IS NOT NULL RETURN count(r) AS n").single()["n"] == 0
+        session.run("MATCH (s:Section) WHERE s.id IN ['ghost-a-rules', 'ghost-b-rules'] DETACH DELETE s").consume()
+        session.run("MATCH (r:Rule {id:'rule-lost'}) DETACH DELETE r").consume()
+    assert _split(schema_driver)["migration_state"] == "ready"
+    assert split_world.normalised(schema_driver) == expected
+
+
 def test_community_start_up_refuses_a_graph_the_split_cannot_finish_and_starts_once_repaired(schema_driver,
                                                                                                tmp_path):
     from oms.community.app import build_community

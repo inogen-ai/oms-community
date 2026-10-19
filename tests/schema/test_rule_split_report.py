@@ -97,6 +97,28 @@ def test_the_command_prints_the_report(schema_driver, monkeypatch, capsys):
     assert "Tenant beta: 1 shared rule" in capsys.readouterr().out
 
 
+def test_the_command_stops_with_the_named_refusal_of_a_rule_it_cannot_plan(schema_driver, monkeypatch, capsys):
+    from oms.schema import split_rules
+    split_world.build(schema_driver)
+    with schema_driver.session() as session:
+        # A rule in no skill that sections of two deleted skills place.
+        session.run("CREATE (r:Rule:Entity {id:'rule-lost', tenant_id:'acme', body:'Lost.', status:'active', "
+                    "corroboration_count:1, created_at:datetime()}) "
+                    "WITH r UNWIND ['ghost-a', 'ghost-b'] AS skill "
+                    "CREATE (s:Section:Entity {id: skill + '-rules', skill_id: skill, tenant_id:'acme', "
+                    "kind:'rules', heading:'Rules', order:1, mutability:'system_aggregated'}) "
+                    "CREATE (s)-[:CONTAINS_RULE {order:1}]->(r)").consume()
+    before = _snapshot(schema_driver)
+    monkeypatch.setattr(split_rules, "_driver", lambda: _Unclosed(schema_driver))
+    assert split_rules.main(["--report"]) == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("Rule split report: nothing has been changed. The report stopped because rule "
+                          "rule-lost in tenant acme")
+    assert "Traceback" not in err
+    assert _snapshot(schema_driver) == before
+
+
 def test_a_rule_placed_in_two_skills_it_does_not_belong_to_is_shared_and_a_rule_at_home_is_not(schema_driver):
     store = split_world.build(schema_driver)
     for rule_id in ("rule-unowned", "rule-placed-once", "rule-at-home"):

@@ -5,13 +5,16 @@
 Reads the Neo4j database named by OMS_NEO4J_URI, OMS_NEO4J_USER and
 OMS_NEO4J_PASSWORD. For each tenant it lists the rules shared between skills,
 the skills affected, the copies the split will make, the held items it will
-copy or move, and the divergence items it will close. It writes nothing.
+copy or move, and the divergence items it will close. It writes nothing. A
+rule it cannot plan (a damaged graph) stops it with that rule's refusal and
+its repair, and the exit status 1.
 """
 from __future__ import annotations
 
 import argparse
 import sys
 
+from oms.schema.metadata import SchemaCompatibilityError
 from oms.schema.migrations.rule_split import format_report, plan_split
 
 
@@ -31,6 +34,9 @@ def main(argv: list[str] | None = None) -> int:
     driver = _driver()
     try:
         sys.stdout.write(format_report(plan_split(driver)))
+    except SchemaCompatibilityError as refused:
+        sys.stderr.write(f"Rule split report: nothing has been changed. The report stopped because {refused}.\n")
+        return 1
     finally:
         if hasattr(driver, "close"):
             driver.close()
