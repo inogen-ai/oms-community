@@ -6,6 +6,7 @@ from threading import Barrier
 
 import pytest
 
+from oms.schema.metadata import SCHEMA_VERSION
 
 pytestmark = pytest.mark.integration
 
@@ -70,9 +71,9 @@ def test_empty_database_becomes_a_versioned_community_database(database):
     _manager(database).initialise(edition="community")
 
     metadata = _metadata(database)
-    assert metadata["edition"] == "community" and metadata["core_version"] == 2
+    assert metadata["edition"] == "community" and metadata["core_version"] == SCHEMA_VERSION
     assert metadata["private_version"] == 0
-    assert metadata["schema_version"] == 2 and metadata["managed_edition"] == "community"
+    assert metadata["schema_version"] == SCHEMA_VERSION and metadata["managed_edition"] == "community"
     assert isinstance(metadata["minimum_core_version"], str) and metadata["minimum_core_version"]
     assert metadata["last_successful_migration"]
 
@@ -142,7 +143,7 @@ def test_community_to_enterprise_upgrade_preserves_ids_lineage_and_workspace(dat
             "RETURN properties(r) AS rule,properties(edge) AS edge,properties(t) AS transaction")]
     assert after == before
     metadata = _metadata(database)
-    assert metadata["edition"] == "enterprise" and metadata["core_version"] == 2
+    assert metadata["edition"] == "enterprise" and metadata["core_version"] == SCHEMA_VERSION
 
 
 def test_newer_core_schema_is_refused_without_touching_graph(database):
@@ -204,7 +205,7 @@ def test_missing_migration_cannot_silently_advance_schema_version(database):
     before = _snapshot(database)
 
     with pytest.raises(ValueError):
-        _manager(database).initialise(edition="community", target_version=3)
+        _manager(database).initialise(edition="community", target_version=SCHEMA_VERSION + 1)
 
     assert _snapshot(database) == before
 
@@ -221,8 +222,8 @@ def test_failing_migration_rolls_back_all_steps_and_metadata(database):
         raise RuntimeError("injected migration failure")
 
     with pytest.raises(RuntimeError, match="injected migration failure"):
-        _manager(database).initialise(edition="community", target_version=4,
-                                      migrations={3: second, 4: third})
+        _manager(database).initialise(edition="community", target_version=SCHEMA_VERSION + 2,
+                                      migrations={SCHEMA_VERSION + 1: second, SCHEMA_VERSION + 2: third})
 
     assert _snapshot(database) == before
 
@@ -237,7 +238,8 @@ def test_concurrent_initialisers_apply_each_migration_once(database):
 
     def upgrade(_):
         barrier.wait(timeout=10)
-        _manager(database).initialise(edition="community", target_version=3, migrations={3: migration})
+        _manager(database).initialise(edition="community", target_version=SCHEMA_VERSION + 1,
+                                      migrations={SCHEMA_VERSION + 1: migration})
 
     with ThreadPoolExecutor(8) as pool:
         list(pool.map(upgrade, range(8)))
@@ -246,7 +248,7 @@ def test_concurrent_initialisers_apply_each_migration_once(database):
         counts = [row["applied"] for row in session.run(
             "MATCH (w:MigrationWitness {id:'counter'}) RETURN w.applied AS applied")]
     assert counts == [1]
-    assert _metadata(database)["core_version"] == 3
+    assert _metadata(database)["core_version"] == SCHEMA_VERSION + 1
 
 
 def test_competing_editions_cannot_overwrite_enterprise_ownership(database):

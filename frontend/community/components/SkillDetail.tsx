@@ -140,7 +140,7 @@ function HistoryComparison({ skillId, versionId, dirty, view, onViewChange, onRe
       <Button variant="secondary" aria-pressed={preview} onClick={() => setPreview(!preview)}>{preview ? "Show changes" : "Read saved version"}</Button>
     </div>
     {dirty && <Notice>Save or discard your unsaved edits before restoring history.</Notice>}
-    <p className="muted">Unselected wording stays as it is. Shared rules also change in the other skills that use them.</p>
+    <p className="muted">Unselected wording stays as it is. Restoring changes only this skill.</p>
     {preview ? <SkillMarkdown renderImages={false} body={resource.data.markdown} /> : <>
       {view === "overview" && resource.data.rows.some(row => row.state !== "same") && <p className="muted">Highlights show the exact text removed from the saved version or added in the current document.</p>}
       {view === "detailed" && <p className="muted">Changes if you restore this version: − current text, + saved text. Unchanged text is shown for context.</p>}

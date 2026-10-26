@@ -8,14 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from oms.domain.models import ContentBlock, Edge, Example, ReviewItem, Section
-from oms.domain.types import EdgeType, ExampleKind, Mutability, SectionKind, Verdict
+from oms.domain.models import ContentBlock, Example, ReviewItem, Section
+from oms.domain.types import ExampleKind, Mutability, SectionKind, Verdict
 from oms.publish.catalogue import SkillNotFound
 from tests.community.test_todo_critic import (
     INTRO, NEW_INTRO, ORIGIN, _detail, _document, _files, _import, _part, _save,
     _seed_rule, _seed_skill,
     critic_neo4j_driver, workspace,  # noqa: F401: shared parametrised fixtures
 )
+from tests.legacy_rules import share_rule
 
 
 def _delete(workspace, skill_id):
@@ -108,7 +109,7 @@ def test_shared_rules_evidence_and_other_skills_are_preserved(workspace):
     services, store = workspace.services, workspace.services.store
     keeper = _seed_skill(workspace, "keeper")
     shared = store.rules_for_skill(skill_id, tenant_id="acme")[0]
-    store.attach_edge(Edge(type=EdgeType.BELONGS_TO, from_id=shared.id, to_id=keeper.id), tenant_id="acme")
+    share_rule(store, shared.id, keeper.id, tenant_id="acme")
     sole = _seed_rule(workspace, "sole-rule", skill_id)
     store.upsert_example(Example(id="shared-rule-example", body="Keep the original receipt.",
         kind=ExampleKind.POSITIVE, tenant_id="acme", parent_rule_id=shared.id), tenant_id="acme")

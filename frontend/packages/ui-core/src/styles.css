@@ -18,7 +18,7 @@
 .oms-manual-heading { display: flex; gap: 12px; justify-content: space-between; align-items: start; }
 .oms-manual-heading h2 { font-size: 19px; margin: 0 0 16px; }
 .oms-manual-provenance { display: flex; gap: 12px; flex-wrap: wrap; color: var(--oms-muted); font-size: 11px; overflow-wrap: anywhere; margin: 10px 0; }
-.oms-manual-source { margin: 22px 0; border-left: 3px solid var(--oms-line); padding: 12px 18px; background: var(--oms-wash); white-space: pre-wrap; }
+.oms-manual-source { margin: 22px 0; border: 1px solid var(--oms-line); border-radius: 8px; padding: 12px 18px; background: var(--oms-wash); white-space: pre-wrap; }
 .oms-manual-help { color: var(--oms-muted); font-size: 13px; }
 .oms-manual-field { display: grid; gap: 7px; font-size: 13px; margin-bottom: 18px; }
 .oms-manual-field textarea { box-sizing: border-box; width: 100%; padding: 10px 12px; border: 1px solid var(--oms-line); background: var(--oms-paper); color: var(--oms-ink); border-radius: 7px; resize: vertical; font: inherit; line-height: 1.55; }
@@ -71,7 +71,7 @@
 .oms-manual-placement { margin: 12px 0; }
 .oms-manual-placement > div { padding: 18px 0; }
 .oms-placement-preview { max-height: 350px; overflow: auto; margin: 12px 0; border: 1px solid var(--oms-line); border-radius: 8px; padding: 16px; }
-.oms-placement-added { border-left: 3px solid var(--oms-accent); padding: 8px 14px; background: var(--oms-wash); }
+.oms-placement-added { border: 1px solid var(--oms-accent); border-radius: 6px; padding: 8px 14px; background: var(--oms-wash); }
 .oms-manual-suggestions { margin-bottom: 20px; }
 .oms-manual-suggestions h3, .oms-manual-comparison h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
 .oms-manual-suggestions ol { padding-left: 22px; }
@@ -245,7 +245,6 @@
   gap: 9px;
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--accent-line);
   border-radius: var(--radius-sm);
 }
 :is(.oms-frontmatter__row, .gx-frontmatter__row) { display: flex; flex-direction: column; gap: 2px; }
@@ -451,7 +450,7 @@
 .oms-source-lookup > .oms-source-field:first-child { margin-top: 0; }
 .oms-source-lookup > .oms-button { justify-self: start; margin-top: 8px; }
 .oms-source-lookup :is(input, select, summary, button):focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }
-.oms-source-advanced[open] { padding: 2px 0 2px 14px; border-left: 2px solid var(--oms-line); }
+.oms-source-advanced[open] { padding: 2px 0 2px 14px; border-left: 1px solid var(--oms-line); }
 .oms-source-names { margin: 14px 0; }
 .oms-source-confirm { border: 1px solid var(--oms-line); border-radius: 8px; padding: 16px; margin: 18px 0; }
 .oms-source-confirm :is(input, select, textarea, button, summary):focus-visible { outline: 2px solid var(--oms-accent); outline-offset: 3px; }

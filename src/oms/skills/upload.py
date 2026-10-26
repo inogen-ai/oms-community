@@ -46,7 +46,7 @@ from oms.import_skills.importer import ImportReport, ImportState, PreparedImport
 from oms.import_skills.identity import ImportIdentityConflict
 from oms.import_skills.parser import ParsedSkill
 from oms.ingestion.schema import ExecutionContext
-from oms.ports.graph_store import GraphStore
+from oms.ports.graph_store import GraphStore, RuleOwnershipError
 from oms.sources.errors import SourceConflict, StaleMutation
 from oms.sources.models import LocalPackage
 
@@ -499,7 +499,9 @@ class UploadService:
         self.get(upload_id, tenant_id)
         try:
             return self._importer.apply_prepared(self.prepare_apply(upload_id, tenant_id))
-        except (ImportIdentityConflict, SourceConflict, StaleMutation) as exc:
+        # RuleOwnershipError: the package names a rule that is in another
+        # skill now, and the import would give it a second one.
+        except (ImportIdentityConflict, SourceConflict, StaleMutation, RuleOwnershipError) as exc:
             raise UploadRefused(str(exc)) from exc
         finally:
             self.discard(upload_id, tenant_id)

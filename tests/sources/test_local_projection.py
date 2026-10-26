@@ -10,6 +10,7 @@ from oms.domain.types import EdgeType, Mutability, SectionKind, SignalType, Sour
 from oms.sources.local_projection import project_local
 from oms.sources.models import Evidence, SourceSnapshot
 from tests.community.test_repository_views import repositories, critic_neo4j_driver  # noqa: F401
+from tests.legacy_rules import place_rule
 from tests.sources.test_package_projection import acquired
 
 
@@ -53,7 +54,7 @@ def test_complete_owner_inventory_includes_section_only_rule_owners(projection_c
     store.upsert_skill(Skill(id="other", name="Other", description="Other", domain="general", tenant_id="acme"))
     store.upsert_section(Section(id="other-section", skill_id="other", heading="Rules", kind=SectionKind.RULES,
                                 order=0, mutability=Mutability.SYSTEM_AGGREGATED, tenant_id="acme"))
-    store.attach_rule(store.get_rule(rid), "other-section", order=0, tenant_id="acme")
+    place_rule(store, store.get_rule(rid), "other-section", order=0, tenant_id="acme")
     local = project_local(store, snapshot.ref.origin.skill, baseline=snapshot)
     mapping = next(mapping for mapping in local.graph_mappings if mapping.part_id == rule_part)
     assert mapping.owner_skills == (SkillRef("acme", "expenses"), SkillRef("acme", "other"))

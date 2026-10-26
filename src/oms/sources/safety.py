@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import logging
 from typing import Literal, TYPE_CHECKING
 
+from oms.domain.copies import created_by_transaction
 from oms.domain.types import Plane, RuleStatus, SignalType
 from oms.ingestion.sanitiser import RegexSanitiser
 from oms.ingestion.schema import ExecutionContext
@@ -314,14 +315,14 @@ def _publication_rules(graph, tenant):
 
 def _created_by_injection(graph, item):
     if item.transaction_id:
-        return item.subject_id == 'rule-' + item.transaction_id
+        return created_by_transaction(item.subject_id, item.transaction_id)
     if item.id.startswith('injection-' + item.subject_id + '-'):
         return True
     transactions = graph.lineage(item.subject_id)
     if any(row.tenant_id != item.tenant_id for row in transactions):
         return True
     compiled = [row.id for row in transactions if row.signal_type is not SignalType.SKILL_IMPORT]
-    return (not compiled or len(compiled) == 1 and item.subject_id == 'rule-' + compiled[0]
+    return (not compiled or len(compiled) == 1 and created_by_transaction(item.subject_id, compiled[0])
             or item.subject_id in _publication_rules(graph, item.tenant_id))
 
 

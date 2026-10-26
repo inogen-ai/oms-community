@@ -43,10 +43,11 @@ def test_manual_check_throttle_is_durable_and_replay_does_not_fetch(source_world
 
 def test_source_rule_fork_preserves_other_owner_example_and_old_vector(source_world):
     from dataclasses import replace
-    from oms.domain.models import Edge, Example, Skill
-    from oms.domain.types import EdgeType, ExampleKind
+    from oms.domain.models import Example, Skill
+    from oms.domain.types import ExampleKind
     from oms.sources.apply import apply_parts
     from oms.sources.local_projection import project_local
+    from tests.legacy_rules import share_rule
     source_world.install()
     graph = source_world.store
     binding = source_world.sources.get_binding(source_world.skill)
@@ -55,7 +56,7 @@ def test_source_rule_fork_preserves_other_owner_example_and_old_vector(source_wo
     mapping = next(row for row in snapshot.graph_mappings if row.part_id == part.part_id)
     old_id = mapping.entity_ids[0]
     graph.upsert_skill(Skill(id="other", name="Other", description="", domain="finance", tenant_id="acme"))
-    graph.attach_edge(Edge(EdgeType.BELONGS_TO, old_id, "other"), tenant_id="acme")
+    share_rule(graph, old_id, "other", tenant_id="acme")
     graph.upsert_example(Example(id="shared-example", body="Keep example", kind=ExampleKind.POSITIVE,
         tenant_id="acme", parent_rule_id=old_id), tenant_id="acme")
     old = graph.get_rule(old_id)

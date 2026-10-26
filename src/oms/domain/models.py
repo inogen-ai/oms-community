@@ -28,6 +28,11 @@ class Rule:
     # Publication reads the category independently of the rule's status.
     plane: Plane = Plane.DATA
     created_at: datetime = field(default_factory=_now)
+    # Set only by the schema 3 split, on the copy it made for one of a shared
+    # rule's skills: the original's id and when. Writers never set them, and
+    # the Neo4j store never writes them back, so an upsert cannot clear them.
+    split_from: str | None = None
+    split_at: datetime | None = None
 
 
 @dataclass

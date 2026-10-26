@@ -12,6 +12,7 @@ from pydantic import TypeAdapter
 
 from oms.domain.models import Artefact, ContentBlock, Edge, Example, Rule, Section
 from oms.domain.types import EdgeType, SkillStatus, SkillVersionCause
+from oms.ports.graph_store import RuleOwnershipError
 from oms.sources import operations, review
 from oms.sources.errors import SourceConflict, SourceError, SourceNotFound, SourceForbidden
 from oms.sources.local_projection import project_local
@@ -206,8 +207,12 @@ def undo(service, context, request: UndoRequest, *, idempotency_key):
 
 def record(value):
     # Embeddings and creation timestamps are not content: a vector refresh or
-    # a re-read must not make a unit look changed and block its undo.
-    return TypeAdapter(type(value)).dump_python(value, mode="json", exclude={"embedding", "created_at"})
+    # a re-read must not make a unit look changed and block its undo. A rule's
+    # split_from and split_at are left out for the same reason, and because a
+    # receipt written before they existed holds neither key, so it would
+    # otherwise stop matching the rule it describes.
+    return TypeAdapter(type(value)).dump_python(
+        value, mode="json", exclude={"embedding", "created_at", "split_from", "split_at"})
 
 
 def capture_units(graph, local: LocalState, *, policy_version: str) -> dict[str, Evidence]:
@@ -375,59 +380,66 @@ def restore(graph, undo):
             existing = graph.get_section(row["entity_id"], tenant_id=tenant)
             if existing is None or record(existing) != row["record"]:
                 graph.upsert_section(TypeAdapter(Section).validate_python(row["record"]))
-    for row in before:
-        kind = row["kind"]
-        if kind == "field":
-            field = row["field"]
-            if field == "tags":
-                for tag in graph.tag_records_for_skill(ref.skill_id, tenant_id=tenant):
-                    graph.detach_edge(Edge(EdgeType.TAGGED_WITH, ref.skill_id, tag.id), tenant_id=tenant)
-                for tag in row["tags"]:
-                    graph.upsert_tag(tag["id"], tag["name"])
-                    graph.attach_edge(Edge(EdgeType.TAGGED_WITH, ref.skill_id, tag["id"]), tenant_id=tenant)
-            else:
-                attribute = "declared_license" if field == "license" else field
-                if attribute not in {"name", "domain", "description", "declared_license", "document_mode"}:
-                    raise SourceConflict("undo_not_supported", "undo field unknown")
-                skill = graph.get_skill(ref.skill_id, tenant_id=tenant)
-                graph.upsert_skill(replace(skill, **{attribute: row["value"]}))
-        elif kind == "rule":
-            data = row["record"]
-            current = graph.get_rule(row["entity_id"])
-            if current is None or record(current) != data:
-                restored = TypeAdapter(Rule).validate_python(data)
-                # The current embedding and timestamp stay; the record never
-                # held them and a restored rule should not lose its vector.
-                if current is not None:
-                    restored = replace(restored, embedding=current.embedding, created_at=current.created_at)
-                graph.upsert_rule(restored)
-            expected = {txn["id"] for txn in row["lineage"]}
-            for txn in graph.lineage(row["entity_id"]):
-                if txn.id not in expected:
-                    graph.detach_edge(Edge(EdgeType.DERIVED_FROM, row["entity_id"], txn.id), tenant_id=tenant)
-            for txn in row["lineage"]:
-                current_txn = graph.get_transaction(txn["id"])
-                if current_txn is None or record(current_txn) != txn:
-                    raise SourceConflict("history_changed", "historical provenance changed")
-                graph.attach_edge(Edge(EdgeType.DERIVED_FROM, row["entity_id"], txn["id"]), tenant_id=tenant)
-            restored = graph.get_rule(row["entity_id"])
-            if row["member"]:
-                graph.attach_edge(Edge(EdgeType.BELONGS_TO, row["entity_id"], ref.skill_id), tenant_id=tenant)
-            for placement in row["placements"]:
-                graph.attach_rule(restored, placement["section_id"], order=placement["order"],
-                                  group=placement["group"], tenant_id=tenant)
-        elif kind == "section":
-            for data in row["blocks"]:
-                current = graph.get_content_block(data["id"], tenant_id=tenant)
-                if current is None:
-                    graph.upsert_content_block(TypeAdapter(ContentBlock).validate_python(data))
-                elif record(current) != data:
-                    raise SourceConflict("history_changed", "historical custody changed")
-                graph.attach_block(graph.get_content_block(data["id"], tenant_id=tenant), row["entity_id"],
-                                   tenant_id=tenant)
-        elif kind == "file":
-            graph.upsert_artefact(TypeAdapter(Artefact).validate_python(row["record"]), ref.skill_id,
-                                  row["path"], tenant_id=tenant)
+    try:
+        for row in before:
+            kind = row["kind"]
+            if kind == "field":
+                field = row["field"]
+                if field == "tags":
+                    for tag in graph.tag_records_for_skill(ref.skill_id, tenant_id=tenant):
+                        graph.detach_edge(Edge(EdgeType.TAGGED_WITH, ref.skill_id, tag.id), tenant_id=tenant)
+                    for tag in row["tags"]:
+                        graph.upsert_tag(tag["id"], tag["name"])
+                        graph.attach_edge(Edge(EdgeType.TAGGED_WITH, ref.skill_id, tag["id"]), tenant_id=tenant)
+                else:
+                    attribute = "declared_license" if field == "license" else field
+                    if attribute not in {"name", "domain", "description", "declared_license", "document_mode"}:
+                        raise SourceConflict("undo_not_supported", "undo field unknown")
+                    skill = graph.get_skill(ref.skill_id, tenant_id=tenant)
+                    graph.upsert_skill(replace(skill, **{attribute: row["value"]}))
+            elif kind == "rule":
+                data = row["record"]
+                current = graph.get_rule(row["entity_id"])
+                if current is None or record(current) != data:
+                    restored = TypeAdapter(Rule).validate_python(data)
+                    # The current embedding and timestamp stay; the record never
+                    # held them and a restored rule should not lose its vector.
+                    if current is not None:
+                        restored = replace(restored, embedding=current.embedding, created_at=current.created_at)
+                    graph.upsert_rule(restored)
+                expected = {txn["id"] for txn in row["lineage"]}
+                for txn in graph.lineage(row["entity_id"]):
+                    if txn.id not in expected:
+                        graph.detach_edge(Edge(EdgeType.DERIVED_FROM, row["entity_id"], txn.id), tenant_id=tenant)
+                for txn in row["lineage"]:
+                    current_txn = graph.get_transaction(txn["id"])
+                    if current_txn is None or record(current_txn) != txn:
+                        raise SourceConflict("history_changed", "historical provenance changed")
+                    graph.attach_edge(Edge(EdgeType.DERIVED_FROM, row["entity_id"], txn["id"]), tenant_id=tenant)
+                restored = graph.get_rule(row["entity_id"])
+                if row["member"]:
+                    graph.attach_edge(Edge(EdgeType.BELONGS_TO, row["entity_id"], ref.skill_id), tenant_id=tenant)
+                for placement in row["placements"]:
+                    graph.attach_rule(restored, placement["section_id"], order=placement["order"],
+                                      group=placement["group"], tenant_id=tenant)
+            elif kind == "section":
+                for data in row["blocks"]:
+                    current = graph.get_content_block(data["id"], tenant_id=tenant)
+                    if current is None:
+                        graph.upsert_content_block(TypeAdapter(ContentBlock).validate_python(data))
+                    elif record(current) != data:
+                        raise SourceConflict("history_changed", "historical custody changed")
+                    graph.attach_block(graph.get_content_block(data["id"], tenant_id=tenant), row["entity_id"],
+                                       tenant_id=tenant)
+            elif kind == "file":
+                graph.upsert_artefact(TypeAdapter(Artefact).validate_python(row["record"]), ref.skill_id,
+                                      row["path"], tenant_id=tenant)
+    except RuleOwnershipError as exc:
+        # D13: the change was recorded while a rule was shared between skills,
+        # and restoring it would share the rule again.
+        raise SourceConflict("undo_not_supported",
+                             "this change was made while a rule was shared between skills, "
+                             "and undoing it would share the rule again") from exc
     for row in before:
         if row["kind"] == "example":
             current = graph.get_example(row["entity_id"], tenant_id=tenant)

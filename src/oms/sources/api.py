@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 
 from oms.domain.identity import SkillRef
+from oms.ports.graph_store import RuleOwnershipError
 from oms.sources import api_models as dto
 from oms.sources import models as m
 from oms.sources.api_models import FileExcerpt, FilePreview, OperationView
@@ -266,13 +267,18 @@ def error_response(exc: Exception, operation_id: str | None) -> JSONResponse:
         retry = 60 if status == 429 else None
     elif isinstance(exc, AcquisitionError):
         status, code = 502, "upstream_unavailable"
+    elif isinstance(exc, RuleOwnershipError):
+        # The write would put a rule in a second skill; the store refused it and nothing was written.
+        status, code = 409, "rule_in_another_skill"
     elif isinstance(exc, (SourceError, LinkError, ValueError)):
         status, code = 422, exc.code if isinstance(exc, SourceError) else "invalid_source_request"
     if status == 500:
         logger.warning("Source request failed", extra={"code": code, "operation_id": operation_id})
     # The code names the family a client acts on; the exception's safe message keeps the specific
-    # condition. Forbidden stays generic so a 403 discloses nothing about why.
-    message = str(exc) if isinstance(exc, SourceError) and status != 403 else code.replace("_", " ")
+    # condition (a refused second skill names the skills). Forbidden stays generic so a 403
+    # discloses nothing about why.
+    message = (str(exc) if isinstance(exc, (SourceError, RuleOwnershipError)) and status != 403
+               else code.replace("_", " "))
     return JSONResponse({"code": code, "message": message,
                          "operation_id": operation_id, "retry_after_seconds": retry}, status_code=status,
                         headers={"Retry-After": str(retry)} if retry is not None else None)

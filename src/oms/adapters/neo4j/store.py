@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 
 from neo4j import Driver
@@ -7,6 +8,7 @@ from neo4j.graph import Node
 
 from oms.adapters.neo4j import schema
 from oms.adapters.neo4j.fulltext import fulltext_terms
+from oms.domain.copies import COPY_KIND, RuleSlot, copy_example_id, first_rule_id
 from oms.domain.identity import SkillRef
 from oms.domain.custody import effective_example_parent
 from oms.domain.relationships import EDGE_LABELS
@@ -23,7 +25,8 @@ from oms.domain.types import (
     SkillVersionCause,
 )
 from oms.domain.auth import Assurance
-from oms.ports.graph_store import TRANSACTION_CONTEXT_FIELDS, RuleContext, SectionMutabilityError
+from oms.ports.graph_store import (TRANSACTION_CONTEXT_FIELDS, RuleContext, RuleOwnershipError,
+                                   SectionMutabilityError)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +69,7 @@ class Neo4jGraphStore:
                       "ON CREATE SET n.tenant_id=$tenant_id WITH n "
                       "WHERE n.tenant_id=$tenant_id SET")
         with self._driver.session() as session:
+            # SETs named properties only, so split_from and split_at survive every upsert.
             row = session.run(
                 "MERGE (n:Rule {id: $id}) "
                 f"{assignment} n:Entity, n.body=$body, n.tenant_id=$tenant_id, n.status=$status, "
@@ -84,17 +88,7 @@ class Neo4jGraphStore:
     def get_rule(self, rule_id: str) -> Rule | None:
         with self._driver.session() as session:
             rec = session.run("MATCH (n:Rule {id:$id}) RETURN n", id=rule_id).single()
-        if rec is None:
-            return None
-        n = rec["n"]
-        return Rule(
-            id=n["id"], body=n["body"], tenant_id=n["tenant_id"],
-            status=RuleStatus(n["status"]), corroboration_count=n["corroboration_count"],
-            reference_only=n.get("reference_only", False),
-            plane=Plane(n.get("plane", Plane.DATA.value)),
-            polarity=Polarity(n.get("polarity", "prescribe")),
-            created_at=n["created_at"].to_native(),
-        )
+        return self._rule_from_node(rec["n"]) if rec is not None else None
 
     def upsert_transaction(self, transaction: Transaction) -> None:
         with self._driver.session() as session:
@@ -356,11 +350,37 @@ class Neo4jGraphStore:
             row = session.run("MATCH (n:Tag {id:$id}) RETURN n.name AS name", id=tag_id).single()
             return row["name"] if row else None
 
+    # The skills a rule is in, read after locking the rule node so two
+    # writers cannot both pass the test (the idiom `claim_compile` uses).
+    _OWNERS = (
+        "MATCH (r:Rule {id:$rule, tenant_id:$tenant}) "
+        "SET r._ownership_lock = true REMOVE r._ownership_lock WITH r "
+        "OPTIONAL MATCH (r)-[:BELONGS_TO]->(owner:Skill {tenant_id:$tenant}) "
+        "WITH r, collect(DISTINCT owner.id) AS owned "
+        "OPTIONAL MATCH (placing:Section {tenant_id:$tenant})-[:CONTAINS_RULE]->(r) "
+        "WITH r, owned, collect(DISTINCT placing.skill_id) AS placed "
+        "RETURN owned + placed AS owners")
+
+    @classmethod
+    def _refuse_other_owner(cls, tx, rule_id: str, skill_id: str, tenant_id: str) -> None:
+        row = tx.run(cls._OWNERS, rule=rule_id, tenant=tenant_id).single()
+        others = sorted({owner for owner in (row["owners"] if row else []) if owner and owner != skill_id})
+        if others:
+            raise RuleOwnershipError(f"rule {rule_id} is in {', '.join(others)}; "
+                                     f"one rule belongs to one skill, so it cannot also be in {skill_id}")
+
     def attach_edge(self, edge: Edge, *, tenant_id: str) -> None:
         def write(tx):
             endpoints = self._edge_endpoints(tx, edge, tenant_id)
             if endpoints is None:
                 raise KeyError("Relationship endpoints are missing or outside the tenant")
+            if edge.type is EdgeType.BELONGS_TO:
+                self._refuse_other_owner(tx, edge.from_id, edge.to_id, tenant_id)
+            elif edge.type is EdgeType.CONTAINS_RULE:
+                # This edge is the placement itself, so it meets attach_rule's test.
+                section = tx.run("MATCH (s:Section {id:$id, tenant_id:$tenant}) RETURN s.skill_id AS skill",
+                                 id=edge.from_id, tenant=tenant_id).single()
+                self._refuse_other_owner(tx, edge.to_id, section["skill"], tenant_id)
             tx.run("MATCH (a),(b) WHERE elementId(a)=$start AND elementId(b)=$end "
                    f"MERGE (a)-[r:{edge.type.value}]->(b) SET r += $props",
                    start=endpoints[0], end=endpoints[1], props=edge.properties).consume()
@@ -522,8 +542,12 @@ class Neo4jGraphStore:
                 # not exist.
                 "MATCH (r:Rule)-[:DERIVED_FROM]->(t:Transaction) "
                 "WHERE t.id IN $ids "
+                # The first copy first, then by id: collect keeps the order of
+                # the rows it is given, so [0] is the port's answer.
+                "WITH t, r ORDER BY (r.id = $firsts[t.id]) DESC, r.id "
                 "RETURN t.id AS tid, collect(r.id)[0] AS rid",
                 ids=list(transaction_ids),
+                firsts={tid: first_rule_id(tid) for tid in transaction_ids},
             )
             return {rec["tid"]: rec["rid"] for rec in recs}
 
@@ -1052,6 +1076,7 @@ class Neo4jGraphStore:
             return [self._rule_from_node(r["n"]) for r in recs]
 
     def _rule_from_node(self, n) -> Rule:
+        split_at = n.get("split_at")
         return Rule(
             id=n["id"], body=n["body"], tenant_id=n["tenant_id"],
             status=RuleStatus(n["status"]), corroboration_count=n["corroboration_count"],
@@ -1059,6 +1084,8 @@ class Neo4jGraphStore:
             plane=Plane(n.get("plane", Plane.DATA.value)),
             polarity=Polarity(n.get("polarity", "prescribe")),
             created_at=n["created_at"].to_native(),
+            split_from=n.get("split_from"),
+            split_at=split_at.to_native() if split_at is not None else None,
         )
 
 
@@ -1126,13 +1153,16 @@ class Neo4jGraphStore:
             raise SectionMutabilityError(
                 f"section {section_id} is {sec.mutability.value}; cannot attach rule"
             )
-        with self._driver.session() as session:
-            session.run(
+
+        def write(tx):
+            self._refuse_other_owner(tx, rule.id, sec.skill_id, tenant_id)
+            tx.run(
                 "MATCH (s:Section {id:$sid, tenant_id:$scope_tenant}), (r:Rule {id:$rid, tenant_id:$scope_tenant}) "
                 "MERGE (s)-[rel:CONTAINS_RULE]->(r) "
                 "SET rel.order = $order, rel.group = $group",
-                sid=section_id, rid=rule.id, order=order, group=group,
-             scope_tenant=tenant_id)
+                sid=section_id, rid=rule.id, order=order, group=group, scope_tenant=tenant_id).consume()
+        with self._driver.session() as session:
+            session.execute_write(write)
 
     def detach_rule(self, rule_id: str, section_id: str, *, tenant_id: str) -> None:
         with self._driver.session() as session:
@@ -1159,18 +1189,27 @@ class Neo4jGraphStore:
     def inherit_placements(self, retired_rule_id: str, successor: Rule, *, tenant_id: str) -> None:
         if successor.tenant_id != tenant_id:
             raise ValueError("Successor tenant differs from placement owner")
-        # Copy every CONTAINS_RULE membership of the retired rule (with its order
-        # and group) onto the successor, so a superseding rule renders in the
-        # retired rule's place. CONTAINS_RULE only lives on system-aggregated
-        # sections, so no mutability guard is needed.
+        # Copy the retired rule's CONTAINS_RULE memberships (with their order and
+        # group) onto the successor, so a superseding rule renders in the retired
+        # rule's place. CONTAINS_RULE only lives on system-aggregated sections,
+        # so no mutability guard is needed. The successor is locked before its
+        # skills are read, as `_OWNERS` does.
         with self._driver.session() as session:
             session.run(
-                "MATCH (s:Section {tenant_id:$scope_tenant})-[old:CONTAINS_RULE]->(:Rule {id:$rid, tenant_id:$scope_tenant}) "
                 "MATCH (succ:Rule {id:$sid, tenant_id:$scope_tenant}) "
+                "SET succ._ownership_lock = true REMOVE succ._ownership_lock WITH succ "
+                "OPTIONAL MATCH (succ)-[:BELONGS_TO]->(own:Skill {tenant_id:$scope_tenant}) "
+                "WITH succ, collect(DISTINCT own.id) AS owned "
+                "OPTIONAL MATCH (p:Section {tenant_id:$scope_tenant})-[:CONTAINS_RULE]->(succ) "
+                "WITH succ, owned, collect(DISTINCT p.skill_id) AS placed "
+                "WITH succ, owned + placed AS owners "
+                "MATCH (s:Section {tenant_id:$scope_tenant})-[old:CONTAINS_RULE]->(:Rule {id:$rid, tenant_id:$scope_tenant}) "
+                # One rule, one skill: only places in the successor's own skill pass on.
+                "WHERE size(owners) = 0 OR s.skill_id IN owners "
                 "MERGE (s)-[new:CONTAINS_RULE]->(succ) "
                 "SET new.order = old.order, new.group = old.group",
                 rid=retired_rule_id, sid=successor.id,
-             scope_tenant=tenant_id)
+             scope_tenant=tenant_id).consume()
 
     def attach_block(self, block: ContentBlock, section_id: str, *, tenant_id: str) -> None:
         if block.tenant_id != tenant_id:
@@ -1719,32 +1758,128 @@ class Neo4jGraphStore:
 
     def upsert_cross_skill_edge(
         self, edge_type: EdgeType, from_rule_id: str, to_rule_id: str,
-        confidence: float, kind: str | None = None,
+        confidence: float, kind: str | None = None, cause: str | None = None,
     ) -> None:
-        # Edge type can't be parameterised in Cypher; build the statement.
+        # Edge type can't be parameterised in Cypher; build the statement. A
+        # copy edge is written once: `kept` leaves one exactly as it is.
         cypher = (
-            f"MATCH (a:Rule {{id:$frm}}), (b:Rule {{id:$to}}) "
-            "WHERE a.tenant_id=b.tenant_id "
+            f"MATCH (a:Rule {{id:$frm}}), (b:Rule {{id:$to}}) WHERE a.tenant_id=b.tenant_id "
             f"MERGE (a)-[r:{edge_type.value}]->(b) "
-            f"SET r.confidence=$conf"
+            "WITH a, r, coalesce(r.kind, '') = $copy AS kept "
+            "SET r.confidence = CASE WHEN kept THEN r.confidence ELSE $conf END, "
+            "r.kind = CASE WHEN kept OR $kind IS NULL THEN r.kind ELSE $kind END, "
+            "r.cause = CASE WHEN kept OR $cause IS NULL THEN r.cause ELSE $cause END "
+            "RETURN a.id AS id"
         )
-        if kind is not None:
-            cypher += ", r.kind=$kind"
         with self._driver.session() as session:
-            row = session.run(cypher + " RETURN a.id AS id", frm=from_rule_id, to=to_rule_id,
-                              conf=confidence, kind=kind).single()
+            row = session.run(cypher, frm=from_rule_id, to=to_rule_id, conf=confidence,
+                              kind=kind, cause=cause, copy=COPY_KIND).single()
             if row is None:
                 raise ValueError("Cross-skill relationship requires existing same-tenant rules")
 
-    def cross_skill_neighbours(self, rule_id: str) -> list[tuple[EdgeType, str, float]]:
+    def cross_skill_neighbours(self, rule_id: str, *, tenant_id: str,
+                               kind: str | None = None) -> list[tuple[EdgeType, str, float]]:
         with self._driver.session() as session:
             recs = session.run(
-                "MATCH (r:Rule {id:$rid})-[rel]->(o:Rule) "
+                "MATCH (r:Rule {id:$rid, tenant_id:$tenant})-[rel]->(o:Rule {tenant_id:$tenant}) "
                 "WHERE type(rel) IN ['EQUIVALENT_TO', 'RELATES_TO', 'CROSS_SKILL_DIVERGENCE'] "
-                "RETURN type(rel) AS et, o.id AS to_id, rel.confidence AS conf",
-                rid=rule_id,
-            )
+                "AND ($kind IS NULL OR rel.kind = $kind) "
+                "RETURN type(rel) AS et, o.id AS to_id, rel.confidence AS conf ORDER BY et, to_id",
+                rid=rule_id, tenant=tenant_id, kind=kind)
             return [(EdgeType(r["et"]), r["to_id"], float(r["conf"] or 0.0)) for r in recs]
+
+    def copy_groups(self, rule_ids: list[str], *, tenant_id: str) -> dict[str, tuple[str, ...]]:
+        if not rule_ids:
+            return {}
+        with self._driver.session() as session:
+            recs = session.run(
+                "UNWIND $ids AS rid "
+                "MATCH (r:Rule {id:rid, tenant_id:$tenant})-[e:EQUIVALENT_TO]->(o:Rule {tenant_id:$tenant}) "
+                "WHERE e.kind = $copy RETURN rid, collect(DISTINCT o.id) AS members",
+                ids=sorted(set(rule_ids)), tenant=tenant_id, copy=COPY_KIND)
+            return {rec["rid"]: tuple(sorted(rec["members"])) for rec in recs}
+
+    def rule_ids_derived_from(self, transaction_id: str, *, tenant_id: str) -> list[str]:
+        with self._driver.session() as session:
+            recs = session.run(
+                "MATCH (r:Rule {tenant_id:$tenant})-[:DERIVED_FROM]->(:Transaction {id:$txn, tenant_id:$tenant}) "
+                "RETURN DISTINCT r.id AS id ORDER BY (id = $first) DESC, id",
+                txn=transaction_id, tenant=tenant_id, first=first_rule_id(transaction_id))
+            return [rec["id"] for rec in recs]
+
+    def copy_rule(self, source_id: str, new_id: str, *, tenant_id: str, skill_id: str | None,
+                  slots: Sequence[RuleSlot] = (), status: RuleStatus | None = None,
+                  belongs_properties: Mapping[str, object] | None = None) -> Rule:
+        def write(tx) -> None:
+            held = tx.run("MATCH (c:Rule {id:$id}) RETURN c.tenant_id AS tenant", id=new_id).single()
+            if held is not None:
+                if held["tenant"] != tenant_id:
+                    raise ValueError("Rule ID belongs to another tenant")
+                return
+            if tx.run("MATCH (o:Rule {id:$source, tenant_id:$tenant}) RETURN o.id AS id",
+                      source=source_id, tenant=tenant_id).single() is None:
+                raise KeyError(source_id)
+            # Every check before the first write, in the in-memory store's
+            # order, so both refuse the same copy with the same error.
+            if skill_id is not None and tx.run("MATCH (s:Skill {id:$skill, tenant_id:$tenant}) RETURN s.id AS id",
+                                               skill=skill_id, tenant=tenant_id).single() is None:
+                raise KeyError(skill_id)
+            homes = {skill_id} if skill_id is not None else set()
+            for slot in slots:
+                section = tx.run("MATCH (s:Section {id:$id, tenant_id:$tenant}) "
+                                 "RETURN s.skill_id AS skill, s.mutability AS mutability",
+                                 id=slot.section_id, tenant=tenant_id).single()
+                if section is None:
+                    raise KeyError(slot.section_id)
+                if section["mutability"] != Mutability.SYSTEM_AGGREGATED.value:
+                    raise SectionMutabilityError(
+                        f"section {slot.section_id} is {section['mutability']}; cannot attach rule")
+                homes.add(section["skill"])
+                if len(homes) > 1:
+                    raise RuleOwnershipError(f"copy {new_id} cannot be placed in {slot.section_id}: "
+                                             f"it would belong to {' and '.join(sorted(map(str, homes)))}")
+            # Named properties only: a copy never carries split_from or split_at.
+            tx.run("MATCH (o:Rule {id:$source, tenant_id:$tenant}) "
+                   "CREATE (c:Rule:Entity {id:$id}) "
+                   "SET c.body=o.body, c.tenant_id=o.tenant_id, c.status=coalesce($status, o.status), "
+                   "c.corroboration_count=o.corroboration_count, c.reference_only=o.reference_only, "
+                   "c.polarity=o.polarity, c.plane=o.plane, c.created_at=o.created_at, "
+                   "c.embedding=o.embedding",
+                   source=source_id, id=new_id, tenant=tenant_id,
+                   status=status.value if status is not None else None).consume()
+            for kind in ("TAGGED_WITH", "DERIVED_FROM", "OBSERVED_IN"):
+                tx.run(f"MATCH (o:Rule {{id:$source, tenant_id:$tenant}})-[e:{kind}]->(t) "
+                       "MATCH (c:Rule {id:$id, tenant_id:$tenant}) "
+                       f"MERGE (c)-[n:{kind}]->(t) SET n += properties(e)",
+                       source=source_id, id=new_id, tenant=tenant_id).consume()
+            tx.run("MATCH (o:Rule {id:$source, tenant_id:$tenant})-[e:CONFLICTS_WITH]->(k:Constraint {tenant_id:$tenant}) "
+                   "MATCH (c:Rule {id:$id, tenant_id:$tenant}) "
+                   "MERGE (c)-[n:CONFLICTS_WITH]->(k) SET n += properties(e)",
+                   source=source_id, id=new_id, tenant=tenant_id).consume()
+            if skill_id is not None:
+                tx.run("MATCH (c:Rule {id:$id, tenant_id:$tenant}), (s:Skill {id:$skill, tenant_id:$tenant}) "
+                       "MERGE (c)-[b:BELONGS_TO]->(s) SET b += $props",
+                       id=new_id, skill=skill_id, tenant=tenant_id,
+                       props=dict(belongs_properties or {})).consume()
+            examples = [dict(row["props"]) for row in tx.run(
+                "MATCH (e:Example {tenant_id:$tenant})-[:ILLUSTRATES]->(:Rule {id:$source, tenant_id:$tenant}) "
+                "RETURN properties(e) AS props", source=source_id, tenant=tenant_id)]
+            for props in examples:
+                example_id = copy_example_id(props["id"], new_id)
+                props.update(id=example_id, parent_rule_id=new_id,
+                             storage_key=SkillRef(tenant_id, example_id).storage_key)
+                tx.run("MATCH (c:Rule {id:$rule, tenant_id:$tenant}) "
+                       "CREATE (e:Example:Entity) SET e = $props "
+                       "MERGE (c)-[:HAS_EXAMPLE]->(e) MERGE (e)-[:ILLUSTRATES]->(c)",
+                       rule=new_id, tenant=tenant_id, props=props).consume()
+            for slot in slots:
+                tx.run("MATCH (s:Section {id:$sid, tenant_id:$tenant}), (c:Rule {id:$id, tenant_id:$tenant}) "
+                       "MERGE (s)-[r:CONTAINS_RULE]->(c) SET r.order = $order, r.group = $group",
+                       sid=slot.section_id, id=new_id, tenant=tenant_id,
+                       order=slot.order, group=slot.group).consume()
+        with self._driver.session() as session:
+            session.execute_write(write)
+        return self.get_rule(new_id)
 
 
 def _now() -> datetime:

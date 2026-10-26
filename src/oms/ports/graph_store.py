@@ -1,7 +1,9 @@
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from oms.domain.copies import RuleSlot
 from oms.domain.models import (
     Rule, Skill, Transaction, Edge, Learning, Constraint, Example, Tag,
     Section, ContentBlock, Artefact, Publication, PublishBlock, QuarantinedPayload,
@@ -13,6 +15,18 @@ from oms.domain.types import (CompileStatus, ConstraintStatus, EdgeType,
 
 class SectionMutabilityError(Exception):
     """Raised when an op targets a section whose mutability doesn't permit it."""
+
+
+class RuleOwnershipError(Exception):
+    """A write would give a rule a second skill, or place it in a section of a
+    skill it does not belong to. One rule, one skill: the write is refused and
+    nothing of it is stored.
+
+    The message names the rule and both skills, and it is safe to show. This
+    is not a ValueError on purpose: a handler that maps every ValueError to
+    "invalid input" must not catch a refused write by accident. A handler that
+    shows the refusal names the class, as the web API (409, or 422 for an
+    upload), the sources routes (409) and the import command do."""
 
 
 #: The transaction fields `clear_transaction_context` removes: the snippet of
@@ -74,7 +88,11 @@ class GraphStore(Protocol):
         ...
     def upsert_tag(self, tag_id: str, name: str) -> None: ...
     def tag_name(self, tag_id: str) -> str | None: ...
-    def attach_edge(self, edge: Edge, *, tenant_id: str) -> None: ...
+    def attach_edge(self, edge: Edge, *, tenant_id: str) -> None:
+        """Write the edge once. A BELONGS_TO to a second skill, or a
+        CONTAINS_RULE from another skill's section, raises
+        RuleOwnershipError and writes nothing (one rule, one skill)."""
+        ...
     def detach_edge(self, edge: Edge, *, tenant_id: str) -> None:
         """Remove all edges matching (type, from_id, to_id); no-op when none match."""
         ...
@@ -465,12 +483,19 @@ class GraphStore(Protocol):
     def get_section(self, section_id: str, *, tenant_id: str) -> Section | None: ...
     def sections_for_skill(self, skill_id: str, *, tenant_id: str) -> list[Section]: ...
     def attach_rule(self, rule: Rule, section_id: str,
-                    order: int | None = None, group: str | None = None, *, tenant_id: str) -> None: ...
+                    order: int | None = None, group: str | None = None, *, tenant_id: str) -> None:
+        """Place the rule in a RULES section. When the rule is already in
+        another skill (its BELONGS_TO or a placement), the write raises
+        RuleOwnershipError and writes nothing; a rule in no skill may go
+        anywhere."""
+        ...
     def inherit_placements(self, retired_rule_id: str, successor: Rule, *, tenant_id: str) -> None:
-        """Copy the retired rule's CONTAINS_RULE section memberships (with order
-        and group) to `successor`, so a superseding rule renders in the retired
-        rule's place instead of only in the aggregated tail. The retired rule
-        keeps its own membership for audit; the render filters it out by status."""
+        """Copy the retired rule's CONTAINS_RULE section memberships in the
+        successor's own skill only (one rule, one skill), with order and group,
+        to `successor`, so a superseding rule renders in the retired rule's
+        place instead of only in the aggregated tail. A successor in no skill
+        yet takes them all. The retired rule keeps its own membership for
+        audit; the render filters it out by status."""
         ...
     def attach_block(self, block: ContentBlock, section_id: str, *, tenant_id: str) -> None: ...
     def detach_rule(self, rule_id: str, section_id: str, *, tenant_id: str) -> None: ...
@@ -540,8 +565,10 @@ class GraphStore(Protocol):
         contribution in the activity feed be grouped with the review decisions
         that followed it. A transaction that produced no rule (held, rejected
         before compile, or corroborated an existing rule under a different id)
-        is absent. Where a transaction somehow has several, the answer is the
-        adapter's first, which is deterministic but arbitrary.
+        is absent. Where a transaction has several (its copies, or rules it
+        corroborated), the answer is its first copy (`rule-<transaction>`, the
+        rule it created first) when there is one, and otherwise the lowest id,
+        as `rule_ids_derived_from` orders them.
         """
         ...
     def get_content_block(self, block_id: str, *, tenant_id: str) -> ContentBlock | None:
@@ -627,6 +654,48 @@ class GraphStore(Protocol):
     def examples_for_section(self, section_id: str, *, tenant_id: str) -> list[Example]: ...
     def upsert_cross_skill_edge(
         self, edge_type: EdgeType, from_rule_id: str, to_rule_id: str,
-        confidence: float, kind: str | None = None,
-    ) -> None: ...
-    def cross_skill_neighbours(self, rule_id: str) -> list[tuple[EdgeType, str, float]]: ...
+        confidence: float, kind: str | None = None, cause: str | None = None,
+    ) -> None:
+        """Write or update one informational rule-to-rule edge. A copy edge
+        (`kind == "copy"`) is written once and never changed afterwards: an
+        equivalence an import finds between two copies leaves it as it is.
+        Any other edge takes the new confidence, and keeps its kind and cause
+        when the write names none."""
+        ...
+    def cross_skill_neighbours(self, rule_id: str, *, tenant_id: str,
+                               kind: str | None = None) -> list[tuple[EdgeType, str, float]]:
+        """This tenant's informational edges out of the rule (EQUIVALENT_TO,
+        RELATES_TO and CROSS_SKILL_DIVERGENCE), optionally of one kind, sorted
+        by type and then id."""
+        ...
+    def copy_groups(self, rule_ids: list[str], *, tenant_id: str) -> dict[str, tuple[str, ...]]:
+        """The other members of each rule's copy group, sorted, in one read. A
+        rule with no copy, or not in this tenant, is absent; no ids cost no
+        read."""
+        ...
+    def copy_rule(self, source_id: str, new_id: str, *, tenant_id: str, skill_id: str | None,
+                  slots: Sequence[RuleSlot] = (), status: RuleStatus | None = None,
+                  belongs_properties: Mapping[str, object] | None = None) -> Rule:
+        """Write `new_id` as a copy of `source_id`, in one write.
+
+        The copy carries the source's body, polarity, status (or `status`),
+        plane, reference_only, corroboration_count, created_at and embedding;
+        its TAGGED_WITH, DERIVED_FROM and OBSERVED_IN edges with their
+        properties; its CONFLICTS_WITH edges onto constraints; and its
+        examples, each under `copy_example_id(example.id, new_id)`. It never
+        carries `split_from` or `split_at`: only the schema 3 split sets them.
+        It BELONGS_TO `skill_id` (with `belongs_properties`), or to nothing
+        when that is None, and is placed in each slot. Nothing is written to
+        the source and no copy edge is written (`oms.skills.copies.link_copies`).
+
+        An existing `new_id` in this tenant is returned unchanged, so a
+        retried write is safe; one in another tenant raises ValueError. Every
+        refusal comes before the first write and leaves nothing behind: a
+        source missing from this tenant, an unknown skill or section raises
+        KeyError, a section that cannot hold rules SectionMutabilityError, and
+        a slot that would put the copy in a second skill RuleOwnershipError."""
+        ...
+    def rule_ids_derived_from(self, transaction_id: str, *, tenant_id: str) -> list[str]:
+        """Every rule of this tenant DERIVED_FROM the transaction: the one it
+        created first (`rule-<transaction>`) first, then by id."""
+        ...

@@ -24,7 +24,7 @@ function contextParts(document, ruleId) {
   });
 }
 
-// A shared rule can occur in several sections; overflow rules live in another file.
+// A rule can be placed in several sections of its skill; overflow rules live in another file.
 function contextsFor(document, ruleId) {
   const parts = contextParts(document, ruleId);
   return parts.flatMap((part, index) => {

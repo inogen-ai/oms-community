@@ -8,6 +8,7 @@ from oms.domain.models import Artefact, ContentBlock, Edge, Example, Rule, Secti
 from oms.domain.types import ArtefactKind, EdgeType, ExampleKind, Mutability, SectionKind, SkillVersionCause
 from oms.publish.publisher import Publisher
 from tests.community.test_critic_workflow import world, critic_neo4j_driver  # noqa: F401
+from tests.legacy_rules import share_rule
 
 
 def package(world, tenant):
@@ -72,7 +73,7 @@ def test_foreign_membership_is_rejected_and_shared_rules_survive_deletion(world)
     with pytest.raises((ValueError, KeyError)):
         world.store.attach_edge(edge, tenant_id="two")
     world.store.attach_edge(edge, tenant_id="one")
-    world.store.attach_edge(replace(edge, to_id="travel"), tenant_id="one")
+    share_rule(world.store, rule.id, "travel", tenant_id="one")
     assert world.store.rules_for_skill("expenses", tenant_id="two") == []
     world.store.detach_edge(edge, tenant_id="two")
     assert len(world.store.rules_for_skill("expenses", tenant_id="one")) == 1
@@ -152,7 +153,7 @@ def test_global_rule_relationships_reject_foreign_provenance(world):
         world.store.observe_rule_in("local-rule", "foreign-transaction", "source")
     with pytest.raises((ValueError, KeyError)):
         world.store.upsert_cross_skill_edge(EdgeType.RELATES_TO, "local-rule", "foreign-rule", 1.0)
-    assert world.store.cross_skill_neighbours("local-rule") == []
+    assert world.store.cross_skill_neighbours("local-rule", tenant_id="one") == []
 
 
 def test_rule_reads_and_input_objects_cannot_write_outside_mutation(world):

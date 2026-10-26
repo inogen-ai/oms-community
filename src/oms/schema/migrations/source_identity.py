@@ -3,7 +3,7 @@ import json
 
 from oms.adapters.neo4j import schema
 from oms.domain.identity import SkillRef
-from oms.schema.metadata import CORE_VERSION, SchemaCompatibilityError
+from oms.schema.metadata import CORE_VERSION, RULE_SPLIT_STAGES, SchemaCompatibilityError
 
 OWNED_LABELS = ("Skill", "Section", "ContentBlock", "Example", "SkillVersion")
 
@@ -11,6 +11,14 @@ OWNED_LABELS = ("Skill", "Section", "ContentBlock", "Example", "SkillVersion")
 def _metadata(runner):
     row = runner.run("MATCH (m:OMSMetadata {id:'core'}) RETURN properties(m) AS metadata").single()
     return dict(row["metadata"]) if row else None
+
+
+def _past_source_identity(metadata) -> bool:
+    """Schema 2 data is complete once the rule split has begun or finished.
+    This step runs first on every start, so it then returns after one read
+    and never writes schema 2 over a graph in the middle of the split."""
+    version = metadata.get("schema_version", metadata.get("core_version", 0))
+    return version >= 3 or metadata.get("migration_state") in RULE_SPLIT_STAGES
 
 
 def _set_stage(driver, expected, stage):
@@ -168,6 +176,8 @@ def migrate(manager, *, old_writers_stopped, edition, private_version):
         raise ValueError("private schema version must be a positive integer")
     with manager.driver.session() as session:
         metadata = _metadata(session)
+        if metadata and _past_source_identity(metadata):
+            return metadata
         manager._check(metadata, edition, 2, private_version, maintenance=True)
         if metadata and metadata.get("migration_state") not in (
                 None, "ready", "fenced", "additive_ready", "data_ready", "constraints_ready"):
@@ -181,6 +191,8 @@ def migrate(manager, *, old_writers_stopped, edition, private_version):
     def fence(tx):
         tx.run("MERGE (m:OMSMetadata {id:'core'}) SET m._migration_lock=true REMOVE m._migration_lock").consume()
         current = _metadata(tx)
+        if _past_source_identity(current):
+            return current
         if current.get("schema_version") == 2 and current.get("migration_state") == "ready":
             return current
         if current.get("edition"):
@@ -196,7 +208,7 @@ def migrate(manager, *, old_writers_stopped, edition, private_version):
     with manager.driver.session() as session:
         metadata = session.execute_write(fence)
     stage = metadata["migration_state"]
-    if stage == "ready":
+    if stage == "ready" or _past_source_identity(metadata):
         return metadata
     if stage == "fenced":
         _ddl(manager.driver, schema.CORE_STATEMENTS)

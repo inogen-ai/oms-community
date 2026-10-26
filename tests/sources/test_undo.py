@@ -45,17 +45,18 @@ def test_file_undo_restores_exact_bytes_mode_and_provenance(source_world):
     assert source_world.blobs.get(restored.content_ref) == b"Original supporting document\n"
 
 
-def test_undo_shared_example_fork_restores_memberships_and_retained_example(source_world):
+def test_undoing_a_fork_made_while_a_rule_was_shared_is_refused_and_changes_nothing(source_world):
     from tests.sources.test_example_reconciliation import example_card
     parent, update, apply_request = example_card(source_world, "Old example", "New example", shared=True)
-    before = source_world.store.examples_for_rule(parent.id, tenant_id="acme")[0]
     result = source_world.service.apply(source_world.context, apply_request, idempotency_key="apply")
-    source_world.service.undo(source_world.context, undo_request(source_world, result), idempotency_key="undo")
-    assert source_world.store.rules_for_skill("expenses", tenant_id="acme")[0].id == parent.id
-    assert source_world.store.rules_for_skill("other", tenant_id="acme")[0].id == parent.id
-    assert source_world.store.get_example(before.id, tenant_id="acme").body == before.body
-    assert source_world.store.examples_for_rule(parent.id, tenant_id="acme")[0].source_ref == before.source_ref
-    assert source_world.store.superseders_of(parent.id) == []
+    before = source_world.snapshot()
+    with pytest.raises(SourceConflict) as refused:
+        source_world.service.undo(source_world.context, undo_request(source_world, result), idempotency_key="undo")
+    assert refused.value.code == "undo_not_supported"
+    assert source_world.snapshot() == before
+    # The other skill keeps the rule, and the receipt stays unused.
+    assert [rule.id for rule in source_world.store.rules_for_skill("other", tenant_id="acme")] == [parent.id]
+    assert source_world.sources.get_undo(result.operation_id + ":undo", tenant_id="acme").undone_by_operation_id is None
 
 
 def test_failed_required_history_rolls_back_undo_and_keeps_it_available(source_world):
