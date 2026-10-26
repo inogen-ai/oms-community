@@ -245,7 +245,6 @@
   gap: 9px;
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--accent-line);
   border-radius: var(--radius-sm);
 }
 :is(.oms-frontmatter__row, .gx-frontmatter__row) { display: flex; flex-direction: column; gap: 2px; }
