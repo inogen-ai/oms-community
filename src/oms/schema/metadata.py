@@ -2,7 +2,7 @@
 from collections.abc import Callable, Mapping
 from packaging.version import InvalidVersion, Version
 
-CORE_VERSION = "1.7.0"
+CORE_VERSION = "1.8.0"
 SCHEMA_VERSION = 3
 # The rule split's stages (schema 2 to 3). Named apart from the source
 # identity stages, because that step runs first on every start and must

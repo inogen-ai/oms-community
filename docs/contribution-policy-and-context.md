@@ -257,19 +257,26 @@ combination of contribution mode and session learnings:
   UUID as its `transaction_id`, reused on a retry. Edited wording needs a new
   preview and a new id, and approving the tool once is not approval of later
   suggestions.
-- With session learnings on, a `## Session learnings` section sets five tests
-  a lesson must pass, asks for it as a rule in one imperative sentence, at
-  most three per piece of work, and names the context fields to send. In
-  confirm mode it adds "Show the person each proposed learning with its
-  context; submit only those they approve."
+- With session learnings on, a `## Session learnings` section sets an
+  eight-point bar: only the agent talking to the person files (a subagent
+  puts the lesson in its report), a named future use, a real cost, a reader
+  who never saw the session would agree, nothing the repo or skill already
+  shows, never from a one-off test, mutation check, drill or scaffolding, no
+  line numbers, temporary paths or session names, and at most one per piece
+  of work, rarely two. It asks for the lesson as a rule in one imperative
+  sentence and names the context fields to send. When the section asks
+  first, it adds "Show the person each proposed learning with its context;
+  submit only those they approve." It asks first in confirm mode, or when
+  `learnings_mode="confirm"` is given while corrections stay automatic.
 - With session learnings off, that section is left out. It is the only text
   that asks an agent to reflect or to send `self_reflection`, and nothing
   above it changes.
 
 `render_claude_md(constraints, skills, contribution_endpoint=None, *,
-session_learnings=True, contribution_mode="automatic")` in
-`oms.publish.render` renders one root file. An unknown mode raises
-`ValueError`, with or without an endpoint. `Publisher(..., *,
+session_learnings=True, contribution_mode="automatic", learnings_mode=None)`
+in `oms.publish.render` renders one root file. `learnings_mode=None` follows
+`contribution_mode`. An unknown mode in either raises `ValueError`, with or
+without an endpoint. `Publisher(..., *,
 session_learnings=True)` fixes the session-learnings choice for every file
 one publish writes, and the caller resolves it for the workspace;
 `Publisher.render_root(tenant_id, *, skills=None,
@@ -414,6 +421,10 @@ refresh re-runs the installer, which settles the mode again.
 PowerShell, where `root_import` defaults to `@$SRC/$OmsRootFile`). A fragment
 that replaces either must give the same mode's instructions, or the tools
 installed in one run would disagree about whether to ask.
+`manual_rules_source` is the file staged for Cursor to paste
+(`~/.oms/cursor-user-rules.md`). It defaults to `root_source`. No refresh
+replaces a pasted copy, so a composition whose `root_source` differs per
+person can stage a shared file there instead.
 
 ## What is guided and what is enforced
 

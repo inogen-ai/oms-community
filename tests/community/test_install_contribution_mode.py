@@ -657,6 +657,40 @@ def test_cursor_is_told_to_paste_again_after_a_change_of_mode(tmp_path: Path) ->
     assert again in spaced(opted_in.stdout)
 
 
+def staged_from(fragments: ShellInstallFragments | None) -> str:
+    """The body of install.sh's `stage_manual_rules`, as rendered."""
+    script = render_install_script(MCP_URL, fragments=fragments)
+    body = script[script.index("stage_manual_rules() {"):]
+    return body[:body.index("\n}\n")]
+
+
+def test_the_cursor_paste_file_has_its_own_source() -> None:
+    """A pasted copy is never replaced by a refresh, so an extension can give
+    the other tools one root file and stage another for Cursor."""
+    split = ShellInstallFragments(root_source="$ROOT_MD",
+                                  manual_rules_source="$SRC/$OMS_ROOT_FILE")
+    assert 'cp "$SRC/$OMS_ROOT_FILE" "$sm_file"' in staged_from(split)
+    assert 'cat "$ROOT_MD"' in render_install_script(MCP_URL, fragments=split)
+    # Unset, it follows root_source, as before.
+    assert 'cp "$ROOT_MD" "$sm_file"' in staged_from(ShellInstallFragments(root_source="$ROOT_MD"))
+    assert 'cp "$SRC/$OMS_ROOT_FILE" "$sm_file"' in staged_from(None)
+
+
+def test_cursor_is_staged_from_the_manual_rules_source(tmp_path: Path) -> None:
+    personal = ShellInstallFragments(
+        before_links=('ROOT_MD="$OMS_DIR/personal.md"\n'
+                      'printf \'%s\\n\' "Personal instructions." > "$ROOT_MD"\n'),
+        root_source="$ROOT_MD", manual_rules_source="$SRC/$OMS_ROOT_FILE")
+    bundle = make_bundle(tmp_path, fragments=personal)
+    home, bin_dir = make_machine(tmp_path, ".codex", ".cursor")
+
+    run = install(bundle, home, bin_dir)
+
+    assert run.returncode == 0, run.stderr
+    assert read(home, STAGED) == automatic_text("CLAUDE.md")
+    assert "Personal instructions." in read(home, ".codex/AGENTS.md")
+
+
 def test_a_run_that_stopped_part_way_still_sees_the_change_of_mode(tmp_path: Path) -> None:
     """The chosen mode is recorded before any tool is written, so the refresh
     keeps a new choice even when the run that made it stopped part way. What
@@ -974,6 +1008,24 @@ def test_the_powershell_mode_is_settled_before_anything_is_written() -> None:
     with_fragment = render_install_ps1(MCP_URL, fragments=PowerShellInstallFragments(
         before_links=fragment))
     assert with_fragment.index("$OmsContributionMode = ") < with_fragment.index(fragment)
+
+
+def test_the_powershell_cursor_paste_file_has_its_own_source() -> None:
+    def staged(fragments: PowerShellInstallFragments | None) -> str:
+        body = render_install_ps1(MCP_URL, fragments=fragments)
+        start = body.index("function Set-ManualRules")
+        return body[start:body.index("\n}\n", start)]
+
+    split = PowerShellInstallFragments(root_source="$RootMd",
+                                       manual_rules_source="$SRC/$OmsRootFile")
+    assert 'Write-TextFile $File (Read-TextFile "$SRC/$OmsRootFile")' in staged(split)
+    rendered = render_install_ps1(MCP_URL, fragments=split)
+    assert '$content = Read-TextFile "$RootMd"' in rendered
+    assert "@@" not in rendered
+    # Unset, it follows root_source, as before.
+    assert ('Write-TextFile $File (Read-TextFile "$RootMd")'
+            in staged(PowerShellInstallFragments(root_source="$RootMd")))
+    assert 'Write-TextFile $File (Read-TextFile "$SRC/$OmsRootFile")' in staged(None)
 
 
 def test_the_powershell_installer_reports_what_it_could_not_update() -> None:

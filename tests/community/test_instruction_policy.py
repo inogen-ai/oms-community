@@ -5,9 +5,10 @@ contribution, each with session learnings on or off. Off removes every
 instruction to reflect or to send a self_reflection, and leaves the guidance
 for corrections a person gives word for word the same. Confirm mode asks the
 person before anything is shared, where automatic mode logs in the same turn.
-Confirm copies of the root instruction files are published beside the
-automatic ones, under names no harness loads by itself, for an installation
-to choose.
+The learnings section follows the mode unless it is given one of its own, so
+it can ask the person first while corrections stay automatic. Confirm copies
+of the root instruction files are published beside the automatic ones, under
+names no harness loads by itself, for an installation to choose.
 
 Every variant has to fit one byte budget. One harness caps its global rules
 file at 6000 bytes and, over the cap, installs no instructions at all, so a
@@ -124,12 +125,17 @@ def test_off_omits_every_reflection_instruction(mode):
 
 
 @pytest.mark.parametrize("mode", ["automatic", "confirm"])
-def test_on_carries_the_five_future_use_tests_and_the_context_fields(mode):
+def test_on_carries_the_learning_bar_and_the_context_fields(mode):
     on = block(mode=mode)
-    for test in ("recur", "changed action", "observation", "stays true", "adds to the skills"):
-        assert test in on
+    # The eight points of the bar, in the spec's order: subagents never file,
+    # the next use is named, a real cost, the cold reader, not already
+    # visible, never from a one-off process, no perishable detail, at most one.
+    for phrase in ("subagent", "name a future task", "cost real time",
+                   "never saw this session", "already shows", "mutation check",
+                   "line numbers", "At most one"):
+        assert phrase in on
+    assert "At most three" not in on
     assert "Normally there is nothing to submit" in on
-    assert "At most three" in on
     for field in CONTEXT_FIELDS:
         assert f"`{field}`" in on
     for shape in ('`signal_type: "self_reflection"`', '`source_ref: "session:<your session id>"`'):
@@ -175,11 +181,44 @@ def test_confirm_mode_replaces_immediate_logging(session_learnings):
     assert OFFER not in automatic and "Review suggestion" not in automatic
 
 
+def test_learnings_can_ask_first_while_corrections_are_automatic():
+    text = "\n".join(render._contribution_block(ENDPOINT, mode="automatic",
+                                                learnings_mode="confirm"))
+    assert LEARNING_APPROVAL in text
+    assert "in the same turn" in text          # corrections still automatic
+    assert OFFER not in text
+    # Threaded through the root file, which is what an overlay serves.
+    root = render.render_claude_md([], [], ENDPOINT, learnings_mode="confirm")
+    assert LEARNING_APPROVAL in root and "in the same turn" in root
+    # With the section off there is nothing to ask about.
+    off = "\n".join(render._contribution_block(ENDPOINT, session_learnings=False,
+                                               learnings_mode="confirm"))
+    assert LEARNING_APPROVAL not in off
+
+
+def test_learnings_mode_defaults_to_the_contribution_mode():
+    for mode in ("automatic", "confirm"):
+        assert block(mode=mode) == "\n".join(render._contribution_block(
+            ENDPOINT, mode=mode, learnings_mode=None))
+
+
+def test_learnings_mode_alone_decides_whether_learnings_ask_first():
+    # Given, it wins over the correction mode in both directions.
+    text = "\n".join(render._contribution_block(ENDPOINT, mode="confirm",
+                                                learnings_mode="automatic"))
+    assert LEARNING_APPROVAL not in text
+    assert OFFER in text                       # corrections still ask first
+
+
 def test_every_variant_fits_the_budget():
     for mode in render.CONTRIBUTION_MODES:
         for session_learnings in (True, False):
-            size = len(block(session_learnings=session_learnings, mode=mode).encode("utf-8"))
-            assert size <= BUDGET, f"{mode}, learnings {session_learnings}: {size} bytes"
+            for learnings_mode in (None, "confirm"):
+                size = len("\n".join(render._contribution_block(
+                    ENDPOINT, session_learnings=session_learnings, mode=mode,
+                    learnings_mode=learnings_mode)).encode("utf-8"))
+                assert size <= BUDGET, (f"{mode}, learnings {session_learnings}, "
+                                        f"learnings mode {learnings_mode}: {size} bytes")
 
 
 def test_an_unknown_mode_is_refused():
@@ -189,6 +228,11 @@ def test_an_unknown_mode_is_refused():
         render._contribution_block(ENDPOINT, mode="confirmed")
     with pytest.raises(ValueError, match="contribution mode"):
         render.render_claude_md([], [], contribution_mode="confirmed")
+    # The same for the learnings section's own mode.
+    with pytest.raises(ValueError, match="contribution mode"):
+        render._contribution_block(ENDPOINT, learnings_mode="confirmed")
+    with pytest.raises(ValueError, match="contribution mode"):
+        render.render_claude_md([], [], learnings_mode="confirmed")
 
 
 @pytest.mark.parametrize("name, variant", [

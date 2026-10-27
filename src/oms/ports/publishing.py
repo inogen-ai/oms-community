@@ -36,6 +36,12 @@ class ShellInstallFragments:
     it must give the same mode's instructions, or the harnesses installed in
     one run would disagree about whether to ask before sharing.
 
+    `manual_rules_source` is the file `stage_manual_rules` copies for a tool
+    whose rules are pasted by hand (Cursor). It defaults to `root_source`. A
+    pasted copy is never replaced by a refresh, so an extension whose
+    `root_source` changes per person can stage a shared file here instead.
+    The same rule applies: the same mode's instructions.
+
     `select_sources` names the installation's extra skill sources: git
     repositories whose `skills/` are linked after the bundle's own. It runs at
     the end of the installer's preconditions, at the top level of the script,
@@ -55,6 +61,7 @@ class ShellInstallFragments:
 
     before_links: str = ""
     root_source: str | None = None
+    manual_rules_source: str | None = None
     link_initialiser: str = ""
     skip_skill: str = ""
     link_report: str = '  echo "  $ls_label: linked $ls_n skills into $ls_dir"'
@@ -71,8 +78,9 @@ class PowerShellInstallFragments:
     The same contract as `ShellInstallFragments`, under PowerShell names:
     `$OmsContributionMode` holds `automatic` or `confirm` and `$OmsRootFile`
     the bundle's root instruction file for that mode. `root_source` defaults
-    to `$SRC/$OmsRootFile` and `root_import` to `@$SRC/$OmsRootFile`. The
-    same exception applies: `refresh_success` is text inside the refresh
+    to `$SRC/$OmsRootFile` and `root_import` to `@$SRC/$OmsRootFile`;
+    `manual_rules_source` (for `Set-ManualRules`) defaults to `root_source`.
+    The same exception applies: `refresh_success` is text inside the refresh
     script's here-string, where an unescaped reference is fixed when the
     installer writes it and an escaped one is undefined when it runs.
 
@@ -84,6 +92,7 @@ class PowerShellInstallFragments:
 
     before_links: str = ""
     root_source: str | None = None
+    manual_rules_source: str | None = None
     root_import: str | None = None
     link_initialiser: str = ""
     skip_skill: str = ""
