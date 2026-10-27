@@ -777,7 +777,7 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
             # them fold into one element, so a list item merges with the next
             # or the blank line between paragraphs is lost, in every published
             # file.
-            "Before reporting work finished, check for a lesson worth keeping:", "",
+            "Before reporting work finished, file a lesson only if all hold:", "",
             # The eight points of the bar, in the order of the session
             # learnings quality spec, section 1.
             "1. Only the agent talking to the person files, once, at the end; "

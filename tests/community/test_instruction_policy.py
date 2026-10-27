@@ -127,6 +127,9 @@ def test_off_omits_every_reflection_instruction(mode):
 @pytest.mark.parametrize("mode", ["automatic", "confirm"])
 def test_on_carries_the_learning_bar_and_the_context_fields(mode):
     on = block(mode=mode)
+    # The header says the points are tests and every one must hold. Without
+    # "all hold", points 3 and 4 read as statements, not conditions.
+    assert "\n\nBefore reporting work finished, file a lesson only if all hold:\n\n1. " in on
     # The eight points of the bar, in the spec's order: subagents never file,
     # the next use is named, a real cost, the cold reader, not already
     # visible, never from a one-off process, no perishable detail, at most one.
