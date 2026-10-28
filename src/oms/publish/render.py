@@ -555,7 +555,8 @@ def _check_contribution_mode(mode: str) -> None:
 
 
 def _contribution_block(endpoint: str, *, session_learnings: bool = True,
-                        mode: ContributionMode = "automatic") -> list[str]:
+                        mode: ContributionMode = "automatic",
+                        learnings_mode: ContributionMode | None = None) -> list[str]:
     """The standing, always-loaded instruction telling an agent how to post a
     learning back to OMS (spec §6.1). Rendered only when an ingest endpoint is
     configured. It rides the scheduled pull, so contribution needs no per-agent
@@ -566,9 +567,10 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
     submit only a preview they approve. `session_learnings=False` drops the
     `## Session learnings` section, the only text that asks an agent to
     reflect or to send `self_reflection`, and changes nothing above it, so
-    the correction guidance depends on the mode alone. A stale copy can still
-    send a learning; refusing it is the admission policy's job, not this
-    text's.
+    the correction guidance depends on the mode alone. `learnings_mode`
+    decides only whether that section asks the person first; None follows
+    `mode`. A stale copy can still send a learning; refusing it is the
+    admission policy's job, not this text's.
 
     That guidance is scoped to what "a person gives you". Unscoped, "useful
     evidenced lessons" invited the agent's own lessons in as ordinary
@@ -687,9 +689,24 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
     "Otherwise" branch, though no client prompt covers them: "Other doors
     need that reply in any client" says it for both. Shorter words for the
     approval rule, the correction and the decline paid for it. Measured on
-    2 October 2026: confirm 3645 on and 2362 off."""
+    2 October 2026: confirm 3645 on and 2362 off.
+
+    The session learnings quality work (27 October 2026) replaced the five
+    tests and "At most three" with an eight-point bar and gave the section
+    its own `learnings_mode`, so it can ask first while corrections stay
+    automatic (that variant is automatic plus the approval sentence). The bar
+    cost 60 bytes. The learnings text paid first ("check for a lesson",
+    "File each", fewer articles, and the quota clause, a second telling of
+    "Normally there is nothing to submit"), then shorter forms above it with
+    no instruction lost ("team-wide rules" for "organisational or team-wide
+    rules", "is for" for "holds rules for", "if none" for "if there is
+    none"). Measured: confirm 3652 on and 2327 off, automatic 2905 on (2994
+    asking first) and 1669 off."""
     _check_contribution_mode(mode)
+    if learnings_mode is not None:
+        _check_contribution_mode(learnings_mode)
     confirm = mode == "confirm"
+    learnings_confirm = (learnings_mode or mode) == "confirm"
     lines = [
         "", "# Contributing learnings", "",
         "Record durable organisational or repository guidance a person gives "
@@ -726,9 +743,9 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
         "Adding 'When asked' does not make it one. Preserve terse policy changes "
         "and genuine corroboration; a rule need not be novel or broadly applicable. "
         "Zero contributions is normal. OMS handles routing and deduplication.", "",
-        "IMPORTANT: Do NOT save organisational or team-wide rules to your personal "
-        "memory (MEMORY.md), which is for session-specific preferences only. Do "
-        "not edit these files; OMS overwrites them on each pull.", "",
+        "IMPORTANT: Do NOT save team-wide rules to your personal memory "
+        "(MEMORY.md), which is for session-specific preferences only. Do not "
+        "edit these files; OMS overwrites them on each pull.", "",
         "How to log, in order of preference:", "",
         # Confirm mode says what one approval of the tool does not cover, so
         # only automatic mode tells the agent to give it.
@@ -751,8 +768,7 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
         "",
         "When you start work in a git repository, call `query_skill` once with "
         "its normalised remote (like `github.com/acme/payments`). Any bundle "
-        "it returns holds rules for that repository only; if there is none, "
-        "carry on.",
+        "it returns is for that repository only; if none, carry on.",
     ]
     if session_learnings:
         lines += [
@@ -761,27 +777,33 @@ def _contribution_block(endpoint: str, *, session_learnings: bool = True,
             # them fold into one element, so a list item merges with the next
             # or the blank line between paragraphs is lost, in every published
             # file.
-            "Before reporting work finished, check whether it taught a lesson "
-            "worth keeping. Keep one only if the work shows all five:", "",
-            "1. a task or condition likely to recur in this project, repository or team;",
-            "2. a changed action for a future agent, and the error, waste or risk it avoids;",
-            "3. an observation supporting it and its scope;",
-            "4. it stays true after this task (not a temporary failure, a fixed "
-            "defect or one machine's state);",
-            "5. it adds to the skills you read rather than restating generic practice.", "",
+            "Before reporting work finished, file a lesson only if all hold:", "",
+            # The eight points of the bar, in the order of the session
+            # learnings quality spec, section 1.
+            "1. Only the agent talking to the person files, once, at the end; "
+            "a subagent puts it in its report.",
+            "2. If you cannot name a future task outside this work where it "
+            "applies, file nothing.",
+            "3. Something failed, misled you or cost real time; a plan's choice "
+            "is not a lesson.",
+            "4. A teammate who never saw this session would agree it belongs in "
+            "the skill.",
+            "5. Skip what the repo or the skill you read already shows.",
+            "6. Never file from a one-off test, mutation check, drill or one "
+            "feature's scaffolding.",
+            "7. No line numbers, temporary paths or session names in the rule.",
+            "8. At most one per piece of work, rarely two.", "",
             "Write it as a RULE: a condition and an action in one imperative "
             "sentence, like \"In this repo, manage Python deps with uv, "
             "not pip\", not \"This repo uses uv\". Normally there is nothing to "
-            "submit, and no need to say so; never file a weak lesson to fill a "
-            "quota. At most three per piece of work, ranked; never split one "
-            "lesson into several."
+            "submit, and no need to say so."
             + (" Show the person each proposed learning with its context; "
-               "submit only those they approve." if confirm else ""), "",
+               "submit only those they approve." if learnings_confirm else ""), "",
             # Where the rule goes differs by door. The thin body (MCP
             # `log_correction` and HTTP) refuses a self_reflection with a
             # correction beside it; the helper has no `learning` keyword and
             # maps its first argument; `log_signal` nests the rule.
-            "File each separately with the rule in `learning`, not `correction` "
+            "File each with the rule in `learning`, not `correction` "
             "(the helper takes it as `correction`; `log_signal` as "
             "`execution_context.learning`), plus `signal_type: \"self_reflection\"`, "
             "`source_ref: \"session:<your session id>\"`, `session_summary`, "
@@ -1411,6 +1433,7 @@ def render_install_script(mcp_url: str | None,
     # Resolved at run time, by section 0, to the root file of the mode this
     # installation chose, so every harness below reads the same variant.
     root_md = fragments.root_source or "$SRC/$OMS_ROOT_FILE"
+    manual_md = fragments.manual_rules_source or root_md
     link_initialiser = fragments.link_initialiser
     skip_skill = fragments.skip_skill
     link_report = fragments.link_report
@@ -2072,7 +2095,7 @@ stage_manual_rules() {{
   # until the person replaces them, so this run says so instead of "once".
   sm_staged=""
   if [ -f "$sm_file" ]; then sm_staged=1; fi
-  cp "{root_md}" "$sm_file"
+  cp "{manual_md}" "$sm_file"
   if [ -n "$sm_staged" ] && [ "$oms_mode_before" != "$OMS_CONTRIBUTION_MODE_RESOLVED" ]; then
     echo "  $sm_label: skills are linked, but $sm_label has no global instructions"
     echo "    file, and these rules changed with the contribution mode. Paste this"
@@ -3209,7 +3232,7 @@ function Set-ManualRules($Label, $File) {
     # Staged here before means it may have been pasted, and after a change of
     # mode that paste is the other mode's rules (install.sh gives the reasons).
     $staged = Test-Path -LiteralPath $File
-    Write-TextFile $File (Read-TextFile "@@ROOT_MD@@")
+    Write-TextFile $File (Read-TextFile "@@MANUAL_MD@@")
     if ($staged -and $OmsModeBefore -cne $OmsContributionMode) {
         Write-Host "  ${Label}: skills are linked, but $Label has no global instructions"
         Write-Host "    file, and these rules changed with the contribution mode. Paste this"
@@ -3625,6 +3648,8 @@ def render_install_ps1(mcp_url: str | None,
             .replace("@@REFRESH_OK@@", fragments.refresh_success)
             # The root file of the mode section 0 settled, as in install.sh.
             .replace("@@ROOT_MD@@", fragments.root_source or "$SRC/$OmsRootFile")
+            .replace("@@MANUAL_MD@@", fragments.manual_rules_source
+                     or fragments.root_source or "$SRC/$OmsRootFile")
             .replace("@@ROOT_IMPORT@@", fragments.root_import or "@$SRC/$OmsRootFile")
             .replace("@@LOOKED_FOR@@", looked_for)
             .replace("@@BUNDLE_TOKEN@@", bundle_token or "")
@@ -4167,13 +4192,16 @@ def _constraint_block(constraints: list[Constraint]) -> list[str]:
 def render_claude_md(constraints: list[Constraint], skills: list[Skill],
                      contribution_endpoint: str | None = None, *,
                      session_learnings: bool = True,
-                     contribution_mode: ContributionMode = "automatic") -> str:
+                     contribution_mode: ContributionMode = "automatic",
+                     learnings_mode: ContributionMode | None = None) -> str:
     """One root instruction file: constraints, the skill index and, with an
     endpoint, the contribution block in the variant asked for (see
-    `_contribution_block`). The mode is checked with or without an endpoint,
-    so a misspelt one fails wherever it is passed, not only where it would
-    show."""
+    `_contribution_block`). Both modes are checked with or without an
+    endpoint, so a misspelt one fails wherever it is passed, not only where
+    it would show. `learnings_mode` None follows `contribution_mode`."""
     _check_contribution_mode(contribution_mode)
+    if learnings_mode is not None:
+        _check_contribution_mode(learnings_mode)
     lines = _constraint_block(constraints)
     lines += ["", "# Available Skills", ""]
     for s in sorted(skills, key=lambda x: x.name):
@@ -4181,7 +4209,8 @@ def render_claude_md(constraints: list[Constraint], skills: list[Skill],
     if contribution_endpoint:
         lines += _contribution_block(contribution_endpoint,
                                      session_learnings=session_learnings,
-                                     mode=contribution_mode)
+                                     mode=contribution_mode,
+                                     learnings_mode=learnings_mode)
     return "\n".join(lines) + "\n"
 
 
