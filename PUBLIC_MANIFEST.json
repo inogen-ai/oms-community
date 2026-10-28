@@ -1178,7 +1178,7 @@
     },
     "src/oms/publish/render.py": {
       "mode": 420,
-      "sha256": "56948fe6f03f475453950b811a607592244b4f4dfb283181cec933dfb545c756"
+      "sha256": "da5298c7ebc491eba95ebcc691ae170d68f85eb841ef6d64bd55248cd60ed82f"
     },
     "src/oms/publish/urls.py": {
       "mode": 420,
@@ -1550,7 +1550,7 @@
     },
     "tests/community/test_instruction_policy.py": {
       "mode": 420,
-      "sha256": "0c4c8a1e47fc3048be1baf5c9c4812e83004b0c741730e886a6ca1159f9bba3a"
+      "sha256": "189a80bac58cddfaad0bddd50dfd4831868088f026d81f77f84e3a7da18a1d30"
     },
     "tests/community/test_macos_refresh_agent.py": {
       "mode": 420,
